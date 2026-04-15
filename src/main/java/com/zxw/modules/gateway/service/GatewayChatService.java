@@ -56,6 +56,7 @@ import java.util.regex.Pattern;
 public class GatewayChatService {
 
     private static final Logger log = LoggerFactory.getLogger(GatewayChatService.class);
+    private static final BigDecimal TOKENS_PER_MILLION = BigDecimal.valueOf(1_000_000L);
 
     private static final int AGENT_MAX_STEPS = 6;
     private static final int AGENT_HISTORY_LIMIT = 24;
@@ -4450,9 +4451,9 @@ public class GatewayChatService {
 
     private BigDecimal calculateBaseCost(GatewayRouteService.RouteDefinition route, int promptTokens, int completionTokens) {
         BigDecimal promptCost = route.promptPrice() == null ? BigDecimal.ZERO :
-                route.promptPrice().multiply(BigDecimal.valueOf(promptTokens)).divide(BigDecimal.valueOf(1000), 6, RoundingMode.HALF_UP);
+                route.promptPrice().multiply(BigDecimal.valueOf(promptTokens)).divide(TOKENS_PER_MILLION, 6, RoundingMode.HALF_UP);
         BigDecimal completionCost = route.completionPrice() == null ? BigDecimal.ZERO :
-                route.completionPrice().multiply(BigDecimal.valueOf(completionTokens)).divide(BigDecimal.valueOf(1000), 6, RoundingMode.HALF_UP);
+                route.completionPrice().multiply(BigDecimal.valueOf(completionTokens)).divide(TOKENS_PER_MILLION, 6, RoundingMode.HALF_UP);
         BigDecimal requestCost = route.requestPrice() == null ? BigDecimal.ZERO : route.requestPrice();
         return promptCost.add(completionCost).add(requestCost).setScale(6, RoundingMode.HALF_UP);
     }
