@@ -386,8 +386,8 @@
                 <article class="surface-card guide-hero-card">
                     <div class="section-head">
                         <div>
-                            <h3>接入说明</h3>
-                            <div class="card-caption">把你的模型编码、网关地址和用户密钥填进去，就可以直接调用。</div>
+                            <h3>Codex 使用教程</h3>
+                            <div class="card-caption">按下面步骤完成安装、验证和配置后，就可以直接启动使用。</div>
                         </div>
                         <span class="soft-badge">5 分钟上手</span>
                     </div>
@@ -395,22 +395,22 @@
                         <div class="setup-item">
                             <span>1</span>
                             <div>
-                                <strong>拿到用户密钥</strong>
-                                <p>先在 API 密钥页面创建自己的 `sk-live-...` 密钥，后面客户端要用这个鉴权。</p>
+                                <strong>安装 Node.js</strong>
+                                <p>访问 Node.js 官网安装最新 LTS 版本，安装过程一直点击“下一步（Next）”即可。</p>
                             </div>
                         </div>
                         <div class="setup-item">
                             <span>2</span>
                             <div>
-                                <strong>确认模型编码</strong>
-                                <p>进入套餐中心页面，先确认你已购买对应分组，再查看要调用的模型编码，例如 `gpt-5.3-codex`。</p>
+                                <strong>安装 Codex</strong>
+                                <p>打开终端执行 `npm install -g @openai/codex`，安装完成后再用 `codex --version` 验证。</p>
                             </div>
                         </div>
                         <div class="setup-item">
                             <span>3</span>
                             <div>
-                                <strong>填写网关地址</strong>
-                                <p>把 `base_url` 填成你的网关地址加 `/v1`，不要填上游地址，也不要填官网地址。</p>
+                                <strong>配置 `.codex`</strong>
+                                <p>在用户目录下创建 `.codex`，并在其中配置 `auth.json` 与 `config.toml` 两个文件。</p>
                             </div>
                         </div>
                     </div>
@@ -419,226 +419,156 @@
                 <div class="overview-grid guide-grid">
                     <article class="surface-card">
                         <div class="section-head">
-                            <h3>公网配置示例</h3>
-                            <span class="card-caption">给别人远程调用时这样填</span>
+                            <h3>安装与验证</h3>
+                            <span class="card-caption">先把基础环境安装好</span>
                         </div>
-                        <pre class="guide-code">model_provider = "api111"
-model = "gpt-5.3-codex"
-model_reasoning_effort = "high"
-disable_response_storage = true
-service_tier = "fast"
-
-[model_providers.api111]
-name = "api111"
-base_url = "http://p783d68b.natappfree.cc/v1"
-wire_api = "responses"
-requires_openai_auth = true</pre>
+                        <div class="guide-field-list">
+                            <div class="guide-field-item">
+                                <strong>1. 安装 Node.js</strong>
+                                <p>直接访问 <a href="https://nodejs.org/zh-cn" target="_blank" rel="noreferrer">Node.js 官网</a> 下载并安装最新 LTS 版本。</p>
+                            </div>
+                            <div class="guide-field-item">
+                                <strong>2. 安装 Codex</strong>
+                                <pre class="guide-code">npm install -g @openai/codex</pre>
+                            </div>
+                            <div class="guide-field-item">
+                                <strong>3. 验证安装</strong>
+                                <pre class="guide-code">codex --version</pre>
+                            </div>
+                        </div>
                     </article>
 
                     <article class="surface-card">
                         <div class="section-head">
-                            <h3>本地配置示例</h3>
-                            <span class="card-caption">你自己本机测试时这样填</span>
+                            <h3>配置文件位置</h3>
+                            <span class="card-caption">在当前用户目录中配置 `.codex`</span>
                         </div>
-                        <pre class="guide-code">model_provider = "api111"
-model = "gpt-5.3-codex"
-model_reasoning_effort = "high"
-disable_response_storage = true
-service_tier = "fast"
-
-[model_providers.api111]
-name = "api111"
-base_url = "http://localhost:9988/v1"
-wire_api = "responses"
-requires_openai_auth = true</pre>
+                        <p class="guide-paragraph">进入当前用户目录下的 `.codex` 文件夹中。</p>
+                        <p class="guide-paragraph">Windows 常见路径示例：</p>
+                        <pre class="guide-code">C:\Users\你的用户名\.codex</pre>
+                        <p class="guide-paragraph">如果没有 `.codex` 文件夹，请手动创建该文件夹。</p>
+                        <p class="guide-paragraph">然后在 `.codex` 文件夹中创建以下两个文件：</p>
+                        <ul class="guide-bullet-list">
+                            <li><code>config.toml</code></li>
+                            <li><code>auth.json</code></li>
+                        </ul>
+                        <p class="guide-paragraph">如果这两个文件已经存在，就直接修改即可，不需要重复创建。</p>
                     </article>
                 </div>
 
                 <div class="overview-grid guide-grid">
                     <article class="surface-card">
                         <div class="section-head">
-                            <h3>IDE 支持矩阵</h3>
-                            <span class="card-caption">看这张表就知道什么客户端能真改代码，什么只是聊天。</span>
+                            <h3><code>auth.json</code> 配置</h3>
+                            <span class="card-caption">先写鉴权令牌</span>
                         </div>
-                        <div class="guide-field-list">
-                            <div class="guide-field-item">
-                                <strong>`gpt-5.4` / `gpt-5.3-codex`</strong>
-                                <p>优先走原生 `/v1/responses`。如果客户端本身支持 Codex/Responses 工具流，并且带工作区权限，就能持续自我分析、持续调用工具、持续改代码，直到模型自己返回 `completed`。</p>
-                            </div>
-                            <div class="guide-field-item">
-                                <strong>普通 OpenAI 兼容聊天插件</strong>
-                                <p>这类客户端通常只有对话能力，没有本地文件工具。即使模型很强，也大多只能给方案、写补丁建议，不能直接修改别人电脑里的代码。</p>
-                            </div>
-                            <div class="guide-field-item">
-                                <strong>服务端 Agent 回退模式</strong>
-                                <p>如果客户端不带本地工具，但你又想让网关代为读写服务器上的项目，可以走 `metadata.gateway_agent=true` 和 `metadata.workspace_root`。这时修改发生在网关服务端指定工作区，不是在对方本机。</p>
-                            </div>
-                            <div class="guide-field-item">
-                                <strong>结束条件</strong>
-                                <p>支持 agent 的客户端或模型不会因为输出了一句自然语言就自动结束；会继续根据工具结果推进，直到上游真正返回完成事件，或者遇到明确错误。</p>
-                            </div>
+                        <p class="guide-paragraph">将下面内容写入 <code>auth.json</code>：</p>
+                        <pre class="guide-code">{"OPENAI_API_KEY": "xxx"}</pre>
+                        <div class="notice-box guide-notice">
+                            请将 <code>xxx</code> 替换成你的实际令牌。
                         </div>
                     </article>
 
                     <article class="surface-card">
                         <div class="section-head">
-                            <h3>每一项怎么填</h3>
-                            <span class="card-caption">按这个说明填写最稳</span>
+                            <h3><code>config.toml</code> 配置</h3>
+                            <span class="card-caption">直接粘贴下面内容即可</span>
+                        </div>
+                        <pre class="guide-code">model_provider = "zxw"
+model = "gpt-5.4"
+model_reasoning_effort = "high"
+disable_response_storage = true
+service_tier = "fast"
+
+approval_policy = "on-request"
+sandbox_mode = "workspace-write"
+
+[model_providers.zxw]
+name = "zxw"
+base_url = "http://e5d76292.natappfree.cc/v1"
+wire_api = "responses"
+requires_openai_auth = true
+
+[mcp_servers]
+
+[mcp_servers.memory]
+type = "stdio"
+command = "cmd"
+args = ["/c", "npx", "-y", "@modelcontextprotocol/server-memory"]
+
+[mcp_servers.sequential-thinking]
+type = "stdio"
+command = "cmd"
+args = ["/c", "npx", "-y", "@modelcontextprotocol/server-sequential-thinking"]
+
+[mcp_servers.time]
+type = "stdio"
+command = "cmd"
+args = ["/c", "npx", "-y", "@modelcontextprotocol/server-time"]
+
+[mcp_servers.context7]
+type = "stdio"
+command = "cmd"
+args = ["/c", "npx", "-y", "@upstash/context7-mcp"]
+
+[mcp_servers.fetch]
+type = "stdio"
+command = "uvx"
+args = ["mcp-server-fetch"]
+
+[sandbox_workspace_write]
+network_access = false
+writable_roots = [
+]
+
+[windows]
+sandbox = "elevated"</pre>
+                    </article>
+                </div>
+
+                <div class="overview-grid guide-grid">
+                    <article class="surface-card">
+                        <div class="section-head">
+                            <h3>参数说明</h3>
+                            <span class="card-caption">重点看这几个配置项</span>
                         </div>
                         <div class="guide-field-list">
                             <div class="guide-field-item">
-                                <strong>model_provider</strong>
-                                <p>这是自定义提供商名称，可以随便起，但必须和下面 `[model_providers.xxx]` 里的名字一致。</p>
-                            </div>
-                            <div class="guide-field-item">
-                                <strong>model</strong>
-                                <p>这里填后台已经创建好的模型编码，不是模型名称。例如 `gpt-5.3-codex`。</p>
+                                <strong>model_reasoning_effort</strong>
+                                <p>可选值为 <code>high</code>、<code>medium</code>、<code>low</code>，分别表示模型思考强度为高、中、低。</p>
                             </div>
                             <div class="guide-field-item">
                                 <strong>base_url</strong>
-                                <p>填你的网关地址加 `/v1`。公网用公网地址，本地用 `http://localhost:9988/v1`。</p>
+                                <p>请记得根据自己的实际情况替换为正确的服务地址。</p>
                             </div>
                             <div class="guide-field-item">
-                                <strong>wire_api</strong>
-                                <p>当前保持 `responses` 即可，不要随便改成别的。</p>
-                            </div>
-                            <div class="guide-field-item">
-                                <strong>requires_openai_auth</strong>
-                                <p>保持 `true`，表示客户端会读取 `OPENAI_API_KEY` 来发送鉴权。</p>
+                                <strong>auth.json</strong>
+                                <p>这里的令牌要和你自己的实际使用令牌保持一致。</p>
                             </div>
                         </div>
                     </article>
 
                     <article class="surface-card">
                         <div class="section-head">
-                            <h3>用户还要设置什么</h3>
-                            <span class="card-caption">这一项最容易漏掉</span>
+                            <h3>启动使用</h3>
+                            <span class="card-caption">配置完成后直接启动</span>
                         </div>
-                        <p class="guide-paragraph">如果配置里写了 `requires_openai_auth = true`，那用户本地还要设置环境变量：</p>
-                        <pre class="guide-code">$env:OPENAI_API_KEY="你的 sk-live-用户密钥"</pre>
-                        <p class="guide-paragraph">例如：</p>
-                        <pre class="guide-code">$env:OPENAI_API_KEY="sk-live-xxxxxxxxxxxxxxxxxxxxxxxx"</pre>
-                        <div class="notice-box guide-notice">
-                            不要填上游 key，这里要填你在本系统里创建出来的用户密钥，也就是 `sk-live-...`
-                        </div>
-                    </article>
-                </div>
-
-                <div class="overview-grid guide-grid">
-                    <article class="surface-card">
-                        <div class="section-head">
-                            <h3>服务端 Agent 调试台</h3>
-                            <span class="card-caption">直接生成 payload、curl，或立即发起一次非流式测试请求。</span>
-                        </div>
-                        <p class="guide-paragraph">这个面板会优先使用你当前浏览器里保存的完整 `sk-live-...` 用户密钥。没有完整密钥时，请先去 API 密钥页面重新创建一个。</p>
-                        <div class="guide-agent-form">
-                            <label>
-                                <span>模型编码</span>
-                                <input id="agent-debug-model" type="text" value="gpt-5.3-codex">
-                            </label>
-                            <label>
-                                <span>工作区根目录</span>
-                                <input id="agent-debug-workspace" type="text" placeholder="例如 E:/project-ai/Test">
-                            </label>
-                            <label class="span-two">
-                                <span>任务指令</span>
-                                <textarea id="agent-debug-prompt" rows="5" placeholder="例如：在 TestApplication.java 里加一个 hello() 方法，然后告诉我具体改了哪里">在 TestApplication.java 里加一个 hello() 方法，然后告诉我具体改了哪里</textarea>
-                            </label>
-                        </div>
-                        <div class="guide-agent-actions">
-                            <button id="agent-debug-copy-payload" type="button" class="secondary-button">复制 Payload</button>
-                            <button id="agent-debug-copy-curl" type="button" class="secondary-button">复制 Curl</button>
-                            <button id="agent-debug-send" type="button" class="primary-button">立即测试</button>
-                        </div>
-                        <div class="guide-agent-meta">
-                            <div>
-                                <strong>请求地址</strong>
-                                <div id="agent-debug-endpoint" class="guide-inline-code">http://localhost:9988/v1/responses</div>
-                            </div>
-                            <div>
-                                <strong>触发方式</strong>
-                                <div class="guide-inline-code">metadata.gateway_agent=true + metadata.workspace_root</div>
-                            </div>
-                        </div>
-                        <div class="guide-agent-output-grid">
-                            <div>
-                                <div class="guide-output-title">请求 Payload</div>
-                                <pre id="agent-debug-payload" class="guide-code guide-code-compact"></pre>
-                            </div>
-                            <div>
-                                <div class="guide-output-title">响应结果</div>
-                                <pre id="agent-debug-response" class="guide-code guide-code-compact">点击“立即测试”后，这里会显示网关返回的响应。</pre>
-                            </div>
-                        </div>
+                        <p class="guide-paragraph">配置完成后，重新打开终端，直接运行：</p>
+                        <pre class="guide-code">codex</pre>
+                        <p class="guide-paragraph">如果配置没有问题，Codex 就可以正常启动并连接到你配置的模型服务。</p>
                     </article>
 
                     <article class="surface-card">
                         <div class="section-head">
-                            <h3>服务端 Agent 示例</h3>
-                            <span class="card-caption">当上游没有稳定触发本地改码时，可以直接走网关内置读写工具。</span>
-                        </div>
-                        <p class="guide-paragraph">这不是 MCP 缺不缺的问题，而是显式告诉网关：这次 `Responses` 请求要进入服务端 agent 模式，并指定允许读写的工作区。</p>
-                        <pre class="guide-code">curl http://localhost:9988/v1/responses ^
-  -H "Authorization: Bearer sk-live-xxxxxxxxxxxxxxxxxxxxxxxx" ^
-  -H "Content-Type: application/json" ^
-  -d "{
-    ""model"": ""gpt-5.3-codex"",
-    ""stream"": false,
-    ""metadata"": {
-      ""gateway_agent"": true,
-      ""workspace_root"": ""E:/project-ai/Test""
-    },
-    ""input"": [
-      {
-        ""role"": ""user"",
-        ""content"": [
-          {
-            ""type"": ""input_text"",
-            ""text"": ""在 TestApplication.java 里加一个 hello() 方法，然后告诉我具体改了哪里""
-          }
-        ]
-      }
-    ]
-  }"</pre>
-                        <div class="notice-box guide-notice">
-                            `gateway_agent=true` 用来强制走网关内置 agent；`workspace_root` 用来指定允许读写的项目根目录。
-                        </div>
-                    </article>
-
-                    <article class="surface-card">
-                        <div class="section-head">
-                            <h3>最容易填错的地方</h3>
+                            <h3>常见问题</h3>
                             <span class="card-caption">遇到报错先检查这里</span>
                         </div>
                         <ul class="guide-bullet-list">
-                            <li>`model` 填错，必须和后台模型编码完全一致。</li>
-                            <li>`base_url` 填成了上游地址或官网地址，正确写法应该是你的网关地址。</li>
-                            <li>漏掉 `/v1`，导致接口地址不完整。</li>
-                            <li>没有设置 `OPENAI_API_KEY`，客户端发起请求时就会鉴权失败。</li>
-                            <li>把上游 key 当成用户 key 使用，结果会直接失败。</li>
-                            <li>如果想让网关代你读写项目文件，请在请求里带上 `metadata.gateway_agent=true` 和 `metadata.workspace_root`。</li>
-                            <li>如果别人用的是普通聊天型 IDE 插件，没有本地工具权限，就算接的是 `gpt-5.4`，也很难像官方 Codex 一样直接改他本机代码。</li>
+                            <li>如果终端提示找不到 <code>codex</code>，请重新执行 <code>npm install -g @openai/codex</code>。</li>
+                            <li>如果 <code>codex --version</code> 没有输出版本号，请先检查 <code>node -v</code> 和 <code>npm -v</code> 是否正常。</li>
+                            <li>如果没有 <code>.codex</code> 文件夹，可以手动创建，不影响使用。</li>
+                            <li>只要 <code>.codex</code> 目录下最终包含 <code>config.toml</code> 和 <code>auth.json</code> 即可。</li>
                         </ul>
-                    </article>
-
-                    <article class="surface-card">
-                        <div class="section-head">
-                            <h3>一句话记住</h3>
-                            <span class="card-caption">发给别人时也可以直接复制这段</span>
-                        </div>
-                        <div class="guide-quote">
-                            `model` 填模型编码，`base_url` 填你的网关地址加 `/v1`，`OPENAI_API_KEY` 填系统分配的 `sk-live-...`
-                        </div>
-                        <div class="guide-mini-grid">
-                            <div class="model-price-box">
-                                <span>模型编码示例</span>
-                                <strong>gpt-5.3-codex</strong>
-                            </div>
-                            <div class="model-price-box">
-                                <span>公网地址示例</span>
-                                <strong>http://p783d68b.natappfree.cc/v1</strong>
-                            </div>
-                        </div>
                     </article>
                 </div>
             </div>

@@ -27,7 +27,7 @@ const panelMeta = {
     },
     "docs-panel": {
         title: "使用教程",
-        subtitle: "查看客户端接入方法、配置示例和常见问题。"
+        subtitle: "查看 Codex 的安装、配置、启动方式和常见问题。"
     },
     "billing-panel": {
         title: "用量账单",
