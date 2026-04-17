@@ -98,15 +98,16 @@ public class AdminUserService {
 
         String roleCode = request.roleCode() == null || request.roleCode().isBlank() ? "USER" : request.roleCode();
         jdbcTemplate.update("""
-                insert into users (username, password_hash, nickname, email, phone, role_code, status)
-                values (?, ?, ?, ?, ?, ?, 'ACTIVE')
+                insert into users (username, password_hash, nickname, email, phone, role_code, status, package_restriction_enabled)
+                values (?, ?, ?, ?, ?, ?, 'ACTIVE', ?)
                 """,
                 request.username(),
                 passwordService.encode(request.password()),
                 blankToNull(request.nickname()),
                 blankToNull(request.email()),
                 blankToNull(request.phone()),
-                roleCode
+                roleCode,
+                "ADMIN".equalsIgnoreCase(roleCode) ? 0 : 1
         );
 
         Long userId = jdbcTemplate.queryForObject(
@@ -241,6 +242,10 @@ public class AdminUserService {
                 """, userId);
         jdbcTemplate.update("""
                 delete from transactions
+                where user_id = ?
+                """, userId);
+        jdbcTemplate.update("""
+                delete from user_model_packages
                 where user_id = ?
                 """, userId);
         jdbcTemplate.update("""

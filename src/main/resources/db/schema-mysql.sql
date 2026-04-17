@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS users (
     phone VARCHAR(32) NULL,
     role_code VARCHAR(32) NOT NULL DEFAULT 'USER',
     status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE',
+    package_restriction_enabled TINYINT(1) NOT NULL DEFAULT 1,
     last_login_at DATETIME NULL,
     remark VARCHAR(255) NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -26,6 +27,7 @@ CREATE TABLE IF NOT EXISTS api_keys (
     status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE',
     expires_at DATETIME NULL,
     last_used_at DATETIME NULL,
+    model_group_id BIGINT NULL,
     total_quota DECIMAL(18, 4) NOT NULL DEFAULT 0.0000,
     used_quota DECIMAL(18, 4) NOT NULL DEFAULT 0.0000,
     remark VARCHAR(255) NULL,
@@ -33,7 +35,8 @@ CREATE TABLE IF NOT EXISTS api_keys (
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     deleted TINYINT(1) NOT NULL DEFAULT 0,
     UNIQUE KEY uk_api_keys_access_key (access_key),
-    KEY idx_api_keys_user_status (user_id, status)
+    KEY idx_api_keys_user_status (user_id, status),
+    KEY idx_api_keys_group (model_group_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS providers (
@@ -185,6 +188,47 @@ CREATE TABLE IF NOT EXISTS usage_daily (
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY uk_usage_daily_stat (stat_date, user_id, model_code, provider_id),
     KEY idx_usage_daily_stat_date (stat_date)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS model_groups (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    group_code VARCHAR(64) NOT NULL,
+    group_name VARCHAR(64) NOT NULL,
+    sale_price DECIMAL(18, 4) NOT NULL DEFAULT 0.0000,
+    package_days INT NOT NULL DEFAULT 30,
+    daily_quota DECIMAL(18, 4) NOT NULL DEFAULT 0.0000,
+    weekly_quota DECIMAL(18, 4) NOT NULL DEFAULT 0.0000,
+    monthly_quota DECIMAL(18, 4) NOT NULL DEFAULT 0.0000,
+    status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE',
+    remark VARCHAR(255) NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_model_groups_code (group_code),
+    KEY idx_model_groups_status (status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS model_group_models (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    group_id BIGINT NOT NULL,
+    model_id BIGINT NOT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_model_group_models_unique (group_id, model_id),
+    KEY idx_model_group_models_group (group_id, model_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS user_model_packages (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    user_id BIGINT NOT NULL,
+    group_id BIGINT NOT NULL,
+    package_name VARCHAR(64) NOT NULL,
+    purchase_price DECIMAL(18, 4) NOT NULL DEFAULT 0.0000,
+    start_at DATETIME NOT NULL,
+    expires_at DATETIME NOT NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE',
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    KEY idx_user_model_packages_user (user_id, status, expires_at),
+    KEY idx_user_model_packages_group (group_id, status, expires_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS system_configs (

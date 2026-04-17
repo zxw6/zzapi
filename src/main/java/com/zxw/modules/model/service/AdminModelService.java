@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.zxw.common.exception.BusinessException;
 import com.zxw.common.security.AdminContext;
 import com.zxw.common.security.AesCryptoService;
+import com.zxw.modules.access.service.UserModelAccessService;
 import com.zxw.modules.model.dto.ModelBatchImportRequest;
 import com.zxw.modules.model.dto.ModelBatchImportResponse;
 import com.zxw.modules.model.dto.ModelCreateRequest;
@@ -34,17 +35,22 @@ import java.util.Set;
 @Service
 public class AdminModelService {
 
+    private static final BigDecimal DEFAULT_REQUEST_PRICE = new BigDecimal("0.070000");
+
     private final JdbcTemplate jdbcTemplate;
     private final AesCryptoService aesCryptoService;
     private final ObjectMapper objectMapper;
     private final HttpClient httpClient;
+    private final UserModelAccessService userModelAccessService;
 
     public AdminModelService(JdbcTemplate jdbcTemplate,
                              AesCryptoService aesCryptoService,
-                             ObjectMapper objectMapper) {
+                             ObjectMapper objectMapper,
+                             UserModelAccessService userModelAccessService) {
         this.jdbcTemplate = jdbcTemplate;
         this.aesCryptoService = aesCryptoService;
         this.objectMapper = objectMapper;
+        this.userModelAccessService = userModelAccessService;
         this.httpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(20)).build();
     }
 
@@ -52,7 +58,7 @@ public class AdminModelService {
         if (!AdminContext.isAdmin()) {
             return jdbcTemplate.query("""
                     select m.id, m.model_code, m.model_name, m.model_type, m.billing_type, m.prompt_price,
-                           m.completion_price, m.multiplier, m.is_public, m.status, m.created_at,
+                           m.completion_price, m.request_price, m.multiplier, m.is_public, m.status, m.created_at,
                            p.id as provider_id, p.provider_name, p.provider_type, r.upstream_model
                     from models m
                     left join model_routes r on r.model_id = m.id and r.status = 'ACTIVE'
@@ -67,6 +73,7 @@ public class AdminModelService {
                     rs.getString("billing_type"),
                     rs.getBigDecimal("prompt_price"),
                     rs.getBigDecimal("completion_price"),
+                    rs.getBigDecimal("request_price"),
                     rs.getBigDecimal("multiplier"),
                     rs.getInt("is_public"),
                     rs.getString("status"),
@@ -80,7 +87,7 @@ public class AdminModelService {
 
         return jdbcTemplate.query("""
                 select m.id, m.model_code, m.model_name, m.model_type, m.billing_type, m.prompt_price,
-                       m.completion_price, m.multiplier, m.is_public, m.status, m.created_at,
+                       m.completion_price, m.request_price, m.multiplier, m.is_public, m.status, m.created_at,
                        p.id as provider_id, p.provider_name, p.provider_type, r.upstream_model
                 from models m
                 left join model_routes r on r.model_id = m.id and r.status = 'ACTIVE'
@@ -95,6 +102,7 @@ public class AdminModelService {
                 rs.getString("billing_type"),
                 rs.getBigDecimal("prompt_price"),
                 rs.getBigDecimal("completion_price"),
+                rs.getBigDecimal("request_price"),
                 rs.getBigDecimal("multiplier"),
                 rs.getInt("is_public"),
                 rs.getString("status"),
@@ -143,7 +151,7 @@ public class AdminModelService {
                 blankToDefault(request.billingType(), "TOKEN"),
                 numberOrZero(request.promptPrice()),
                 numberOrZero(request.completionPrice()),
-                numberOrZero(request.requestPrice()),
+                request.requestPrice() == null ? DEFAULT_REQUEST_PRICE : numberOrZero(request.requestPrice()),
                 numberOrZero(request.imagePrice()),
                 request.multiplier() == null ? BigDecimal.ONE : request.multiplier(),
                 Boolean.TRUE.equals(request.isPublic()),
@@ -158,7 +166,7 @@ public class AdminModelService {
         int updated = jdbcTemplate.update("""
                 update models
                 set model_name = ?, model_type = ?, billing_type = ?, prompt_price = ?, completion_price = ?,
-                    multiplier = ?, is_public = ?, updated_at = now()
+                    request_price = ?, multiplier = ?, is_public = ?, updated_at = now()
                 where id = ? and deleted = 0
                 """,
                 trimToLength(request.modelName(), 64),
@@ -166,6 +174,7 @@ public class AdminModelService {
                 blankToDefault(request.billingType(), "TOKEN"),
                 numberOrZero(request.promptPrice()),
                 numberOrZero(request.completionPrice()),
+                request.requestPrice() == null ? DEFAULT_REQUEST_PRICE : numberOrZero(request.requestPrice()),
                 request.multiplier() == null ? BigDecimal.ONE : request.multiplier(),
                 Boolean.TRUE.equals(request.isPublic()) ? 1 : 0,
                 id
@@ -175,6 +184,8 @@ public class AdminModelService {
         }
 
         replaceModelRoutes(id, request.providerId(), request.upstreamModel());
+        String modelCode = jdbcTemplate.queryForObject("select model_code from models where id = ?", String.class, id);
+        userModelAccessService.syncPresetGroupsForModel(id, modelCode, request.upstreamModel());
     }
 
     @Transactional
@@ -210,7 +221,7 @@ public class AdminModelService {
                     "TOKEN",
                     numberOrZero(request.promptPrice()),
                     numberOrZero(request.completionPrice()),
-                    BigDecimal.ZERO,
+                    DEFAULT_REQUEST_PRICE,
                     BigDecimal.ZERO,
                     request.multiplier() == null ? BigDecimal.ONE : request.multiplier(),
                     request.isPublic() == null || request.isPublic(),
@@ -262,7 +273,7 @@ public class AdminModelService {
                 """, id);
     }
 
-    private void insertModelWithRoute(String modelCode,
+    private Long insertModelWithRoute(String modelCode,
                                       String modelName,
                                       String modelType,
                                       String billingType,
@@ -304,6 +315,8 @@ public class AdminModelService {
                 insert into model_routes (model_id, provider_id, provider_token_id, upstream_model, route_type, priority_no, status)
                 values (?, ?, null, ?, 'PRIMARY', 100, 'ACTIVE')
                 """, modelId, providerId, trimToLength(upstreamModel, 128));
+        userModelAccessService.syncPresetGroupsForModel(modelId, modelCode, upstreamModel);
+        return modelId;
     }
 
     private void replaceModelRoutes(Long modelId, Long providerId, String upstreamModel) {

@@ -10,6 +10,8 @@ public record ApiKeyListItemResponse(
         String name,
         String accessKey,
         String status,
+        Long modelGroupId,
+        String modelGroupName,
         BigDecimal totalQuota,
         BigDecimal usedQuota,
         LocalDateTime expiresAt,

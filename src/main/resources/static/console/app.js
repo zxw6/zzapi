@@ -2,6 +2,7 @@
     token: localStorage.getItem("zxw-console-token") || "",
     me: null,
     overview: null,
+    accessSummary: null,
     trend: [],
     users: [],
     keys: [],
@@ -13,6 +14,7 @@
     modelProviderFilter: "ALL",
     selectedPanel: "overview-panel",
     selectedModelId: null,
+    selectedPackageGroupId: null,
     editingUserId: null,
     userDetailMode: "view",
     editingModelId: null
@@ -44,8 +46,8 @@ const panelMeta = {
         subtitle: "配置 OpenAI、Claude 及兼容上游渠道。"
     },
     "models-panel": {
-        title: "模型广场",
-        subtitle: "浏览可用模型、查看定价并选择最合适的能力。"
+        title: "套餐中心",
+        subtitle: "购买分组套餐，并查看各分组对应的模型能力。"
     },
     "logs-panel": {
         title: "请求日志",
@@ -76,8 +78,8 @@ const elements = {
     currentBalance: document.getElementById("current-balance"),
     accountAvatar: document.getElementById("account-avatar"),
     overviewCards: document.getElementById("overview-cards"),
-    profileRoleBadge: document.getElementById("profile-role-badge"),
     profileCardBody: document.getElementById("profile-card-body"),
+    dashboardPackageSelect: document.getElementById("dashboard-package-select"),
     quotaCardTitle: document.getElementById("quota-card-title"),
     quotaStatusBadge: document.getElementById("quota-status-badge"),
     quotaCardBody: document.getElementById("quota-card-body"),
@@ -85,9 +87,7 @@ const elements = {
     dashboardGreetingCopy: document.getElementById("dashboard-greeting-copy"),
     trendSummary: document.getElementById("trend-summary"),
     trendChart: document.getElementById("trend-chart"),
-    overviewRecentRequests: document.getElementById("overview-recent-requests"),
     overviewEndpointUrl: document.getElementById("overview-endpoint-url"),
-    overviewServiceStatus: document.getElementById("overview-service-status"),
     billingSummaryCards: document.getElementById("billing-summary-cards"),
     billingTrendSummary: document.getElementById("billing-trend-summary"),
     billingTrendChart: document.getElementById("billing-trend-chart"),
@@ -102,9 +102,15 @@ const elements = {
     keysPanelTitle: document.getElementById("keys-panel-title"),
     keysPanelSubtitle: document.getElementById("keys-panel-subtitle"),
     toggleKeyCreateButton: document.getElementById("toggle-key-create-button"),
+    closeKeyCreateButton: document.getElementById("close-key-create-button"),
     keyCreateBox: document.getElementById("key-create-box"),
     keyForm: document.getElementById("key-form"),
     keyUserIdRow: document.getElementById("key-user-id-row"),
+    keyGroupHint: document.getElementById("key-group-hint"),
+    keyGroupOptions: document.getElementById("key-group-options"),
+    modelPackageSummary: document.getElementById("model-package-summary"),
+    packageCardGrid: document.getElementById("package-card-grid"),
+    packageBalancePill: document.getElementById("package-balance-pill"),
     plainKeyBox: document.getElementById("plain-key-box"),
     keysList: document.getElementById("keys-list"),
     keysEmpty: document.getElementById("keys-empty"),
@@ -335,8 +341,29 @@ function formatDecimal(value, digits = 4) {
     return toNumber(value).toFixed(digits);
 }
 
+function formatModelRate(value) {
+    const num = toNumber(value);
+    if (num >= 1) {
+        return num.toFixed(2);
+    }
+    if (num >= 0.1) {
+        return num.toFixed(3);
+    }
+    if (num >= 0.01) {
+        return num.toFixed(4);
+    }
+    return num.toFixed(6);
+}
+
 function formatTokens(value) {
     return Math.round(toNumber(value)).toLocaleString("en-US");
+}
+
+function formatTokenBreakdown(promptTokens, completionTokens, totalTokens) {
+    const prompt = formatTokens(promptTokens || 0);
+    const completion = formatTokens(completionTokens || 0);
+    const total = formatTokens(totalTokens || 0);
+    return `${prompt} / ${completion} · ${total}`;
 }
 
 function formatDateTime(value) {
@@ -349,6 +376,59 @@ function formatDateTime(value) {
     }
     const pad = (num) => String(num).padStart(2, "0");
     return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
+function formatQuotaText(used, quota) {
+    return toNumber(quota) > 0 ? `${formatMoney(used)} / ${formatMoney(quota)}` : `${formatMoney(used)} / 未设置`;
+}
+
+function getAccessGroups() {
+    const summary = state.accessSummary || {};
+    return Array.isArray(summary.groups) ? summary.groups : [];
+}
+
+function getActiveAccessGroup() {
+    const summary = state.accessSummary || {};
+    const groups = getAccessGroups();
+    return groups.find((item) => item.active) || groups.find((item) => String(item.id) === String(summary.activeGroupId)) || null;
+}
+
+function getSelectedPackageGroup() {
+    const groups = getAccessGroups();
+    if (!groups.length) {
+        return null;
+    }
+    const explicit = groups.find((item) => String(item.id) === String(state.selectedPackageGroupId));
+    if (explicit) {
+        return explicit;
+    }
+    return groups.find((item) => item.active)
+        || groups.find((item) => item.purchased)
+        || groups[0];
+}
+
+function syncSelectedPackageGroup() {
+    const selected = getSelectedPackageGroup();
+    state.selectedPackageGroupId = selected?.id ?? null;
+}
+
+function getPurchasedGroups() {
+    return getAccessGroups().filter((item) => item.purchased);
+}
+
+function getPackageTotalQuota(group) {
+    if (!group) {
+        return 0;
+    }
+    const monthly = toNumber(group.monthlyQuota);
+    if (monthly > 0) {
+        return monthly;
+    }
+    return toNumber(group.dailyQuota) * Math.max(toNumber(group.packageDays), 0);
+}
+
+function getLast7DaysSpend() {
+    return state.trend.reduce((sum, item) => sum + toNumber(item.userAmount), 0);
 }
 
 function sumValues(list, field) {
@@ -384,6 +464,20 @@ function statusChip(status) {
     const normalized = String(status || "").toUpperCase();
     const className = normalized === "ACTIVE" || normalized === "SUCCESS" ? "active" : "disabled";
     return `<span class="status-chip ${className}">${escapeHtml(statusLabel(normalized))}</span>`;
+}
+
+function accessStatusBadge(status) {
+    const normalized = String(status || "").toUpperCase();
+    if (normalized === "ACTIVE") {
+        return '<span class="status-chip active">使用中</span>';
+    }
+    if (normalized === "EXPIRED") {
+        return '<span class="status-chip disabled">已过期</span>';
+    }
+    if (normalized === "NOT_PURCHASED") {
+        return '<span class="soft-badge">未购买</span>';
+    }
+    return '<span class="soft-badge">待处理</span>';
 }
 
 let toastTimer = null;
@@ -431,8 +525,8 @@ function applyRoleView() {
     elements.adminOnlyBlocks.forEach((node) => node.classList.toggle("hidden", !admin));
     elements.adminOnlyUserDetail.forEach((node) => node.classList.toggle("hidden", !admin));
     elements.keysPanelTitle.textContent = admin ? "API 密钥管理" : "我的 API 密钥";
-    elements.modelsPanelTitle.textContent = "模型广场";
-    elements.modelsMenuLabel.textContent = "模型广场";
+    elements.modelsPanelTitle.textContent = "套餐中心";
+    elements.modelsMenuLabel.textContent = "套餐中心";
     elements.keyUserIdRow.classList.toggle("hidden", !admin);
     const userIdInput = elements.keyForm.elements.userId;
     if (admin) {
@@ -462,11 +556,142 @@ function updateAccountHeader() {
     elements.accountAvatar.textContent = (displayName || "Z").slice(0, 1).toUpperCase();
 }
 
+function populateKeyGroupOptions() {
+    if (!elements.keyForm) {
+        return;
+    }
+    const selectableGroups = getPurchasedGroups().filter((item) => item.active);
+    const currentValue = elements.keyForm.querySelector('input[name="modelGroupId"]:checked')?.value || "";
+    let selectedValue = currentValue;
+
+    if (!elements.keyGroupOptions) {
+        return;
+    }
+
+    if (!selectableGroups.length) {
+        elements.keyGroupHint.textContent = "当前账号还没有已购买且生效中的套餐，请先到套餐中心购买。";
+        elements.keyGroupOptions.innerHTML = `
+            <div class="key-group-empty">
+                <div class="empty-state">暂无可用分组，购买套餐后才可以创建 API Key。</div>
+                <button type="button" class="secondary-button" data-open-panel="models-panel">前往套餐中心</button>
+            </div>
+        `;
+        return;
+    }
+
+    if (!selectedValue) {
+        selectedValue = selectableGroups[0]?.id ? String(selectableGroups[0].id) : "";
+    }
+
+    elements.keyGroupHint.textContent = "请选择一个已购买且未过期的套餐分组来创建 Key。";
+
+    const options = selectableGroups.map((group) => `
+        <label class="key-group-card ${String(selectedValue) === String(group.id) ? "selected" : ""}">
+            <input type="radio" name="modelGroupId" value="${escapeHtml(group.id)}" ${String(selectedValue) === String(group.id) ? "checked" : ""}>
+            <span class="key-group-card-check"></span>
+            <span class="key-group-card-main">
+                <strong>${escapeHtml(group.groupName)}</strong>
+                <small>${escapeHtml(group.remark || `${group.modelCount || 0} 个模型 · ${group.packageDays || 30} 天有效期`)}</small>
+            </span>
+            <span class="key-group-card-pill">${escapeHtml(formatMoney(group.salePrice || 0))}</span>
+        </label>
+    `).join("");
+
+    elements.keyGroupOptions.innerHTML = options;
+}
+
+function renderModelAccessSummary() {
+    const summary = state.accessSummary || {};
+    const groups = getAccessGroups();
+    const purchasedGroups = getPurchasedGroups();
+    const selectedGroup = getSelectedPackageGroup();
+    const detail = state.users.find((item) => item.id === state.me?.userId) || state.users[0] || {};
+
+    if (!elements.modelPackageSummary || !elements.packageCardGrid) {
+        return;
+    }
+
+    if (elements.packageBalancePill) {
+        elements.packageBalancePill.textContent = `当前余额: ${formatMoney(detail.balance ?? state.me?.balance ?? 0)}`;
+    }
+
+    elements.packageCardGrid.innerHTML = groups.length
+        ? groups.map((group, index) => {
+            const isSelected = String(selectedGroup?.id) === String(group.id);
+            return `
+            <article class="package-plan-card ${group.active ? "active" : ""} ${isSelected ? "selected" : ""}" data-select-package="${escapeHtml(group.id)}">
+                <div class="package-plan-badge-row">
+                    <span class="package-plan-badge">${index === 0 ? "推荐" : index === 1 ? "热门" : "分组"}</span>
+                    ${group.active ? '<span class="status-chip active">使用中</span>' : group.purchased ? '<span class="status-chip disabled">已购买</span>' : '<span class="soft-badge">未购买</span>'}
+                </div>
+                <div class="package-plan-name">${escapeHtml(group.groupName)}</div>
+                <div class="package-plan-price">${escapeHtml(formatMoney(group.salePrice || 0))}<small> / ${escapeHtml(group.packageDays || 30)}天</small></div>
+                <ul class="package-plan-features">
+                    <li>每日额度 ${escapeHtml(formatMoney(group.dailyQuota || 0))}</li>
+                    <li>有效期 ${escapeHtml(group.packageDays || 30)} 天</li>
+                    <li>${escapeHtml(group.modelCount || 0)} 个模型可用</li>
+                    <li>${escapeHtml(group.packageStatusText || (group.purchased ? "已购买" : "未购买"))}</li>
+                    <li>${escapeHtml(group.remark || "支持对应分组下的全部模型调用")}</li>
+                </ul>
+                <div class="package-plan-actions">
+                    <button
+                        type="button"
+                        class="primary-button wide-button package-buy-button"
+                        data-purchase-group="${escapeHtml(group.id)}"
+                        ${group.active ? "disabled" : ""}
+                    >
+                        ${group.active ? "套餐使用中" : group.purchased ? "重新购买" : "立即购买"}
+                    </button>
+                    ${isAdmin() ? `<button type="button" class="mini-button danger-button package-delete-button" data-delete-group="${escapeHtml(group.id)}">删除套餐</button>` : ""}
+                </div>
+            </article>
+        `;
+        }).join("")
+        : '<div class="empty-state">当前还没有可购买的套餐分组。</div>';
+
+    if (purchasedGroups.length) {
+        elements.modelPackageSummary.innerHTML = purchasedGroups.map((group) => `
+            <article class="package-summary-card">
+                <div class="package-summary-top">
+                    <div>
+                        <div class="package-summary-name">${escapeHtml(group.groupName)}</div>
+                        <div class="card-caption">${escapeHtml(group.packageStatusText || "已购买")}</div>
+                    </div>
+                    ${accessStatusBadge(group.packageStatus)}
+                </div>
+                <div class="package-summary-meta">
+                    <span>到期 ${escapeHtml(formatDateTime(group.expiresAt))}</span>
+                    <span>今日 ${escapeHtml(formatQuotaText(group.dailyUsed, group.dailyQuota))}</span>
+                    <span>本周 ${escapeHtml(formatQuotaText(group.weeklyUsed, group.weeklyQuota))}</span>
+                </div>
+            </article>
+        `).join("");
+    } else {
+        elements.modelPackageSummary.innerHTML = `
+            <article class="package-summary-card">
+                <div class="package-summary-top">
+                    <div>
+                        <div class="package-summary-name">还没有已购套餐</div>
+                        <div class="card-caption">购买一个分组套餐后，你才能在对应分组下创建 API Key。</div>
+                    </div>
+                    ${accessStatusBadge(summary.packageStatus)}
+                </div>
+            </article>
+        `;
+    }
+
+    if (elements.dashboardPackageSelect) {
+        elements.dashboardPackageSelect.value = selectedGroup ? String(selectedGroup.id) : "";
+    }
+    populateKeyGroupOptions();
+}
+
 function renderAllSections() {
     updateAccountHeader();
     renderOverviewCards();
     renderProfileCard();
     renderQuotaCard();
+    renderModelAccessSummary();
     renderTrend();
     renderUsersTable();
     renderKeysTable();
@@ -481,13 +706,14 @@ function renderAllSections() {
 
 function renderOverviewCards() {
     const overview = state.overview || {};
-    const todayLogs = getLogsForToday();
     const displayName = getCurrentDisplayName();
-    const successRate = getSuccessRate(todayLogs.length ? todayLogs : state.logs);
-    const avgLatency = getAverageLatency(todayLogs.length ? todayLogs : state.logs);
-    const requestDelta = getRequestDeltaText(toNumber(overview.requestCountToday), getAverageDailyRequests());
-    const tokenDelta = getPercentDeltaText(toNumber(overview.totalTokensToday), getAverageDailyTokens());
+    const selectedGroup = getSelectedPackageGroup();
+    const detail = state.users.find((item) => item.id === state.me?.userId) || state.users[0] || {};
     const activeKeys = state.keys.filter((item) => String(item.status || "").toUpperCase() === "ACTIVE").length;
+    const todaySpend = selectedGroup ? toNumber(selectedGroup.dailyUsed) : toNumber(overview.consumeAmountToday);
+    const weekSpend = selectedGroup ? toNumber(selectedGroup.weeklyUsed) : getLast7DaysSpend();
+    const balance = toNumber(detail.balance ?? overview.walletBalanceTotal);
+    const limitLabel = selectedGroup ? formatMoney(selectedGroup.dailyQuota || 0) : "未开通";
 
     if (elements.dashboardGreeting) {
         elements.dashboardGreeting.textContent = isAdmin() ? `你好，${displayName} 管理员` : `你好，${displayName}`;
@@ -505,77 +731,77 @@ function renderOverviewCards() {
     const cards = isAdmin()
         ? [
             {
-                tone: "blue",
-                icon: "钱",
-                value: formatMoney(overview.walletBalanceTotal),
+                tone: "blue soft",
+                icon: "余",
+                value: formatMoney(balance),
                 label: "平台余额",
-                subvalue: `今日消费 ${formatMoney(overview.consumeAmountToday || 0)}`,
-                action: "查看账单",
-                panel: "billing-panel"
+                subvalue: "用户钱包余额汇总",
+                action: "查看账户",
+                panel: "users-panel"
             },
             {
-                tone: "green",
-                icon: "请",
-                value: formatCompactNumber(overview.requestCountToday || 0),
-                label: "今日请求",
-                subvalue: `较近7日 ${requestDelta}`,
-                action: "查看日志",
-                panel: "logs-panel"
+                tone: "orange warm",
+                icon: "今",
+                value: formatMoney(todaySpend),
+                label: "今日消费",
+                subvalue: `当前日额度 ${limitLabel}`,
+                action: "查看套餐",
+                panel: "models-panel"
             },
             {
-                tone: "purple",
-                icon: "量",
-                value: formatCompactNumber(overview.totalTokensToday || 0),
-                label: "今日 Tokens",
-                subvalue: `平均延迟 ${formatLatency(avgLatency)}`,
+                tone: "orange warm",
+                icon: "周",
+                value: formatMoney(weekSpend),
+                label: "本周消费",
+                subvalue: "按当前选择分组统计",
                 action: "用量详情",
                 panel: "billing-panel"
             },
             {
-                tone: "orange",
-                icon: "用",
-                value: `${overview.userCount || 0} / ${overview.apiKeyCount || 0}`,
-                label: "用户 / 密钥",
-                subvalue: `成功率 ${formatPercent(successRate)}`,
-                action: "管理",
-                panel: "users-panel"
+                tone: "cream",
+                icon: "钥",
+                value: `${activeKeys}/${state.keys.length || 0}`,
+                label: "API Keys",
+                subvalue: "当前账号已创建的密钥数量",
+                action: "管理 Key",
+                panel: "keys-panel"
             }
         ]
         : [
             {
-                tone: "blue",
-                icon: "钱",
-                value: formatMoney(overview.walletBalanceTotal),
+                tone: "blue soft",
+                icon: "余",
+                value: formatMoney(balance),
                 label: "账户余额",
-                subvalue: `今日消费 ${formatMoney(overview.consumeAmountToday || 0)}`,
-                action: "查看账单",
-                panel: "billing-panel"
+                subvalue: "余额用于购买套餐，不参与套餐内调用扣费",
+                action: "去买套餐",
+                panel: "models-panel"
             },
             {
-                tone: "green",
-                icon: "请",
-                value: formatCompactNumber(overview.requestCountToday || 0),
-                label: "今日请求",
-                subvalue: `较近7日 ${requestDelta}`,
-                action: "查看日志",
-                panel: "logs-panel"
+                tone: "orange warm",
+                icon: "今",
+                value: formatMoney(todaySpend),
+                label: "今日消费",
+                subvalue: `当前日额度 ${limitLabel}`,
+                action: "查看套餐",
+                panel: "models-panel"
             },
             {
-                tone: "purple",
-                icon: "量",
-                value: formatCompactNumber(overview.totalTokensToday || 0),
-                label: "今日 Tokens",
-                subvalue: `约 ${formatMoney(overview.consumeAmountToday || 0)}`,
+                tone: "orange warm",
+                icon: "周",
+                value: formatMoney(weekSpend),
+                label: "本周消费",
+                subvalue: "按当前选择分组统计",
                 action: "用量详情",
                 panel: "billing-panel"
             },
             {
-                tone: "orange",
+                tone: "cream",
                 icon: "钥",
-                value: `${activeKeys} / ${state.keys.length || 0}`,
-                label: "活跃 Keys",
-                subvalue: `成功率 ${formatPercent(successRate)} · ${formatLatency(avgLatency)}`,
-                action: "管理",
+                value: `${activeKeys}/${state.keys.length || 0}`,
+                label: "API Keys",
+                subvalue: "创建前请先购买套餐并选择对应分组",
+                action: "管理 Key",
                 panel: "keys-panel"
             }
         ];
@@ -594,102 +820,140 @@ function renderOverviewCards() {
 }
 
 function renderProfileCard() {
-    if (!elements.overviewRecentRequests || !elements.overviewEndpointUrl || !elements.overviewServiceStatus) {
+    if (!elements.profileCardBody) {
         return;
     }
+    const detail = state.users.find((item) => item.id === state.me?.userId) || state.users[0] || {};
+    const selectedGroup = getSelectedPackageGroup();
+    const displayName = detail.nickname || detail.username || state.me?.nickname || state.me?.username || "开发者";
+    const email = detail.email || "未设置邮箱";
+    const lastLogin = detail.lastLoginAt ? relativeTimeFromNow(detail.lastLoginAt) : "尚未登录";
+    const createdAt = detail.createdAt ? formatDateTime(detail.createdAt) : "-";
+    const packageLabel = selectedGroup?.groupName || "未购买套餐";
 
-    const recentLogs = state.logs
-        .slice()
-        .sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime())
-        .slice(0, 5);
-
-    elements.overviewRecentRequests.innerHTML = recentLogs.length
-        ? recentLogs.map((log) => `
-            <div class="request-feed-item">
-                <div class="request-feed-status ${log.success ? "ok" : "warn"}">${log.success ? "成" : "异"}</div>
-                <div class="request-feed-body">
-                    <div class="request-feed-title">${escapeHtml(log.modelCode || "未命名模型")}</div>
-                    <div class="request-feed-meta">${escapeHtml(formatTokens(log.totalTokens || 0))} tokens · ${escapeHtml(formatLatency(log.latencyMs || 0))}</div>
-                </div>
-                <div class="request-feed-time">${escapeHtml(relativeTimeFromNow(log.createdAt))}</div>
-            </div>
-        `).join("")
-        : '<div class="empty-state">暂时还没有请求记录。</div>';
-
-    elements.overviewEndpointUrl.textContent = `${window.location.origin}/v1`;
-    renderAgentDebugPreview();
-
-    const providerGroups = Array.from(new Map(
-        state.models.map((model) => [normalizeModelProviderLabel(model), normalizeModelProviderLabel(model)])
-    ).values()).slice(0, 3);
-    const avgLatency = getAverageLatency(state.logs);
-    const statuses = [{ label: "网关服务", value: avgLatency ? `${formatLatency(avgLatency)} · 正常` : "在线", healthy: true }]
-        .concat(providerGroups.map((label) => ({ label, value: "已接入", healthy: true })));
-    elements.overviewServiceStatus.innerHTML = statuses.map((item) => `
-        <div class="service-status-item">
+    elements.profileCardBody.innerHTML = `
+        <div class="dashboard-user-top">
+            <div class="dashboard-user-avatar">${escapeHtml((displayName || "Z").slice(0, 1).toUpperCase())}</div>
             <div>
-                <strong>${escapeHtml(item.label)}</strong>
-                <span>${escapeHtml(item.value)}</span>
+                <div class="dashboard-user-name">${escapeHtml(displayName)}</div>
+                <div class="dashboard-user-email">${escapeHtml(email)}</div>
+                <div class="chip-row">
+                    ${statusChip(detail.status || "ACTIVE")}
+                    <span class="soft-badge">${escapeHtml(roleLabel(detail.roleCode || state.me?.roleCode || "USER"))}</span>
+                </div>
             </div>
-            <em class="${item.healthy ? "ok" : "warn"}">${item.healthy ? "正常" : "异常"}</em>
         </div>
-    `).join("");
+        <div class="dashboard-user-grid">
+            <div class="meta-block">
+                <span>计费优先级</span>
+                <strong>套餐扣费</strong>
+            </div>
+            <div class="meta-block">
+                <span>当前套餐</span>
+                <strong>${escapeHtml(packageLabel)}</strong>
+            </div>
+            <div class="meta-block">
+                <span>注册时间</span>
+                <strong>${escapeHtml(createdAt)}</strong>
+            </div>
+            <div class="meta-block">
+                <span>最后登录</span>
+                <strong>${escapeHtml(lastLogin)}</strong>
+            </div>
+            <div class="meta-block">
+                <span>钱包余额</span>
+                <strong>${escapeHtml(formatMoney(detail.balance ?? state.me?.balance ?? 0))}</strong>
+            </div>
+            <div class="meta-block">
+                <span>接入地址</span>
+                <strong>${escapeHtml(`${window.location.origin}/v1`)}</strong>
+            </div>
+        </div>
+    `;
 }
 
 function renderQuotaCard() {
-    const overview = state.overview || {};
-    if (!elements.billingSummaryCards) {
+    const summary = state.accessSummary || {};
+    const purchasedGroups = getPurchasedGroups();
+    const selectedGroup = getSelectedPackageGroup();
+    if (!elements.quotaCardBody || !elements.dashboardPackageSelect) {
         return;
     }
-    const monthLogs = getLogsForCurrentMonth();
-    const monthAmount = monthLogs.reduce((sum, item) => sum + toNumber(item.userAmount), 0);
-    const monthTokens = monthLogs.reduce((sum, item) => sum + toNumber(item.totalTokens), 0);
-    const monthRequests = monthLogs.length;
-    const monthSuccessRate = getSuccessRate(monthLogs);
 
-    const cards = [
-        {
-            tone: "billing-primary",
-            label: isAdmin() ? "平台余额" : "当前余额",
-            value: formatMoney(overview.walletBalanceTotal),
-            subvalue: `约可消耗 ${formatCompactNumber(Math.max(0, toNumber(overview.walletBalanceTotal) * 600000))} tokens`,
-            cta: isAdmin() ? "查看用户" : "查看账户",
-            panel: "users-panel"
-        },
-        {
-            tone: "billing-light",
-            label: "本月消费",
-            value: formatMoney(monthAmount),
-            subvalue: `今日消费 ${formatMoney(overview.consumeAmountToday || 0)}`,
-            cta: "账单明细",
-            panel: "logs-panel"
-        },
-        {
-            tone: "billing-light",
-            label: "本月 Tokens",
-            value: formatCompactNumber(monthTokens),
-            subvalue: `近 7 天 ${formatCompactNumber(overview.totalTokens7d || 0)}`,
-            cta: "模型分布",
-            panel: "models-panel"
-        },
-        {
-            tone: "billing-light",
-            label: "本月请求",
-            value: formatCompactNumber(monthRequests),
-            subvalue: `成功率 ${formatPercent(monthSuccessRate)}`,
-            cta: "查看日志",
-            panel: "logs-panel"
-        }
-    ];
+    elements.quotaCardTitle.textContent = selectedGroup?.groupName || "套餐额度";
+    elements.quotaStatusBadge.innerHTML = accessStatusBadge(selectedGroup?.packageStatus || summary.packageStatus);
+    elements.dashboardPackageSelect.innerHTML = purchasedGroups.length
+        ? purchasedGroups.map((group) => `
+            <option value="${escapeHtml(group.id)}" ${String(group.id) === String(selectedGroup?.id) ? "selected" : ""}>
+                ${escapeHtml(group.groupName)}${group.active ? "（使用中）" : ""}
+            </option>
+        `).join("")
+        : '<option value="">未购买套餐</option>';
 
-    elements.billingSummaryCards.innerHTML = cards.map((card) => `
-        <article class="billing-summary-card ${escapeHtml(card.tone)}">
-            <div class="billing-summary-label">${escapeHtml(card.label)}</div>
-            <div class="billing-summary-value">${escapeHtml(card.value)}</div>
-            <div class="billing-summary-subvalue">${escapeHtml(card.subvalue)}</div>
-            <button class="billing-summary-button" type="button" data-open-panel="${escapeHtml(card.panel)}">${escapeHtml(card.cta)}</button>
-        </article>
-    `).join("");
+    if (!purchasedGroups.length) {
+        elements.quotaCardBody.innerHTML = `
+            <div class="dashboard-package-empty">
+                <div class="quota-plan">还没有已购套餐</div>
+                <div class="quota-plan-subtitle">先去套餐中心购买一个分组套餐，之后才能在对应分组下创建 API Key。</div>
+                <button type="button" class="primary-button" data-open-panel="models-panel">前往套餐中心</button>
+            </div>
+        `;
+        return;
+    }
+
+    const dailyQuota = toNumber(selectedGroup?.dailyQuota);
+    const weeklyQuota = toNumber(selectedGroup?.weeklyQuota);
+    const monthlyQuota = toNumber(selectedGroup?.monthlyQuota);
+    const dailyUsed = toNumber(selectedGroup?.dailyUsed);
+    const weeklyUsed = toNumber(selectedGroup?.weeklyUsed);
+    const monthlyUsed = toNumber(selectedGroup?.monthlyUsed);
+
+    elements.quotaCardBody.innerHTML = `
+        <div class="quota-headline">
+            <div>
+                <div class="quota-plan">${escapeHtml(selectedGroup?.groupName || "套餐")}</div>
+                <div class="quota-plan-subtitle">
+                    ${escapeHtml(selectedGroup?.packageStatusText || summary.packageStatusText || "未购买套餐")}
+                    ${selectedGroup?.remainingDays != null ? ` · 剩余 ${escapeHtml(selectedGroup.remainingDays)} 天` : ""}
+                </div>
+            </div>
+            <div class="quota-meta">
+                <span>到期时间</span>
+                <strong>${escapeHtml(formatDateTime(selectedGroup?.expiresAt))}</strong>
+            </div>
+        </div>
+        <div class="quota-bars">
+            <div>
+                <div class="bar-label"><span>今日额度</span><strong>${escapeHtml(formatQuotaText(dailyUsed, dailyQuota))}</strong></div>
+                <div class="progress-track"><div class="progress-fill" style="width:${percentage(dailyUsed, dailyQuota)}%"></div></div>
+            </div>
+            <div>
+                <div class="bar-label"><span>每周额度</span><strong>${escapeHtml(formatQuotaText(weeklyUsed, weeklyQuota))}</strong></div>
+                <div class="progress-track"><div class="progress-fill" style="width:${percentage(weeklyUsed, weeklyQuota)}%"></div></div>
+            </div>
+            <div>
+                <div class="bar-label"><span>每月额度</span><strong>${escapeHtml(formatQuotaText(monthlyUsed, monthlyQuota))}</strong></div>
+                <div class="progress-track"><div class="progress-fill" style="width:${percentage(monthlyUsed, monthlyQuota)}%"></div></div>
+            </div>
+        </div>
+        <div class="quota-footer">
+            <div class="quota-meta">
+                <span>购买价格</span>
+                <strong>${escapeHtml(formatMoney(selectedGroup?.salePrice || 0))}</strong>
+            </div>
+            <div class="quota-meta">
+                <span>分组模型</span>
+                <strong>${escapeHtml(selectedGroup?.modelCount || 0)} 个</strong>
+            </div>
+        </div>
+    `;
+}
+
+function renderPackageSelectionViews() {
+    renderOverviewCards();
+    renderProfileCard();
+    renderQuotaCard();
+    renderModelAccessSummary();
 }
 
 function renderTrend() {
@@ -759,7 +1023,7 @@ function formatPercent(value, digits = 1) {
 }
 
 function formatLatency(value) {
-    return `${Math.round(toNumber(value))}ms`;
+    return `${(toNumber(value) / 1000).toFixed(1)}s`;
 }
 
 function getCurrentDisplayName() {
@@ -1084,6 +1348,7 @@ function closeUserDetailModal() {
 
 function renderKeysTable() {
     elements.keysPanelSubtitle.textContent = `已创建 ${state.keys.length} 个接口密钥`;
+    renderModelAccessSummary();
     elements.keysEmpty.classList.toggle("hidden", state.keys.length > 0);
     if (!state.keys.length) {
         elements.keysList.innerHTML = "";
@@ -1101,12 +1366,11 @@ function renderKeysTable() {
                 ${statusChip(key.status)}
             </div>
             <div class="key-card-grid">
-                <div class="key-card-meta"><div class="key-card-meta-icon">$</div><div><div class="card-caption">总额度</div><div class="key-card-meta-value">${escapeHtml(formatDecimal(key.totalQuota, 4))}</div></div></div>
-                <div class="key-card-meta"><div class="key-card-meta-icon">U</div><div><div class="card-caption">已用额度</div><div class="key-card-meta-value">${escapeHtml(formatDecimal(key.usedQuota, 4))}</div></div></div>
                 <div class="key-card-meta"><div class="key-card-meta-icon">T</div><div><div class="card-caption">创建时间</div><div class="key-card-meta-value">${escapeHtml(formatDateTime(key.createdAt))}</div></div></div>
                 <div class="key-card-meta"><div class="key-card-meta-icon">E</div><div><div class="card-caption">过期时间</div><div class="key-card-meta-value">${escapeHtml(formatDateTime(key.expiresAt))}</div></div></div>
             </div>
             <div class="key-card-tags">
+                ${key.modelGroupName ? `<span class="key-tag">分组 ${escapeHtml(key.modelGroupName)}</span>` : ""}
                 <span class="key-tag">最近使用 ${escapeHtml(formatDateTime(key.lastUsedAt))}</span>
             </div>
             <div class="key-card-actions">
@@ -1121,8 +1385,6 @@ function renderKeysTable() {
             <td>${escapeHtml(key.name)}</td>
             <td><code>${escapeHtml(key.accessKey)}</code></td>
             <td>${statusChip(key.status)}</td>
-            <td>${escapeHtml(formatDecimal(key.usedQuota, 4))}</td>
-            <td>${escapeHtml(formatDecimal(key.totalQuota, 4))}</td>
             <td><button class="mini-button" type="button" data-key-toggle="${key.id}" data-next-status="${key.status === "ACTIVE" ? "DISABLED" : "ACTIVE"}">${key.status === "ACTIVE" ? "禁用" : "启用"}</button></td>
         </tr>
     `).join("");
@@ -1276,11 +1538,15 @@ function renderSelectedModelDetail(model) {
     elements.modelDetailPricing.innerHTML = `
         <div class="detail-price-box">
             <span>输入 Token</span>
-            <strong>$${escapeHtml(formatDecimal(model.promptPrice, 6))} / 1M</strong>
+            <strong>$${escapeHtml(formatModelRate(model.promptPrice))} / 1M</strong>
         </div>
         <div class="detail-price-box">
             <span>输出 Token</span>
-            <strong>$${escapeHtml(formatDecimal(model.completionPrice, 6))} / 1M</strong>
+            <strong>$${escapeHtml(formatModelRate(model.completionPrice))} / 1M</strong>
+        </div>
+        <div class="detail-price-box">
+            <span>单次最低扣费</span>
+            <strong>$${escapeHtml(formatModelRate(model.requestPrice || 0.07))}</strong>
         </div>
         <div class="detail-price-box">
             <span>倍率</span>
@@ -1333,8 +1599,9 @@ function renderModelCards() {
                     </div>
                 </div>
                 <div class="model-price-grid">
-                    <div class="model-price-box"><span>输入</span><strong>$${escapeHtml(formatDecimal(model.promptPrice, 6))}/M</strong></div>
-                    <div class="model-price-box"><span>输出</span><strong>$${escapeHtml(formatDecimal(model.completionPrice, 6))}/M</strong></div>
+                    <div class="model-price-box"><span>输入</span><strong>$${escapeHtml(formatModelRate(model.promptPrice))}/M</strong></div>
+                    <div class="model-price-box"><span>输出</span><strong>$${escapeHtml(formatModelRate(model.completionPrice))}/M</strong></div>
+                    <div class="model-price-box"><span>最低扣费</span><strong>$${escapeHtml(formatModelRate(model.requestPrice || 0.07))}</strong></div>
                 </div>
                 <div class="model-price-foot">
                     <span>倍率 ${escapeHtml(formatDecimal(model.multiplier, 2))}x</span>
@@ -1358,15 +1625,16 @@ function renderModelsTable() {
         return;
     }
     if (!state.models.length) {
-        elements.modelsTable.innerHTML = '<tr><td colspan="10" class="empty-state">暂无模型配置。</td></tr>';
+        elements.modelsTable.innerHTML = '<tr><td colspan="11" class="empty-state">暂无模型配置。</td></tr>';
         return;
     }
     elements.modelsTable.innerHTML = state.models.map((model) => `
         <tr>
             <td>${escapeHtml(model.id)}</td>
             <td>${escapeHtml(model.modelCode)}</td>
-            <td>${escapeHtml(formatDecimal(model.promptPrice, 6))}</td>
-            <td>${escapeHtml(formatDecimal(model.completionPrice, 6))}</td>
+            <td>${escapeHtml(formatModelRate(model.promptPrice))}</td>
+            <td>${escapeHtml(formatModelRate(model.completionPrice))}</td>
+            <td>${escapeHtml(formatModelRate(model.requestPrice || 0.07))}</td>
             <td>${escapeHtml(formatDecimal(model.multiplier, 4))}</td>
             <td>${escapeHtml(model.modelType || "-")}</td>
             <td>${escapeHtml(model.providerName || "-")}</td>
@@ -1422,8 +1690,8 @@ function renderLogsTable() {
             <td>${escapeHtml(log.requestId)}</td>
             <td>${escapeHtml(log.username || "-")}</td>
             <td>${escapeHtml(log.modelCode || "-")}</td>
-            <td>${escapeHtml(log.latencyMs || 0)} ms</td>
-            <td>${escapeHtml(log.totalTokens || 0)}</td>
+            <td>${escapeHtml(formatLatency(log.latencyMs || 0))}</td>
+            <td>${escapeHtml(formatTokenBreakdown(log.promptTokens, log.completionTokens, log.totalTokens))}</td>
             <td>${escapeHtml(formatMoney(log.userAmount || 0))}</td>
             <td>${statusChip(log.success ? "SUCCESS" : `HTTP ${log.statusCode || 0}`)}</td>
             <td>${escapeHtml(formatDateTime(log.createdAt))}</td>
@@ -1454,6 +1722,14 @@ async function loadOverview(render = true) {
     }
 }
 
+async function loadAccessSummary(render = true) {
+    state.accessSummary = await fetchJson("/admin/model-access/summary");
+    syncSelectedPackageGroup();
+    if (render) {
+        renderPackageSelectionViews();
+    }
+}
+
 async function loadUsers(render = true) {
     state.users = await fetchJson("/admin/users");
     if (render) {
@@ -1469,7 +1745,7 @@ async function loadKeys(render = true) {
     if (render) {
         renderKeysTable();
         renderOverviewCards();
-        renderQuotaCard();
+        populateKeyGroupOptions();
     }
 }
 
@@ -1492,6 +1768,7 @@ async function loadProviders(render = true) {
 async function loadModels(render = true) {
     state.models = await fetchJson("/admin/models");
     if (render) {
+        renderModelAccessSummary();
         renderModelProviderFilters();
         renderModelCards();
         renderModelsTable();
@@ -1511,7 +1788,7 @@ async function loadLogs(render = true) {
 }
 
 async function loadAllData() {
-    const loaders = [loadOverview(false), loadUsers(false), loadKeys(false), loadModels(false), loadLogs(false)];
+    const loaders = [loadOverview(false), loadAccessSummary(false), loadUsers(false), loadKeys(false), loadModels(false), loadLogs(false)];
     if (isAdmin()) {
         loaders.push(loadProviders(false));
     } else {
@@ -1522,12 +1799,14 @@ async function loadAllData() {
     if (failed) {
         throw failed.reason;
     }
+    syncSelectedPackageGroup();
     renderAllSections();
 }
 
 function resetRuntimeState() {
     state.me = null;
     state.overview = null;
+    state.accessSummary = null;
     state.trend = [];
     state.users = [];
     state.keys = [];
@@ -1539,7 +1818,9 @@ function resetRuntimeState() {
     state.modelProviderFilter = "ALL";
     state.selectedPanel = "overview-panel";
     state.selectedModelId = null;
+    state.selectedPackageGroupId = null;
     state.editingUserId = null;
+    state.editingModelId = null;
 }
 
 function logout() {
@@ -1690,20 +1971,75 @@ async function deleteUser(id, username) {
     showToast("用户已删除");
 }
 
-function toggleKeyCreateBox() {
-    elements.keyCreateBox.classList.toggle("hidden");
+function toggleKeyCreateBox(forceVisible) {
+    const shouldShow = typeof forceVisible === "boolean"
+        ? forceVisible
+        : elements.keyCreateBox.classList.contains("hidden");
+    elements.keyCreateBox.classList.toggle("hidden", !shouldShow);
+    if (!shouldShow) {
+        elements.keyForm.reset();
+        elements.plainKeyBox.classList.add("hidden");
+        elements.plainKeyBox.textContent = "";
+    }
+    if (!isAdmin()) {
+        elements.keyForm.elements.userId.value = state.me?.userId || "";
+    }
+    populateKeyGroupOptions();
+    if (shouldShow) {
+        elements.keyCreateBox.scrollIntoView({ behavior: "auto", block: "start" });
+    }
+}
+
+async function purchaseModelGroup(groupId) {
+    const groups = getAccessGroups();
+    const targetGroup = groups.find((item) => String(item.id) === String(groupId));
+    if (!targetGroup) {
+        throw new Error("暂未找到对应套餐分组");
+    }
+    await fetchJson("/admin/model-access/purchase", {
+        method: "POST",
+        body: { groupId: targetGroup.id }
+    });
+    state.selectedPackageGroupId = targetGroup.id;
+    await Promise.all([loadAccessSummary(), loadUsers(), loadOverview()]);
+    showToast(`${targetGroup.groupName} 购买成功`);
+}
+
+async function deleteModelGroup(groupId) {
+    const groups = getAccessGroups();
+    const targetGroup = groups.find((item) => String(item.id) === String(groupId));
+    if (!targetGroup) {
+        throw new Error("暂未找到对应套餐分组");
+    }
+    const confirmed = window.confirm(`确认删除套餐 ${targetGroup.groupName} 吗？删除后该套餐将不再展示和售卖。`);
+    if (!confirmed) {
+        return;
+    }
+    await fetchJson(`/admin/model-access/${targetGroup.id}`, {
+        method: "DELETE"
+    });
+    if (String(state.selectedPackageGroupId) === String(targetGroup.id)) {
+        state.selectedPackageGroupId = null;
+    }
+    await Promise.all([loadAccessSummary(), loadModels(), loadOverview()]);
+    showToast(`${targetGroup.groupName} 已删除`);
 }
 
 async function onCreateKey(event) {
     event.preventDefault();
     const formData = new FormData(elements.keyForm);
+    const rawModelGroupId = String(formData.get("modelGroupId") || "").trim();
+    const modelGroupId = rawModelGroupId ? toNumber(rawModelGroupId) : null;
+    if (!modelGroupId) {
+        throw new Error("请先选择已购买且有效的套餐分组");
+    }
     const data = await fetchJson("/admin/api-keys", {
         method: "POST",
         body: {
             userId: isAdmin() ? toNumber(formData.get("userId")) : state.me.userId,
             name: String(formData.get("name") || "").trim(),
-            totalQuota: toNumber(formData.get("totalQuota")),
             expiresAt: String(formData.get("expiresAt") || "").trim(),
+            modelGroupId,
             remark: String(formData.get("remark") || "").trim()
         }
     });
@@ -1711,11 +2047,11 @@ async function onCreateKey(event) {
     elements.plainKeyBox.innerHTML = `新密钥已创建：<code>${escapeHtml(data.plainTextKey)}</code>`;
     elements.plainKeyBox.classList.remove("hidden");
     elements.keyForm.reset();
-    elements.keyForm.elements.totalQuota.value = "0";
     if (!isAdmin()) {
         elements.keyForm.elements.userId.value = state.me.userId;
     }
-    await Promise.all([loadKeys(), loadOverview()]);
+    await Promise.all([loadKeys(), loadOverview(), loadAccessSummary()]);
+    populateKeyGroupOptions();
     showToast("API 密钥创建成功");
 }
 
@@ -1770,6 +2106,7 @@ async function onCreateModel(event) {
         billingType: String(formData.get("billingType") || "TOKEN").trim(),
         promptPrice: toNumber(formData.get("promptPrice")),
         completionPrice: toNumber(formData.get("completionPrice")),
+        requestPrice: toNumber(formData.get("requestPrice")) || 0.07,
         multiplier: toNumber(formData.get("multiplier")) || 1,
         isPublic: String(formData.get("isPublic")) === "true",
         providerId: toNumber(formData.get("providerId")),
@@ -1790,7 +2127,6 @@ async function onCreateModel(event) {
         body: {
             modelCode: String(formData.get("modelCode") || "").trim(),
             ...payload,
-            requestPrice: 0,
             imagePrice: 0,
         }
     });
@@ -1809,6 +2145,7 @@ function resetModelForm() {
     elements.modelForm.elements.billingType.value = "TOKEN";
     elements.modelForm.elements.promptPrice.value = "0";
     elements.modelForm.elements.completionPrice.value = "0";
+    elements.modelForm.elements.requestPrice.value = "0.07";
     elements.modelForm.elements.multiplier.value = "1";
     elements.modelForm.elements.isPublic.value = "true";
     elements.modelFormTitle.textContent = "手动创建模型";
@@ -1831,6 +2168,7 @@ function startModelEdit(id) {
     elements.modelForm.elements.billingType.value = model.billingType || "TOKEN";
     elements.modelForm.elements.promptPrice.value = formatDecimal(model.promptPrice, 6);
     elements.modelForm.elements.completionPrice.value = formatDecimal(model.completionPrice, 6);
+    elements.modelForm.elements.requestPrice.value = formatDecimal(model.requestPrice || 0.07, 6);
     elements.modelForm.elements.multiplier.value = formatDecimal(model.multiplier, 4);
     elements.modelForm.elements.isPublic.value = String(model.isPublic) === "1" ? "true" : "false";
     elements.modelForm.elements.providerId.value = model.providerId || "";
@@ -1916,11 +2254,11 @@ async function refreshSection(section) {
     if (section === "users") {
         await loadUsers();
     } else if (section === "keys") {
-        await loadKeys();
+        await Promise.all([loadKeys(), loadAccessSummary()]);
     } else if (section === "providers") {
         await loadProviders();
     } else if (section === "models") {
-        await loadModels();
+        await Promise.all([loadModels(), loadAccessSummary()]);
     } else if (section === "logs") {
         await loadLogs();
     }
@@ -1965,11 +2303,43 @@ function bindEvents() {
     elements.closeUserDetailButton.addEventListener("click", closeUserDetailModal);
     document.querySelector('[data-close-user-detail="true"]').addEventListener("click", closeUserDetailModal);
     elements.toggleKeyCreateButton.addEventListener("click", toggleKeyCreateBox);
+    elements.closeKeyCreateButton?.addEventListener("click", () => toggleKeyCreateBox(false));
     elements.fetchUpstreamModelsButton.addEventListener("click", handleAction(fetchUpstreamModels));
     elements.toggleAllUpstreamModelsButton.addEventListener("click", toggleAllUpstreamModels);
     elements.importUpstreamModelsButton.addEventListener("click", handleAction(importUpstreamModels));
     elements.menuItems.forEach((item) => item.addEventListener("click", () => selectPanel(item.dataset.panel)));
     elements.refreshButtons.forEach((button) => button.addEventListener("click", handleAction(() => refreshSection(button.dataset.refresh))));
+
+    elements.dashboardPackageSelect?.addEventListener("change", () => {
+        state.selectedPackageGroupId = elements.dashboardPackageSelect.value || null;
+        renderPackageSelectionViews();
+    });
+
+    elements.keyGroupOptions?.addEventListener("change", (event) => {
+        const target = event.target.closest('input[name="modelGroupId"]');
+        if (!target) {
+            return;
+        }
+        populateKeyGroupOptions();
+    });
+
+    elements.packageCardGrid?.addEventListener("click", handleAction(async (event) => {
+        const purchaseButton = event.target.closest("button[data-purchase-group]");
+        if (purchaseButton) {
+            await purchaseModelGroup(purchaseButton.dataset.purchaseGroup);
+            return;
+        }
+        const deleteButton = event.target.closest("button[data-delete-group]");
+        if (deleteButton) {
+            await deleteModelGroup(deleteButton.dataset.deleteGroup);
+            return;
+        }
+        const card = event.target.closest("[data-select-package]");
+        if (card) {
+            state.selectedPackageGroupId = card.dataset.selectPackage;
+            renderPackageSelectionViews();
+        }
+    }));
 
     elements.usersTable.addEventListener("click", handleAction(async (event) => {
         const button = event.target.closest("button");

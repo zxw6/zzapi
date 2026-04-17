@@ -11,6 +11,7 @@ public record ModelListItemResponse(
         String billingType,
         BigDecimal promptPrice,
         BigDecimal completionPrice,
+        BigDecimal requestPrice,
         BigDecimal multiplier,
         Integer isPublic,
         String status,

@@ -23,7 +23,8 @@ public class AdminRequestLogService {
         if (!AdminContext.isAdmin()) {
             return jdbcTemplate.query("""
                     select l.request_id, u.username, l.model_code, l.upstream_model, l.status_code,
-                           l.latency_ms, l.total_tokens, l.user_amount, l.cost_amount, l.success, l.created_at
+                           l.latency_ms, l.prompt_tokens, l.completion_tokens, l.total_tokens,
+                           l.user_amount, l.cost_amount, l.success, l.created_at
                     from request_logs l
                     left join users u on u.id = l.user_id
                     where l.user_id = ?
@@ -36,6 +37,8 @@ public class AdminRequestLogService {
                     rs.getString("upstream_model"),
                     rs.getInt("status_code"),
                     rs.getInt("latency_ms"),
+                    rs.getInt("prompt_tokens"),
+                    rs.getInt("completion_tokens"),
                     rs.getInt("total_tokens"),
                     rs.getBigDecimal("user_amount"),
                     rs.getBigDecimal("cost_amount"),
@@ -46,7 +49,8 @@ public class AdminRequestLogService {
 
         return jdbcTemplate.query("""
                 select l.request_id, u.username, l.model_code, l.upstream_model, l.status_code,
-                       l.latency_ms, l.total_tokens, l.user_amount, l.cost_amount, l.success, l.created_at
+                       l.latency_ms, l.prompt_tokens, l.completion_tokens, l.total_tokens,
+                       l.user_amount, l.cost_amount, l.success, l.created_at
                 from request_logs l
                 left join users u on u.id = l.user_id
                 order by l.id desc
@@ -58,6 +62,8 @@ public class AdminRequestLogService {
                 rs.getString("upstream_model"),
                 rs.getInt("status_code"),
                 rs.getInt("latency_ms"),
+                rs.getInt("prompt_tokens"),
+                rs.getInt("completion_tokens"),
                 rs.getInt("total_tokens"),
                 rs.getBigDecimal("user_amount"),
                 rs.getBigDecimal("cost_amount"),

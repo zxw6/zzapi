@@ -10,6 +10,8 @@ public record RequestLogItemResponse(
         String upstreamModel,
         Integer statusCode,
         Integer latencyMs,
+        Integer promptTokens,
+        Integer completionTokens,
         Integer totalTokens,
         BigDecimal userAmount,
         BigDecimal costAmount,

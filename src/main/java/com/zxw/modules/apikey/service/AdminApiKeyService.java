@@ -4,6 +4,7 @@ import com.zxw.common.exception.BusinessException;
 import com.zxw.common.security.AdminContext;
 import com.zxw.common.security.JwtUser;
 import com.zxw.common.security.PasswordService;
+import com.zxw.modules.access.service.UserModelAccessService;
 import com.zxw.modules.apikey.dto.ApiKeyCreateRequest;
 import com.zxw.modules.apikey.dto.ApiKeyCreateResponse;
 import com.zxw.modules.apikey.dto.ApiKeyListItemResponse;
@@ -26,30 +27,47 @@ public class AdminApiKeyService {
 
     private final JdbcTemplate jdbcTemplate;
     private final PasswordService passwordService;
+    private final UserModelAccessService userModelAccessService;
     private final SecureRandom secureRandom = new SecureRandom();
 
-    public AdminApiKeyService(JdbcTemplate jdbcTemplate, PasswordService passwordService) {
+    public AdminApiKeyService(JdbcTemplate jdbcTemplate,
+                              PasswordService passwordService,
+                              UserModelAccessService userModelAccessService) {
         this.jdbcTemplate = jdbcTemplate;
         this.passwordService = passwordService;
+        this.userModelAccessService = userModelAccessService;
     }
 
     public List<ApiKeyListItemResponse> listApiKeys() {
+        userModelAccessService.initializeDefaults();
+
         JwtUser currentUser = AdminContext.require();
+        boolean groupSchemaReady = hasColumn("api_keys", "model_group_id") && hasTable("model_groups");
+        String groupSelect = groupSchemaReady
+                ? "g.id as model_group_id, g.group_name as model_group_name,"
+                : "null as model_group_id, null as model_group_name,";
+        String groupJoin = groupSchemaReady
+                ? "left join model_groups g on g.id = k.model_group_id"
+                : "";
         if (!AdminContext.isAdmin()) {
             return jdbcTemplate.query("""
                     select k.id, k.user_id, u.username, k.name, k.access_key, k.status,
+                           %s
                            k.total_quota, k.used_quota, k.expires_at, k.last_used_at, k.created_at
                     from api_keys k
                     join users u on u.id = k.user_id
+                    %s
                     where k.deleted = 0 and k.user_id = ?
                     order by k.id desc
-                    """, (rs, rowNum) -> new ApiKeyListItemResponse(
+                    """.formatted(groupSelect, groupJoin), (rs, rowNum) -> new ApiKeyListItemResponse(
                     rs.getLong("id"),
                     rs.getLong("user_id"),
                     rs.getString("username"),
                     rs.getString("name"),
                     rs.getString("access_key"),
                     rs.getString("status"),
+                    rs.getObject("model_group_id") == null ? null : rs.getLong("model_group_id"),
+                    rs.getString("model_group_name"),
                     rs.getBigDecimal("total_quota"),
                     rs.getBigDecimal("used_quota"),
                     toLocalDateTime(rs.getTimestamp("expires_at")),
@@ -60,18 +78,22 @@ public class AdminApiKeyService {
 
         return jdbcTemplate.query("""
                 select k.id, k.user_id, u.username, k.name, k.access_key, k.status,
+                       %s
                        k.total_quota, k.used_quota, k.expires_at, k.last_used_at, k.created_at
                 from api_keys k
                 join users u on u.id = k.user_id
+                %s
                 where k.deleted = 0
                 order by k.id desc
-                """, (rs, rowNum) -> new ApiKeyListItemResponse(
+                """.formatted(groupSelect, groupJoin), (rs, rowNum) -> new ApiKeyListItemResponse(
                 rs.getLong("id"),
                 rs.getLong("user_id"),
                 rs.getString("username"),
                 rs.getString("name"),
                 rs.getString("access_key"),
                 rs.getString("status"),
+                rs.getObject("model_group_id") == null ? null : rs.getLong("model_group_id"),
+                rs.getString("model_group_name"),
                 rs.getBigDecimal("total_quota"),
                 rs.getBigDecimal("used_quota"),
                 toLocalDateTime(rs.getTimestamp("expires_at")),
@@ -82,6 +104,8 @@ public class AdminApiKeyService {
 
     @Transactional
     public ApiKeyCreateResponse create(ApiKeyCreateRequest request) {
+        userModelAccessService.initializeDefaults();
+
         JwtUser currentUser = AdminContext.require();
         Long targetUserId = AdminContext.isAdmin() ? request.userId() : currentUser.userId();
 
@@ -91,24 +115,26 @@ public class AdminApiKeyService {
                 targetUserId
         );
         if (userExists == null || userExists == 0) {
-            throw new BusinessException("User does not exist");
+            throw new BusinessException("用户不存在");
         }
+        userModelAccessService.validateApiKeyCreationAccess(targetUserId, request.modelGroupId());
+        Long resolvedModelGroupId = userModelAccessService.resolveApiKeyModelGroupId(targetUserId, request.modelGroupId());
 
         String plainTextKey = generatePlainTextKey();
         String accessKey = plainTextKey.substring(0, ACCESS_KEY_PREFIX_LENGTH);
-        BigDecimal totalQuota = request.totalQuota() == null ? BigDecimal.ZERO : request.totalQuota();
         LocalDateTime expiresAt = parseDateTime(request.expiresAt());
 
         jdbcTemplate.update("""
-                insert into api_keys (user_id, name, access_key, secret_hash, status, expires_at, total_quota, used_quota, remark)
-                values (?, ?, ?, ?, 'ACTIVE', ?, ?, 0, ?)
+                insert into api_keys (user_id, name, access_key, secret_hash, status, expires_at, model_group_id, total_quota, used_quota, remark)
+                values (?, ?, ?, ?, 'ACTIVE', ?, ?, ?, 0, ?)
                 """,
                 targetUserId,
                 request.name(),
                 accessKey,
                 passwordService.encode(plainTextKey),
                 expiresAt,
-                totalQuota,
+                resolvedModelGroupId,
+                BigDecimal.ZERO,
                 request.remark()
         );
 
@@ -138,7 +164,7 @@ public class AdminApiKeyService {
                     """, status, id, currentUser.userId());
         }
         if (updated == 0) {
-            throw new BusinessException("API key does not exist");
+            throw new BusinessException("API Key 不存在");
         }
     }
 
@@ -164,5 +190,26 @@ public class AdminApiKeyService {
 
     private LocalDateTime toLocalDateTime(Timestamp timestamp) {
         return timestamp == null ? null : timestamp.toLocalDateTime();
+    }
+
+    private boolean hasTable(String tableName) {
+        Integer count = jdbcTemplate.queryForObject("""
+                select count(*)
+                from information_schema.tables
+                where table_schema = database()
+                  and table_name = ?
+                """, Integer.class, tableName);
+        return count != null && count > 0;
+    }
+
+    private boolean hasColumn(String tableName, String columnName) {
+        Integer count = jdbcTemplate.queryForObject("""
+                select count(*)
+                from information_schema.columns
+                where table_schema = database()
+                  and table_name = ?
+                  and column_name = ?
+                """, Integer.class, tableName, columnName);
+        return count != null && count > 0;
     }
 }

@@ -2,6 +2,7 @@ package com.zxw.modules.apikey.service;
 
 import com.zxw.common.exception.BusinessException;
 import com.zxw.common.security.PasswordService;
+import com.zxw.modules.access.service.UserModelAccessService;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
@@ -14,23 +15,32 @@ public class ApiKeyAuthService {
 
     private final JdbcTemplate jdbcTemplate;
     private final PasswordService passwordService;
+    private final UserModelAccessService userModelAccessService;
 
-    public ApiKeyAuthService(JdbcTemplate jdbcTemplate, PasswordService passwordService) {
+    public ApiKeyAuthService(JdbcTemplate jdbcTemplate,
+                             PasswordService passwordService,
+                             UserModelAccessService userModelAccessService) {
         this.jdbcTemplate = jdbcTemplate;
         this.passwordService = passwordService;
+        this.userModelAccessService = userModelAccessService;
     }
 
     public AuthenticatedApiKey authenticate(String bearerToken) {
+        userModelAccessService.initializeDefaults();
+
         if (bearerToken == null || bearerToken.isBlank() || bearerToken.length() < AdminApiKeyService.ACCESS_KEY_PREFIX_LENGTH) {
             throw new BusinessException(401, "API Key 无效");
         }
         String accessKey = bearerToken.substring(0, AdminApiKeyService.ACCESS_KEY_PREFIX_LENGTH);
         List<AuthenticatedApiKey> items = jdbcTemplate.query("""
                 select k.id, k.user_id, k.secret_hash, k.status, k.total_quota, k.used_quota, k.expires_at,
-                       u.username, u.role_code, coalesce(w.balance, 0) as balance
+                       k.model_group_id, g.group_code, g.group_name,
+                       u.username, u.role_code, u.package_restriction_enabled,
+                       coalesce(w.balance, 0) as balance
                 from api_keys k
                 join users u on u.id = k.user_id and u.deleted = 0
                 left join wallets w on w.user_id = u.id
+                left join model_groups g on g.id = k.model_group_id
                 where k.access_key = ? and k.deleted = 0
                 """, (rs, rowNum) -> new AuthenticatedApiKey(
                 rs.getLong("id"),
@@ -39,10 +49,14 @@ public class ApiKeyAuthService {
                 rs.getString("role_code"),
                 rs.getString("secret_hash"),
                 rs.getString("status"),
+                rs.getObject("model_group_id") == null ? null : rs.getLong("model_group_id"),
+                rs.getString("group_code"),
+                rs.getString("group_name"),
                 rs.getBigDecimal("total_quota"),
                 rs.getBigDecimal("used_quota"),
                 rs.getTimestamp("expires_at") == null ? null : rs.getTimestamp("expires_at").toLocalDateTime(),
-                rs.getBigDecimal("balance")
+                rs.getBigDecimal("balance"),
+                rs.getInt("package_restriction_enabled") == 1
         ), accessKey);
 
         for (AuthenticatedApiKey item : items) {
@@ -70,10 +84,14 @@ public class ApiKeyAuthService {
             String roleCode,
             String secretHash,
             String status,
+            Long modelGroupId,
+            String modelGroupCode,
+            String modelGroupName,
             BigDecimal totalQuota,
             BigDecimal usedQuota,
             LocalDateTime expiresAt,
-            BigDecimal balance
+            BigDecimal balance,
+            boolean packageRestrictionEnabled
     ) {
     }
 }

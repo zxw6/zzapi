@@ -11,10 +11,12 @@ public record ModelUpdateRequest(
         String modelName,
         String modelType,
         String billingType,
-        @DecimalMin(value = "0.000000", message = "prompt 单价不能小于 0")
+        @DecimalMin(value = "0.000000", message = "输入价格不能小于 0")
         BigDecimal promptPrice,
-        @DecimalMin(value = "0.000000", message = "completion 单价不能小于 0")
+        @DecimalMin(value = "0.000000", message = "输出价格不能小于 0")
         BigDecimal completionPrice,
+        @DecimalMin(value = "0.000000", message = "单次最低扣费不能小于 0")
+        BigDecimal requestPrice,
         @DecimalMin(value = "0.0000", message = "倍率不能小于 0")
         BigDecimal multiplier,
         Boolean isPublic,

@@ -66,10 +66,10 @@ public class AdminAuthService {
     @Transactional
     public AdminLoginResponse register(UserRegisterRequest request) {
         if (request.email() == null || request.email().isBlank()) {
-            throw new BusinessException(400, "QQ邮箱不能为空");
+            throw new BusinessException(400, "QQ 邮箱不能为空");
         }
         if (!request.email().toLowerCase().endsWith("@qq.com")) {
-            throw new BusinessException(400, "请使用QQ邮箱注册");
+            throw new BusinessException(400, "请使用 QQ 邮箱注册");
         }
 
         Integer usernameExists = jdbcTemplate.queryForObject(
@@ -78,7 +78,7 @@ public class AdminAuthService {
                 request.username()
         );
         if (usernameExists != null && usernameExists > 0) {
-            throw new BusinessException(400, "Username already exists");
+            throw new BusinessException(400, "用户名已存在");
         }
 
         Integer emailExists = jdbcTemplate.queryForObject(
@@ -87,12 +87,12 @@ public class AdminAuthService {
                 request.email()
         );
         if (emailExists != null && emailExists > 0) {
-            throw new BusinessException(400, "QQ邮箱已存在");
+            throw new BusinessException(400, "QQ 邮箱已存在");
         }
 
         jdbcTemplate.update("""
-                insert into users (username, password_hash, nickname, email, phone, role_code, status)
-                values (?, ?, ?, ?, ?, 'USER', 'ACTIVE')
+                insert into users (username, password_hash, nickname, email, phone, role_code, status, package_restriction_enabled)
+                values (?, ?, ?, ?, ?, 'USER', 'ACTIVE', 1)
                 """,
                 request.username(),
                 passwordService.encode(request.password()),
@@ -131,7 +131,7 @@ public class AdminAuthService {
         }
         return jdbcTemplate.query("""
                 select u.id, u.username, u.nickname, u.role_code, coalesce(w.balance, 0) as balance
-                from users
+                from users u
                 left join wallets w on w.user_id = u.id
                 where u.id = ? and u.deleted = 0
                 """, rs -> rs.next() ? new AdminLoginResponse(

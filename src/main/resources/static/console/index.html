@@ -201,7 +201,7 @@
             </button>
             <button class="menu-item" data-panel="models-panel">
                 <span class="menu-icon">M</span>
-                <span id="models-menu-label">模型价格</span>
+                <span id="models-menu-label">套餐中心</span>
             </button>
             <button class="menu-item" data-panel="docs-panel">
                 <span class="menu-icon">H</span>
@@ -250,12 +250,42 @@
                     <h2 id="dashboard-greeting">你好，欢迎回来</h2>
                     <p id="dashboard-greeting-copy">以下是你今天的 API 使用概况。</p>
                 </div>
-                <button class="primary-button dashboard-cta-button" type="button" data-open-panel="docs-panel">快速接入</button>
+                <button class="primary-button dashboard-cta-button" type="button" data-open-panel="models-panel">查看套餐</button>
             </div>
 
             <div class="metrics-grid metrics-grid-home" id="overview-cards"></div>
 
-            <div class="dashboard-home-grid">
+            <div class="dashboard-spotlight-grid">
+                <article class="surface-card dashboard-profile-card">
+                    <div class="section-head section-head-tight">
+                        <div>
+                            <h3>用户信息</h3>
+                            <div class="card-caption">查看当前账号资料与购买能力</div>
+                        </div>
+                    </div>
+                    <div id="profile-card-body" class="profile-card-body"></div>
+                </article>
+
+                <article class="surface-card dashboard-package-card">
+                    <div class="section-head section-head-tight">
+                        <div>
+                            <h3 id="quota-card-title">套餐额度</h3>
+                            <div class="card-caption">已购买分组的每日、每周、每月消耗情况</div>
+                        </div>
+                        <span id="quota-status-badge"></span>
+                    </div>
+                    <div class="dashboard-package-toolbar">
+                        <label class="dashboard-package-select-wrap">
+                            <span>套餐分组</span>
+                            <select id="dashboard-package-select"></select>
+                        </label>
+                        <button class="secondary-button" type="button" data-open-panel="models-panel">进入套餐中心</button>
+                    </div>
+                    <div id="quota-card-body" class="quota-card-body"></div>
+                </article>
+            </div>
+
+            <div class="dashboard-home-grid dashboard-home-grid-bottom">
                 <article class="surface-card analytics-card analytics-card-wide">
                     <div class="section-head">
                         <div>
@@ -270,61 +300,20 @@
                 <article class="surface-card analytics-card">
                     <div class="section-head">
                         <div>
-                            <h3>最近请求</h3>
-                            <div class="card-caption">最近成功和失败记录</div>
-                        </div>
-                        <button class="mini-button" type="button" data-open-panel="logs-panel">全部</button>
-                    </div>
-                    <div id="overview-recent-requests" class="request-feed"></div>
-                </article>
-            </div>
-
-            <div class="dashboard-home-grid dashboard-home-grid-bottom">
-                <article class="surface-card analytics-card">
-                    <div class="section-head">
-                        <div>
-                            <h3>API 接入地址</h3>
-                            <div class="card-caption">兼容 OpenAI 格式</div>
+                            <h3>快速操作</h3>
+                            <div class="card-caption">创建 Key、查看账单、复制接入地址</div>
                         </div>
                     </div>
                     <div class="endpoint-card">
                         <div id="overview-endpoint-url" class="endpoint-url">http://localhost:9988/v1</div>
                         <button class="mini-button" type="button" data-copy-endpoint="true">复制</button>
                     </div>
-                    <button class="secondary-button wide-button" type="button" data-open-panel="docs-panel">查看接入文档</button>
-                </article>
-
-                <article class="surface-card analytics-card">
-                    <div class="section-head">
-                        <div>
-                            <h3>服务状态</h3>
-                            <div class="card-caption">当前网关与模型可用情况</div>
-                        </div>
-                    </div>
-                    <div id="overview-service-status" class="service-status-list"></div>
-                </article>
-
-                <article class="surface-card analytics-card analytics-card-accent">
-                    <div class="section-head">
-                        <div>
-                            <h3>快速操作</h3>
-                            <div class="card-caption">常用入口和配置说明</div>
-                        </div>
-                    </div>
-                    <div class="action-stack">
-                        <button class="ghost-action-button" type="button" data-open-panel="keys-panel">管理 API 密钥</button>
+                    <div class="action-stack dashboard-action-stack">
+                        <button class="ghost-action-button" type="button" data-open-panel="keys-panel">创建 API Key</button>
                         <button class="ghost-action-button" type="button" data-open-panel="billing-panel">查看用量账单</button>
-                        <button class="ghost-action-button" type="button" data-open-panel="models-panel">浏览模型广场</button>
+                        <button class="ghost-action-button" type="button" data-open-panel="docs-panel">查看接入文档</button>
                     </div>
                 </article>
-            </div>
-
-            <div class="hidden">
-                <span id="profile-role-badge"></span>
-                <div id="profile-card-body"></div>
-                <span id="quota-card-title"></span>
-                <span id="quota-status-badge"></span>
-                <div id="quota-card-body"></div>
             </div>
         </section>
 
@@ -414,7 +403,7 @@
                             <span>2</span>
                             <div>
                                 <strong>确认模型编码</strong>
-                                <p>进入模型广场页面，找到你要调用的模型编码，例如 `gpt-5.3-codex`。</p>
+                                <p>进入套餐中心页面，先确认你已购买对应分组，再查看要调用的模型编码，例如 `gpt-5.3-codex`。</p>
                             </div>
                         </div>
                         <div class="setup-item">
@@ -738,13 +727,24 @@ requires_openai_auth = true</pre>
                         <span class="card-caption">明文密钥只会显示一次，请立即保存</span>
                     </div>
 
-                    <form id="key-form" class="form-grid three-col">
+                    <form id="key-form" class="form-grid three-col key-create-form">
                         <label id="key-user-id-row"><span>用户 ID</span><input type="number" name="userId" required></label>
-                        <label><span>密钥名称</span><input type="text" name="name" required></label>
-                        <label><span>总额度</span><input type="number" name="totalQuota" step="0.0001" value="0"></label>
+                        <label class="span-two"><span>名称</span><input type="text" name="name" placeholder="例如：My Production Key" required></label>
+                        <label class="span-two"><span>描述</span><textarea name="remark" rows="4" placeholder="可选：添加描述信息"></textarea></label>
+                        <div class="span-two key-group-picker-shell">
+                            <div class="key-group-picker-head">
+                                <div>
+                                    <div class="key-group-picker-title">分组选择</div>
+                                    <div id="key-group-hint" class="card-caption">请先购买套餐，然后选择一个已购买且有效的分组来创建 Key。</div>
+                                </div>
+                            </div>
+                            <div id="key-group-options" class="key-group-options"></div>
+                        </div>
                         <label><span>过期时间</span><input type="text" name="expiresAt" placeholder="2026-12-31 23:59:59"></label>
-                        <label class="span-two"><span>备注</span><input type="text" name="remark"></label>
-                        <button type="submit" class="primary-button">创建密钥</button>
+                        <div class="key-create-submit-row">
+                            <button type="button" class="secondary-button" id="close-key-create-button">取消</button>
+                            <button type="submit" class="primary-button">确认创建</button>
+                        </div>
                     </form>
 
                     <div id="plain-key-box" class="notice-box hidden"></div>
@@ -769,8 +769,6 @@ requires_openai_auth = true</pre>
                                     <th>名称</th>
                                     <th>前缀</th>
                                     <th>状态</th>
-                                    <th>已用额度</th>
-                                    <th>总额度</th>
                                     <th>操作</th>
                                 </tr>
                                 </thead>
@@ -836,13 +834,32 @@ requires_openai_auth = true</pre>
                 <div class="surface-card">
                     <div class="section-head">
                         <div>
-                            <h3 id="models-panel-title">模型价格</h3>
-                            <div class="card-caption">浏览所有可用模型及其实时价格。</div>
+                            <h3 id="models-panel-title">套餐中心</h3>
+                            <div class="card-caption">选择适合您的套餐分组，购买后即可在对应分组下创建 API Key。</div>
                         </div>
                         <div class="models-market-headline">
-                            <span id="models-market-meta" class="card-caption">0 个模型可用</span>
+                            <div id="package-balance-pill" class="package-balance-pill">当前余额: $0.00</div>
                             <button class="secondary-button" data-refresh="models" type="button">刷新</button>
                         </div>
+                    </div>
+
+                    <div class="package-center-shell">
+                        <div class="package-center-head">
+                            <div>
+                                <div class="package-center-title">套餐中心</div>
+                                <div class="card-caption">钱包余额用于购买套餐，购买成功后分组会获得每日 $60 可用额度，请求金额将从该分组额度中累计扣减。</div>
+                            </div>
+                        </div>
+                        <div id="package-card-grid" class="package-card-grid"></div>
+                        <div id="model-package-summary" class="key-package-summary"></div>
+                    </div>
+
+                    <div class="section-head package-model-head">
+                        <div>
+                            <h3>分组模型预览</h3>
+                            <div class="card-caption">下面展示当前系统已公开的模型，你可以先买套餐，再为对应分组创建 Key。</div>
+                        </div>
+                        <span id="models-market-meta" class="card-caption">0 个模型可用</span>
                     </div>
 
                     <div class="model-filter-row">
@@ -931,6 +948,7 @@ requires_openai_auth = true</pre>
                         </label>
                         <label><span>输入价格</span><input type="number" name="promptPrice" step="0.000001" value="0"></label>
                         <label><span>输出价格</span><input type="number" name="completionPrice" step="0.000001" value="0"></label>
+                        <label><span>单次最低扣费</span><input type="number" name="requestPrice" step="0.000001" value="0.07"></label>
                         <label><span>倍率</span><input type="number" name="multiplier" step="0.0001" value="1"></label>
                         <label>
                             <span>是否公开</span>
@@ -957,6 +975,7 @@ requires_openai_auth = true</pre>
                                 <th>模型</th>
                                 <th>输入价格</th>
                                 <th>输出价格</th>
+                                <th>最低扣费</th>
                                 <th>倍率</th>
                                 <th>类型</th>
                                 <th>渠道</th>
@@ -987,7 +1006,7 @@ requires_openai_auth = true</pre>
                                 <th>用户</th>
                                 <th>模型</th>
                                 <th>耗时</th>
-                                <th>Token 消耗</th>
+                                <th>Token 消耗(输入/输出/总计)</th>
                                 <th>金额</th>
                                 <th>状态</th>
                                 <th>时间</th>

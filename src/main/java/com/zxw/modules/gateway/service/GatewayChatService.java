@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.zxw.common.exception.BusinessException;
+import com.zxw.modules.access.service.UserModelAccessService;
 import com.zxw.modules.apikey.service.ApiKeyAuthService;
 import jakarta.servlet.http.HttpServletRequest;
 import okhttp3.OkHttpClient;
@@ -57,6 +58,7 @@ public class GatewayChatService {
 
     private static final Logger log = LoggerFactory.getLogger(GatewayChatService.class);
     private static final BigDecimal TOKENS_PER_MILLION = BigDecimal.valueOf(1_000_000L);
+    private static final BigDecimal DEFAULT_MIN_REQUEST_CHARGE = new BigDecimal("0.070000");
 
     private static final int AGENT_MAX_STEPS = 6;
     private static final int AGENT_HISTORY_LIMIT = 24;
@@ -65,6 +67,8 @@ public class GatewayChatService {
     private static final int AGENT_SUMMARY_MAX_CHARS = 3200;
     private static final int TOOL_OUTPUT_LIMIT = 12000;
     private static final int FILE_PREVIEW_LIMIT = 1600;
+    private static final int SIMPLE_QUERY_INPUT_ITEM_THRESHOLD = 24;
+    private static final int SIMPLE_QUERY_INPUT_CHAR_THRESHOLD = 20000;
     private static final DateTimeFormatter DIRECT_TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
     private static final String DEFAULT_IDE_AGENT_INSTRUCTIONS = """
             你是一个高级工程代理，不是普通聊天助手。你的目标不是只回答问题，而是接手任务、推进任务、完成任务。
@@ -101,6 +105,7 @@ public class GatewayChatService {
             """;
 
     private final ApiKeyAuthService apiKeyAuthService;
+    private final UserModelAccessService userModelAccessService;
     private final GatewayRouteService gatewayRouteService;
     private final JdbcTemplate jdbcTemplate;
     private final ObjectMapper objectMapper;
@@ -108,10 +113,12 @@ public class GatewayChatService {
     private final OkHttpClient okHttpClient;
 
     public GatewayChatService(ApiKeyAuthService apiKeyAuthService,
+                              UserModelAccessService userModelAccessService,
                               GatewayRouteService gatewayRouteService,
                               JdbcTemplate jdbcTemplate,
                               ObjectMapper objectMapper) {
         this.apiKeyAuthService = apiKeyAuthService;
+        this.userModelAccessService = userModelAccessService;
         this.gatewayRouteService = gatewayRouteService;
         this.jdbcTemplate = jdbcTemplate;
         this.objectMapper = objectMapper;
@@ -129,9 +136,11 @@ public class GatewayChatService {
 
         try {
             JsonNode input = objectMapper.readTree(requestBody);
+            String effectiveRequestBody = requestBody;
             String modelCode = getRequiredText(input, "model");
             boolean stream = input.path("stream").asBoolean(false);
             GatewayRouteService.RouteDefinition route = gatewayRouteService.resolve(modelCode);
+            userModelAccessService.validateGatewayAccess(auth, route);
             String requestId = buildRequestId();
             long startTime = System.currentTimeMillis();
 
@@ -178,9 +187,11 @@ public class GatewayChatService {
 
         try {
             JsonNode input = objectMapper.readTree(requestBody);
+            String effectiveRequestBody = requestBody;
             String modelCode = getRequiredText(input, "model");
             boolean stream = input.path("stream").asBoolean(false);
             GatewayRouteService.RouteDefinition route = gatewayRouteService.resolve(modelCode);
+            userModelAccessService.validateGatewayAccess(auth, route);
             String requestId = buildRequestId();
             long startTime = System.currentTimeMillis();
 
@@ -193,13 +204,18 @@ public class GatewayChatService {
 
             if (input instanceof ObjectNode objectInput) {
                 applyDefaultIdeInstructionsToResponses(objectInput, route.modelCode());
+                ObjectNode optimizedInput = optimizeResponsesInputForSimpleQuery(objectInput, route.modelCode());
+                if (optimizedInput != objectInput) {
+                    input = optimizedInput;
+                    effectiveRequestBody = objectMapper.writeValueAsString(optimizedInput);
+                }
             }
 
             if (input instanceof ObjectNode objectInput && shouldHandleResponsesAsAgent(route.modelCode(), objectInput)) {
                 if (stream) {
-                    return streamAgentResponses(auth, route, requestId, requestBody, objectInput, servletRequest, startTime);
+                    return streamAgentResponses(auth, route, requestId, effectiveRequestBody, objectInput, servletRequest, startTime);
                 }
-                return normalAgentResponses(auth, route, requestId, requestBody, objectInput, servletRequest, startTime);
+                return normalAgentResponses(auth, route, requestId, effectiveRequestBody, objectInput, servletRequest, startTime);
             }
 
             if (isAnthropicRoute(route)) {
@@ -211,9 +227,9 @@ public class GatewayChatService {
             String upstreamBody = objectMapper.writeValueAsString(upstreamRequest);
 
             if (stream) {
-                return streamResponses(auth, route, requestId, requestBody, upstreamBody, servletRequest, startTime);
+                return streamResponses(auth, route, requestId, effectiveRequestBody, upstreamBody, servletRequest, startTime);
             }
-            return normalResponses(auth, route, requestId, requestBody, upstreamBody, servletRequest, startTime);
+            return normalResponses(auth, route, requestId, effectiveRequestBody, upstreamBody, servletRequest, startTime);
         } catch (BusinessException ex) {
             throw ex;
         } catch (Exception ex) {
@@ -231,6 +247,7 @@ public class GatewayChatService {
             String modelCode = getRequiredText(input, "model");
             boolean stream = input.path("stream").asBoolean(false);
             GatewayRouteService.RouteDefinition route = gatewayRouteService.resolve(modelCode);
+            userModelAccessService.validateGatewayAccess(auth, route);
             String requestId = buildRequestId();
             long startTime = System.currentTimeMillis();
 
@@ -1847,6 +1864,69 @@ public class GatewayChatService {
 
     private boolean shouldUseLightweightCodexPrompt(String modelCode, ArrayNode messages) {
         return false;
+    }
+
+    private ObjectNode optimizeResponsesInputForSimpleQuery(ObjectNode input, String modelCode) {
+        if (input == null || !shouldUseAgentMode(modelCode)) {
+            return input;
+        }
+        if (hasRequestTools(input) || hasWorkspaceHint(input) || isExplicitGatewayAgentRequest(input)) {
+            return input;
+        }
+        if (input.hasNonNull("previous_response_id")) {
+            return input;
+        }
+
+        String latestUser = extractLatestUserTextFromResponses(input);
+        if (!looksLikeSimpleGeneralQuestion(latestUser) || !isBloatedResponsesInput(input)) {
+            return input;
+        }
+
+        ObjectNode optimized = input.deepCopy();
+        optimized.remove("previous_response_id");
+        optimized.remove("conversation");
+        optimized.remove("tools");
+        optimized.remove("tool_choice");
+        optimized.remove("parallel_tool_calls");
+        optimized.put("store", false);
+        optimized.put("instructions", """
+                你是一个直接、准确、简洁的中文助手。
+                对于时间、日期、常识和简短问答，直接给出结果，不要解释工具、权限、沙箱或内部提示。
+                """.trim());
+
+        ArrayNode compactInput = objectMapper.createArrayNode();
+        ObjectNode userMessage = objectMapper.createObjectNode();
+        userMessage.put("type", "message");
+        userMessage.put("role", "user");
+
+        ArrayNode content = objectMapper.createArrayNode();
+        ObjectNode textItem = objectMapper.createObjectNode();
+        textItem.put("type", "input_text");
+        textItem.put("text", latestUser);
+        content.add(textItem);
+
+        userMessage.set("content", content);
+        compactInput.add(userMessage);
+        optimized.set("input", compactInput);
+
+        if (!optimized.hasNonNull("max_output_tokens") && !optimized.hasNonNull("max_tokens")) {
+            optimized.put("max_output_tokens", 128);
+        }
+        if (!optimized.hasNonNull("temperature")) {
+            optimized.put("temperature", 0.2);
+        }
+        return optimized;
+    }
+
+    private boolean isBloatedResponsesInput(ObjectNode input) {
+        JsonNode inputNode = input == null ? null : input.get("input");
+        if (inputNode == null || inputNode.isNull()) {
+            return false;
+        }
+        if (inputNode.isArray() && inputNode.size() >= SIMPLE_QUERY_INPUT_ITEM_THRESHOLD) {
+            return true;
+        }
+        return inputNode.toString().length() >= SIMPLE_QUERY_INPUT_CHAR_THRESHOLD;
     }
 
     private ArrayNode buildLightweightCodexMessages(ArrayNode messages) {
@@ -4397,28 +4477,31 @@ public class GatewayChatService {
         );
 
         if (userAmount.compareTo(BigDecimal.ZERO) > 0) {
-            jdbcTemplate.update("""
-                    update wallets
-                    set balance = balance - ?, total_consume = total_consume + ?, updated_at = now()
-                    where user_id = ?
-                    """, userAmount, userAmount, auth.userId());
+            boolean chargeWallet = !auth.packageRestrictionEnabled() || auth.modelGroupId() == null;
+            if (chargeWallet) {
+                jdbcTemplate.update("""
+                        update wallets
+                        set balance = balance - ?, total_consume = total_consume + ?, updated_at = now()
+                        where user_id = ?
+                        """, userAmount, userAmount, auth.userId());
 
-            Long walletId = jdbcTemplate.queryForObject("select id from wallets where user_id = ?", Long.class, auth.userId());
-            BigDecimal balanceAfter = jdbcTemplate.queryForObject("select balance from wallets where user_id = ?", BigDecimal.class, auth.userId());
-            BigDecimal balanceBefore = balanceAfter == null ? BigDecimal.ZERO : balanceAfter.add(userAmount);
-            jdbcTemplate.update("""
-                    insert into transactions (user_id, wallet_id, order_no, transaction_type, direction, amount,
-                                              balance_before, balance_after, status, description_text, transaction_date)
-                    values (?, ?, ?, 'CONSUME', 'OUT', ?, ?, ?, 'SUCCESS', ?, curdate())
-                    """,
-                    auth.userId(),
-                    walletId,
-                    "C" + System.currentTimeMillis() + UUID.randomUUID().toString().replace("-", "").substring(0, 6).toUpperCase(),
-                    userAmount,
-                    balanceBefore,
-                    balanceAfter,
-                    "模型调用扣费: " + route.modelCode()
-            );
+                Long walletId = jdbcTemplate.queryForObject("select id from wallets where user_id = ?", Long.class, auth.userId());
+                BigDecimal balanceAfter = jdbcTemplate.queryForObject("select balance from wallets where user_id = ?", BigDecimal.class, auth.userId());
+                BigDecimal balanceBefore = balanceAfter == null ? BigDecimal.ZERO : balanceAfter.add(userAmount);
+                jdbcTemplate.update("""
+                        insert into transactions (user_id, wallet_id, order_no, transaction_type, direction, amount,
+                                                  balance_before, balance_after, status, description_text, transaction_date)
+                        values (?, ?, ?, 'CONSUME', 'OUT', ?, ?, ?, 'SUCCESS', ?, curdate())
+                        """,
+                        auth.userId(),
+                        walletId,
+                        "C" + System.currentTimeMillis() + UUID.randomUUID().toString().replace("-", "").substring(0, 6).toUpperCase(),
+                        userAmount,
+                        balanceBefore,
+                        balanceAfter,
+                        "模型调用扣费: " + route.modelCode()
+                );
+            }
 
             jdbcTemplate.update("""
                     update api_keys
@@ -4454,8 +4537,11 @@ public class GatewayChatService {
                 route.promptPrice().multiply(BigDecimal.valueOf(promptTokens)).divide(TOKENS_PER_MILLION, 6, RoundingMode.HALF_UP);
         BigDecimal completionCost = route.completionPrice() == null ? BigDecimal.ZERO :
                 route.completionPrice().multiply(BigDecimal.valueOf(completionTokens)).divide(TOKENS_PER_MILLION, 6, RoundingMode.HALF_UP);
-        BigDecimal requestCost = route.requestPrice() == null ? BigDecimal.ZERO : route.requestPrice();
-        return promptCost.add(completionCost).add(requestCost).setScale(6, RoundingMode.HALF_UP);
+        BigDecimal tokenCost = promptCost.add(completionCost).setScale(6, RoundingMode.HALF_UP);
+        BigDecimal requestFloor = route.requestPrice() == null || route.requestPrice().compareTo(BigDecimal.ZERO) <= 0
+                ? DEFAULT_MIN_REQUEST_CHARGE
+                : route.requestPrice().setScale(6, RoundingMode.HALF_UP);
+        return tokenCost.max(requestFloor).setScale(6, RoundingMode.HALF_UP);
     }
 
     private ObjectNode ensureChatStreamUsageIncluded(ObjectNode request) {
