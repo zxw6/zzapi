@@ -24,3 +24,10 @@ gateway:
     jwt-secret: ${JWT_SECRET:ai-gateway-jwt-secret-please-change-1234567890}
     jwt-expire-minutes: ${JWT_EXPIRE_MINUTES:720}
     crypto-secret: ${GATEWAY_CRYPTO_SECRET:AiCryptoKey12345}
+  cors:
+    allowed-origin-patterns: ${CORS_ALLOWED_ORIGIN_PATTERNS:*}
+    allowed-methods: ${CORS_ALLOWED_METHODS:GET,POST,PUT,PATCH,DELETE,OPTIONS,HEAD}
+    allowed-headers: ${CORS_ALLOWED_HEADERS:*}
+    exposed-headers: ${CORS_EXPOSED_HEADERS:}
+    allow-credentials: ${CORS_ALLOW_CREDENTIALS:true}
+    max-age: ${CORS_MAX_AGE:3600}
