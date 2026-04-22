@@ -242,6 +242,20 @@ CREATE TABLE IF NOT EXISTS system_configs (
     UNIQUE KEY uk_system_configs_key (config_key)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS site_settings (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    settings_key VARCHAR(32) NOT NULL DEFAULT 'DEFAULT',
+    site_name VARCHAR(128) NOT NULL,
+    admin_email VARCHAR(128) NOT NULL,
+    site_description VARCHAR(255) NULL,
+    base_url VARCHAR(255) NOT NULL,
+    footer_text VARCHAR(255) NULL,
+    theme_mode VARCHAR(16) NOT NULL DEFAULT 'LIGHT',
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_site_settings_key (settings_key)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS audit_logs (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
     operator_user_id BIGINT NULL,

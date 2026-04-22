@@ -1,7 +1,13 @@
 package com.zxw.modules.system.controller;
 
 import com.zxw.common.api.ApiResponse;
+import com.zxw.modules.system.dto.SiteSettingsResponse;
+import com.zxw.modules.system.dto.SiteSettingsUpdateRequest;
+import com.zxw.modules.system.service.AdminSiteSettingsService;
+import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -12,6 +18,12 @@ import java.util.Map;
 @RestController
 @RequestMapping("/admin/system")
 public class AdminSystemController {
+
+    private final AdminSiteSettingsService adminSiteSettingsService;
+
+    public AdminSystemController(AdminSiteSettingsService adminSiteSettingsService) {
+        this.adminSiteSettingsService = adminSiteSettingsService;
+    }
 
     @GetMapping("/health")
     public ApiResponse<Map<String, Object>> health() {
@@ -75,5 +87,16 @@ public class AdminSystemController {
                         "14. response.completed"
                 )
         ));
+    }
+
+    @GetMapping("/site-settings")
+    public ApiResponse<SiteSettingsResponse> getSiteSettings() {
+        return ApiResponse.ok(adminSiteSettingsService.getSiteSettings());
+    }
+
+    @PutMapping("/site-settings")
+    public ApiResponse<Void> updateSiteSettings(@Valid @RequestBody SiteSettingsUpdateRequest request) {
+        adminSiteSettingsService.updateSiteSettings(request);
+        return ApiResponse.ok("站点信息保存成功", null);
     }
 }
