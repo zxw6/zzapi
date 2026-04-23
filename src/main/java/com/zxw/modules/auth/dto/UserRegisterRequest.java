@@ -5,15 +5,18 @@ import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Pattern;
 
 public record UserRegisterRequest(
-        @NotBlank(message = "用户名不能为空")
+        @NotBlank(message = "Username cannot be blank")
         String username,
-        @NotBlank(message = "密码不能为空")
+        @NotBlank(message = "Password cannot be blank")
         String password,
         String nickname,
-        @NotBlank(message = "QQ邮箱不能为空")
-        @Email(message = "邮箱格式不正确")
-        @Pattern(regexp = "^[^\\s@]+@qq\\.com$", message = "请使用QQ邮箱注册")
+        @NotBlank(message = "QQ email cannot be blank")
+        @Email(message = "Email format is invalid")
+        @Pattern(regexp = "^[^\\s@]+@qq\\.com$", message = "Please use a QQ email")
         String email,
-        String phone
+        String phone,
+        @NotBlank(message = "Verification code cannot be blank")
+        @Pattern(regexp = "^\\d{6}$", message = "Verification code must be 6 digits")
+        String verificationCode
 ) {
 }

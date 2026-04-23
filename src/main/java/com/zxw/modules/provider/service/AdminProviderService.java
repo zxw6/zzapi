@@ -3,6 +3,7 @@ package com.zxw.modules.provider.service;
 import com.zxw.common.exception.BusinessException;
 import com.zxw.common.security.AdminContext;
 import com.zxw.common.security.AesCryptoService;
+import com.zxw.modules.model.service.AntigravityPresetService;
 import com.zxw.modules.provider.dto.ProviderCreateRequest;
 import com.zxw.modules.provider.dto.ProviderListItemResponse;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -16,10 +17,14 @@ public class AdminProviderService {
 
     private final JdbcTemplate jdbcTemplate;
     private final AesCryptoService aesCryptoService;
+    private final AntigravityPresetService antigravityPresetService;
 
-    public AdminProviderService(JdbcTemplate jdbcTemplate, AesCryptoService aesCryptoService) {
+    public AdminProviderService(JdbcTemplate jdbcTemplate,
+                                AesCryptoService aesCryptoService,
+                                AntigravityPresetService antigravityPresetService) {
         this.jdbcTemplate = jdbcTemplate;
         this.aesCryptoService = aesCryptoService;
+        this.antigravityPresetService = antigravityPresetService;
     }
 
     public List<ProviderListItemResponse> listProviders() {
@@ -81,6 +86,9 @@ public class AdminProviderService {
                     request.tpmLimit() == null ? 0 : request.tpmLimit()
             );
         }
+
+        Long providerId = jdbcTemplate.queryForObject("select id from providers where provider_code = ?", Long.class, request.providerCode());
+        antigravityPresetService.syncForProvider(providerId);
     }
 
     public void updateStatus(Long id, String status) {

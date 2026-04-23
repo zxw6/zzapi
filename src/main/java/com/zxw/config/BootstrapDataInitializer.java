@@ -2,6 +2,7 @@ package com.zxw.config;
 
 import com.zxw.common.security.PasswordService;
 import com.zxw.modules.access.service.UserModelAccessService;
+import com.zxw.modules.model.service.AntigravityPresetService;
 import com.zxw.modules.system.service.AdminSiteSettingsService;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
@@ -17,21 +18,25 @@ public class BootstrapDataInitializer implements ApplicationRunner {
     private final PasswordService passwordService;
     private final UserModelAccessService userModelAccessService;
     private final AdminSiteSettingsService adminSiteSettingsService;
+    private final AntigravityPresetService antigravityPresetService;
 
     public BootstrapDataInitializer(JdbcTemplate jdbcTemplate,
                                     PasswordService passwordService,
                                     UserModelAccessService userModelAccessService,
-                                    AdminSiteSettingsService adminSiteSettingsService) {
+                                    AdminSiteSettingsService adminSiteSettingsService,
+                                    AntigravityPresetService antigravityPresetService) {
         this.jdbcTemplate = jdbcTemplate;
         this.passwordService = passwordService;
         this.userModelAccessService = userModelAccessService;
         this.adminSiteSettingsService = adminSiteSettingsService;
+        this.antigravityPresetService = antigravityPresetService;
     }
 
     @Override
     public void run(ApplicationArguments args) {
         userModelAccessService.initializeDefaults();
         adminSiteSettingsService.initializeDefaults();
+        antigravityPresetService.syncForExistingProviders();
 
         Integer count = jdbcTemplate.queryForObject(
                 "select count(*) from users where username = 'admin' and deleted = 0",

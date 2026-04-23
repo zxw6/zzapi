@@ -25,6 +25,7 @@ public class WebMvcConfig implements WebMvcConfigurer {
                 .addPathPatterns("/admin/**")
                 .excludePathPatterns(
                         "/admin/auth/login",
+                        "/admin/auth/register/code",
                         "/admin/auth/register",
                         "/admin/system/health",
                         "/admin/system/sse-protocol"

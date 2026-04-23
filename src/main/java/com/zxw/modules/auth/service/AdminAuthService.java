@@ -8,9 +8,13 @@ import com.zxw.common.security.PasswordService;
 import com.zxw.modules.auth.dto.AdminLoginRequest;
 import com.zxw.modules.auth.dto.AdminLoginResponse;
 import com.zxw.modules.auth.dto.UserRegisterRequest;
+import com.zxw.modules.auth.dto.VerificationCodeSendRequest;
+import com.zxw.modules.auth.dto.VerificationCodeSendResponse;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+
+import java.math.BigDecimal;
 
 @Service
 public class AdminAuthService {
@@ -18,13 +22,16 @@ public class AdminAuthService {
     private final JdbcTemplate jdbcTemplate;
     private final PasswordService passwordService;
     private final JwtTokenService jwtTokenService;
+    private final VerificationCodeService verificationCodeService;
 
     public AdminAuthService(JdbcTemplate jdbcTemplate,
                             PasswordService passwordService,
-                            JwtTokenService jwtTokenService) {
+                            JwtTokenService jwtTokenService,
+                            VerificationCodeService verificationCodeService) {
         this.jdbcTemplate = jdbcTemplate;
         this.passwordService = passwordService;
         this.jwtTokenService = jwtTokenService;
+        this.verificationCodeService = verificationCodeService;
     }
 
     public AdminLoginResponse login(AdminLoginRequest request) {
@@ -43,10 +50,10 @@ public class AdminAuthService {
         ) : null, request.username());
 
         if (user == null || !passwordService.matches(request.password(), user.passwordHash())) {
-            throw new BusinessException(401, "用户名或密码错误");
+            throw new BusinessException(401, "Invalid username or password");
         }
         if (!"ACTIVE".equals(user.status())) {
-            throw new BusinessException(403, "账号已被禁用");
+            throw new BusinessException(403, "Account is disabled");
         }
 
         Long userId = user.id();
@@ -63,14 +70,20 @@ public class AdminAuthService {
         );
     }
 
+    public VerificationCodeSendResponse sendRegisterCode(VerificationCodeSendRequest request) {
+        return verificationCodeService.sendRegisterCode(request.email());
+    }
+
     @Transactional
     public AdminLoginResponse register(UserRegisterRequest request) {
         if (request.email() == null || request.email().isBlank()) {
-            throw new BusinessException(400, "QQ 邮箱不能为空");
+            throw new BusinessException(400, "QQ email cannot be blank");
         }
-        if (!request.email().toLowerCase().endsWith("@qq.com")) {
-            throw new BusinessException(400, "请使用 QQ 邮箱注册");
+        if (!request.email().trim().toLowerCase().endsWith("@qq.com")) {
+            throw new BusinessException(400, "Please use a QQ email");
         }
+
+        verificationCodeService.verifyRegisterCode(request.email(), request.verificationCode());
 
         Integer usernameExists = jdbcTemplate.queryForObject(
                 "select count(*) from users where username = ? and deleted = 0",
@@ -78,7 +91,7 @@ public class AdminAuthService {
                 request.username()
         );
         if (usernameExists != null && usernameExists > 0) {
-            throw new BusinessException(400, "用户名已存在");
+            throw new BusinessException(400, "Username already exists");
         }
 
         Integer emailExists = jdbcTemplate.queryForObject(
@@ -87,7 +100,7 @@ public class AdminAuthService {
                 request.email()
         );
         if (emailExists != null && emailExists > 0) {
-            throw new BusinessException(400, "QQ 邮箱已存在");
+            throw new BusinessException(400, "QQ email already exists");
         }
 
         jdbcTemplate.update("""
@@ -127,7 +140,7 @@ public class AdminAuthService {
     public AdminLoginResponse me() {
         JwtUser jwtUser = AdminContext.get();
         if (jwtUser == null) {
-            throw new BusinessException(401, "请先登录");
+            throw new BusinessException(401, "Please login first");
         }
         return jdbcTemplate.query("""
                 select u.id, u.username, u.nickname, u.role_code, coalesce(w.balance, 0) as balance
@@ -144,10 +157,10 @@ public class AdminAuthService {
         ) : null, jwtUser.userId());
     }
 
-    private java.math.BigDecimal findBalance(Long userId) {
+    private BigDecimal findBalance(Long userId) {
         return jdbcTemplate.queryForObject(
                 "select coalesce(balance, 0) from wallets where user_id = ?",
-                java.math.BigDecimal.class,
+                BigDecimal.class,
                 userId
         );
     }

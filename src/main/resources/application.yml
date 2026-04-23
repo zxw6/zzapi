@@ -6,6 +6,13 @@ spring:
     url: ${DB_URL:jdbc:mysql://localhost:3306/zxw?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai}
     username: ${DB_USERNAME:root}
     password: ${DB_PASSWORD:123456}
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      database: ${REDIS_DATABASE:0}
+      timeout: ${REDIS_TIMEOUT:5s}
   sql:
     init:
       mode: always
@@ -31,3 +38,10 @@ gateway:
     exposed-headers: ${CORS_EXPOSED_HEADERS:}
     allow-credentials: ${CORS_ALLOW_CREDENTIALS:true}
     max-age: ${CORS_MAX_AGE:3600}
+
+app:
+  auth:
+    verification-code:
+      expire-seconds: ${VERIFICATION_CODE_EXPIRE_SECONDS:300}
+      resend-interval-seconds: ${VERIFICATION_CODE_RESEND_INTERVAL_SECONDS:60}
+      return-code-in-response: ${VERIFICATION_CODE_RETURN_IN_RESPONSE:true}

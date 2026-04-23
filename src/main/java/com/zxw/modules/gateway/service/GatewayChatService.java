@@ -634,7 +634,7 @@ public class GatewayChatService {
             promptTokens = usage.promptTokens();
             completionTokens = usage.completionTokens();
             totalTokens = usage.totalTokens();
-            costAmount = calculateBaseCost(route, promptTokens, completionTokens);
+            costAmount = calculateBaseCost(route, usage);
             userAmount = costAmount.multiply(route.multiplier() == null ? BigDecimal.ONE : route.multiplier())
                     .setScale(6, RoundingMode.HALF_UP);
         }
@@ -671,7 +671,7 @@ public class GatewayChatService {
                 promptTokens = usage.promptTokens();
                 completionTokens = usage.completionTokens();
                 totalTokens = usage.totalTokens();
-                costAmount = calculateBaseCost(route, promptTokens, completionTokens);
+                costAmount = calculateBaseCost(route, usage);
                 userAmount = costAmount.multiply(route.multiplier() == null ? BigDecimal.ONE : route.multiplier())
                         .setScale(6, RoundingMode.HALF_UP);
             }
@@ -705,7 +705,7 @@ public class GatewayChatService {
             promptTokens = usage.promptTokens();
             completionTokens = usage.completionTokens();
             totalTokens = usage.totalTokens();
-            costAmount = calculateBaseCost(route, promptTokens, completionTokens);
+            costAmount = calculateBaseCost(route, usage);
             userAmount = costAmount.multiply(route.multiplier() == null ? BigDecimal.ONE : route.multiplier())
                     .setScale(6, RoundingMode.HALF_UP);
         }
@@ -4544,6 +4544,13 @@ public class GatewayChatService {
         return tokenCost.max(requestFloor).setScale(6, RoundingMode.HALF_UP);
     }
 
+    private BigDecimal calculateBaseCost(GatewayRouteService.RouteDefinition route, UsageTotals usage) {
+        if (usage == null) {
+            return calculateBaseCost(route, 0, 0);
+        }
+        return calculateBaseCost(route, usage.billablePromptTokens(), usage.completionTokens());
+    }
+
     private ObjectNode ensureChatStreamUsageIncluded(ObjectNode request) {
         request.put("stream", true);
         ObjectNode streamOptions = request.hasNonNull("stream_options") && request.path("stream_options").isObject()
@@ -4559,7 +4566,8 @@ public class GatewayChatService {
         int promptTokens = usage == null ? 0 : usage.path("prompt_tokens").asInt(0);
         int completionTokens = usage == null ? 0 : usage.path("completion_tokens").asInt(0);
         int totalTokens = usage == null ? 0 : usage.path("total_tokens").asInt(promptTokens + completionTokens);
-        return new UsageTotals(promptTokens, completionTokens, totalTokens);
+        int cachedPromptTokens = usage == null ? 0 : usage.path("prompt_tokens_details").path("cached_tokens").asInt(0);
+        return new UsageTotals(promptTokens, completionTokens, totalTokens, cachedPromptTokens);
     }
 
     private UsageTotals extractResponsesUsage(JsonNode responseJson) {
@@ -4567,7 +4575,8 @@ public class GatewayChatService {
         int promptTokens = usage == null ? 0 : usage.path("input_tokens").asInt(0);
         int completionTokens = usage == null ? 0 : usage.path("output_tokens").asInt(0);
         int totalTokens = usage == null ? 0 : usage.path("total_tokens").asInt(promptTokens + completionTokens);
-        return new UsageTotals(promptTokens, completionTokens, totalTokens);
+        int cachedPromptTokens = usage == null ? 0 : usage.path("input_tokens_details").path("cached_tokens").asInt(0);
+        return new UsageTotals(promptTokens, completionTokens, totalTokens, cachedPromptTokens);
     }
 
     private String extractBearerToken(String authorization) {
@@ -4630,8 +4639,12 @@ public class GatewayChatService {
     private record UsageTotals(
             int promptTokens,
             int completionTokens,
-            int totalTokens
+            int totalTokens,
+            int cachedPromptTokens
     ) {
+        private int billablePromptTokens() {
+            return Math.max(0, promptTokens - Math.max(0, cachedPromptTokens));
+        }
     }
 
     private record AnthropicMessageExecution(
