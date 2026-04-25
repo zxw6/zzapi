@@ -8,6 +8,8 @@ import java.math.BigDecimal;
 import java.util.List;
 
 public record ModelBatchImportRequest(
+        @NotNull(message = "套餐分组不能为空")
+        Long groupId,
         @NotNull(message = "渠道 ID 不能为空")
         Long providerId,
         @NotEmpty(message = "至少选择一个上游模型")

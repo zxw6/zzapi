@@ -22,8 +22,9 @@ public class GatewayChatController {
     }
 
     @GetMapping({"/v1/models", "/models"})
-    public Map<String, Object> models() {
-        return gatewayChatService.listModels();
+    public Map<String, Object> models(@RequestHeader(value = "Authorization", required = false) String authorization,
+                                      @RequestHeader(value = "x-api-key", required = false) String xApiKey) {
+        return gatewayChatService.listModels(resolveAuthorization(authorization, xApiKey));
     }
 
     @PostMapping({"/v1/chat/completions", "/chat/completions"})

@@ -7,6 +7,7 @@ import com.zxw.modules.apikey.dto.ApiKeyListItemResponse;
 import com.zxw.modules.apikey.dto.ApiKeyStatusUpdateRequest;
 import com.zxw.modules.apikey.service.AdminApiKeyService;
 import jakarta.validation.Valid;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -41,5 +42,10 @@ public class AdminApiKeyController {
     public ApiResponse<Void> updateStatus(@PathVariable Long id, @Valid @RequestBody ApiKeyStatusUpdateRequest request) {
         adminApiKeyService.updateStatus(id, request.status());
         return ApiResponse.ok("状态更新成功", null);
+    }
+    @DeleteMapping("/{id}")
+    public ApiResponse<Void> delete(@PathVariable Long id) {
+        adminApiKeyService.delete(id);
+        return ApiResponse.ok("API Key å·²åˆ é™¤", null);
     }
 }

@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS api_keys (
     status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE',
     expires_at DATETIME NULL,
     last_used_at DATETIME NULL,
+    user_package_id BIGINT NULL,
     model_group_id BIGINT NULL,
     total_quota DECIMAL(18, 4) NOT NULL DEFAULT 0.0000,
     used_quota DECIMAL(18, 4) NOT NULL DEFAULT 0.0000,
@@ -36,6 +37,7 @@ CREATE TABLE IF NOT EXISTS api_keys (
     deleted TINYINT(1) NOT NULL DEFAULT 0,
     UNIQUE KEY uk_api_keys_access_key (access_key),
     KEY idx_api_keys_user_status (user_id, status),
+    KEY idx_api_keys_package (user_package_id),
     KEY idx_api_keys_group (model_group_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -147,6 +149,7 @@ CREATE TABLE IF NOT EXISTS request_logs (
     request_id VARCHAR(64) NOT NULL,
     user_id BIGINT NULL,
     api_key_id BIGINT NULL,
+    user_package_id BIGINT NULL,
     model_code VARCHAR(64) NOT NULL,
     provider_id BIGINT NULL,
     provider_token_id BIGINT NULL,
@@ -159,6 +162,7 @@ CREATE TABLE IF NOT EXISTS request_logs (
     prompt_tokens INT NOT NULL DEFAULT 0,
     completion_tokens INT NOT NULL DEFAULT 0,
     total_tokens INT NOT NULL DEFAULT 0,
+    cached_prompt_tokens INT NOT NULL DEFAULT 0,
     user_amount DECIMAL(18, 6) NOT NULL DEFAULT 0.000000,
     cost_amount DECIMAL(18, 6) NOT NULL DEFAULT 0.000000,
     latency_ms INT NOT NULL DEFAULT 0,
@@ -168,6 +172,7 @@ CREATE TABLE IF NOT EXISTS request_logs (
     request_date DATE NOT NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE KEY uk_request_logs_request_id (request_id),
+    KEY idx_request_logs_package_date (user_package_id, request_date),
     KEY idx_request_logs_user_date (user_id, request_date),
     KEY idx_request_logs_model_date (model_code, request_date),
     KEY idx_request_logs_provider_date (provider_id, request_date)

@@ -34,12 +34,14 @@ public class ApiKeyAuthService {
         String accessKey = bearerToken.substring(0, AdminApiKeyService.ACCESS_KEY_PREFIX_LENGTH);
         List<AuthenticatedApiKey> items = jdbcTemplate.query("""
                 select k.id, k.user_id, k.secret_hash, k.status, k.total_quota, k.used_quota, k.expires_at,
+                       k.user_package_id, p.package_name,
                        k.model_group_id, g.group_code, g.group_name,
                        u.username, u.role_code, u.package_restriction_enabled,
                        coalesce(w.balance, 0) as balance
                 from api_keys k
                 join users u on u.id = k.user_id and u.deleted = 0
                 left join wallets w on w.user_id = u.id
+                left join user_model_packages p on p.id = k.user_package_id
                 left join model_groups g on g.id = k.model_group_id
                 where k.access_key = ? and k.deleted = 0
                 """, (rs, rowNum) -> new AuthenticatedApiKey(
@@ -49,6 +51,8 @@ public class ApiKeyAuthService {
                 rs.getString("role_code"),
                 rs.getString("secret_hash"),
                 rs.getString("status"),
+                rs.getObject("user_package_id") == null ? null : rs.getLong("user_package_id"),
+                rs.getString("package_name"),
                 rs.getObject("model_group_id") == null ? null : rs.getLong("model_group_id"),
                 rs.getString("group_code"),
                 rs.getString("group_name"),
@@ -84,6 +88,8 @@ public class ApiKeyAuthService {
             String roleCode,
             String secretHash,
             String status,
+            Long userPackageId,
+            String userPackageName,
             Long modelGroupId,
             String modelGroupCode,
             String modelGroupName,

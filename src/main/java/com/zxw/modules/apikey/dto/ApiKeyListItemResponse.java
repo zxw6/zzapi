@@ -10,6 +10,8 @@ public record ApiKeyListItemResponse(
         String name,
         String accessKey,
         String status,
+        Long modelPackageId,
+        String modelPackageName,
         Long modelGroupId,
         String modelGroupName,
         BigDecimal totalQuota,

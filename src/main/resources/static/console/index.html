@@ -101,6 +101,14 @@
                 <span>QQ 邮箱</span>
                 <input type="email" name="email" placeholder="例如 123456@qq.com" required>
             </label>
+            <div class="span-two register-code-actions">
+                <button id="send-register-code-button" type="button" class="secondary-button">发送验证码</button>
+                <span id="register-code-hint" class="card-caption">验证码将发送到你的 QQ 邮箱，5 分钟内有效。</span>
+            </div>
+            <label>
+                <span>验证码</span>
+                <input type="text" name="verificationCode" placeholder="请输入 6 位验证码" inputmode="numeric" maxlength="6" required>
+            </label>
             <label class="span-two">
                 <span>手机号</span>
                 <input type="text" name="phone" placeholder="可选">
@@ -360,7 +368,7 @@
                 <div class="section-head billing-model-stats-head">
                     <div>
                         <h3>对外模型统计</h3>
-                        <div class="card-caption">这里按你的公开模型名统计，例如 `gpt-5.4`、`gpt-5.3-codex`，不是按上游真实模型名统计。</div>
+                        <div class="card-caption">这里按你的公开模型名统计，例如 `gpt-5.4`、`gpt-5.5`、`gpt-5.3-codex`，不是按上游真实模型名统计。</div>
                     </div>
                 </div>
                 <div class="table-wrap">
@@ -465,7 +473,8 @@
                         <p class="guide-paragraph">将下面内容写入 <code>auth.json</code>：</p>
                         <pre class="guide-code">{"OPENAI_API_KEY": "xxx"}</pre>
                         <div class="notice-box guide-notice">
-                            请将 <code>xxx</code> 替换成你的实际令牌。
+                            请将 <code>xxx</code> 替换成创建 API Key 时一次性返回的完整明文密钥，通常形如 <code>sk-live-...</code>。
+                            不要填写密钥列表中展示的短前缀或掩码值；如果完整密钥已经丢失，请重新创建一个新的 Key。
                         </div>
                     </article>
 
@@ -485,7 +494,7 @@ sandbox_mode = "workspace-write"
 
 [model_providers.zxw]
 name = "zxw"
-base_url = "http://e5d76292.natappfree.cc/v1"
+base_url = "http://127.0.0.1:9988/v1"
 wire_api = "responses"
 requires_openai_auth = true
 
@@ -769,8 +778,32 @@ sandbox = "elevated"</pre>
                         </div>
                         <div class="models-market-headline">
                             <div id="package-balance-pill" class="package-balance-pill">当前余额: $0.00</div>
+                            <button id="toggle-package-create-button" class="primary-button admin-only" type="button">新增套餐</button>
                             <button class="secondary-button" data-refresh="models" type="button">刷新</button>
                         </div>
+                    </div>
+
+                    <div id="package-create-box" class="surface-card hidden admin-only">
+                        <div class="section-head">
+                            <div>
+                                <h3>新增套餐</h3>
+                                <div class="card-caption">创建新的套餐分组，后续模型和 API Key 都会绑定到这个套餐。</div>
+                            </div>
+                        </div>
+                        <form id="package-form" class="form-grid three-col">
+                            <label><span>套餐编码</span><input type="text" name="groupCode" placeholder="例如 codex-pro" required></label>
+                            <label><span>套餐名称</span><input type="text" name="groupName" placeholder="例如 Codex Pro 套餐" required></label>
+                            <label><span>售价</span><input type="number" name="salePrice" step="0.0001" value="70" required></label>
+                            <label><span>有效天数</span><input type="number" name="packageDays" value="30" required></label>
+                            <label><span>日额度</span><input type="number" name="dailyQuota" step="0.0001" value="60" required></label>
+                            <label><span>周额度</span><input type="number" name="weeklyQuota" step="0.0001" value="420" required></label>
+                            <label><span>月额度</span><input type="number" name="monthlyQuota" step="0.0001" value="1800" required></label>
+                            <label class="span-two"><span>备注</span><input type="text" name="remark" placeholder="例如 仅开放 Codex 系列模型"></label>
+                            <div class="form-actions span-three">
+                                <button id="package-submit-button" type="submit" class="primary-button">创建套餐</button>
+                                <button id="close-package-create-button" type="button" class="secondary-button">取消</button>
+                            </div>
+                        </form>
                     </div>
 
                     <div class="package-center-shell">
@@ -837,14 +870,15 @@ sandbox = "elevated"</pre>
                             <button id="import-upstream-models-button" type="button" class="primary-button">批量导入</button>
                         </div>
                     </div>
-                    <p class="import-helper">先选择渠道，再读取上游模型，设置统一价格后批量导入。</p>
+                    <p class="import-helper">先选择套餐，再选择渠道并读取上游模型，勾选允许该套餐使用的模型后批量导入。</p>
                     <div class="form-grid four-col">
+                        <label><span>套餐分组</span><select id="import-group-select"></select></label>
                         <label><span>渠道</span><select id="import-provider-select"></select></label>
                         <label><span>输入价格</span><input id="import-prompt-price" type="number" step="0.000001" value="0"></label>
                         <label><span>输出价格</span><input id="import-completion-price" type="number" step="0.000001" value="0"></label>
-                        <label><span>倍率</span><input id="import-multiplier" type="number" step="0.0001" value="1"></label>
                     </div>
-                    <div class="form-grid compact-gap">
+                    <div class="form-grid three-col compact-gap">
+                        <label><span>倍率</span><input id="import-multiplier" type="number" step="0.0001" value="1"></label>
                         <label><span>是否公开</span><select id="import-is-public"><option value="true">公开</option><option value="false">不公开</option></select></label>
                     </div>
                     <div id="upstream-models-box" class="upstream-models-box"></div>
@@ -862,6 +896,7 @@ sandbox = "elevated"</pre>
                     <form id="model-form" class="form-grid three-col">
                         <label><span>模型编码</span><input type="text" name="modelCode" required></label>
                         <label><span>模型名称</span><input type="text" name="modelName" required></label>
+                        <label><span>套餐分组</span><select name="groupId" required></select></label>
                         <label>
                             <span>模型类型</span>
                             <select name="modelType">
@@ -903,6 +938,7 @@ sandbox = "elevated"</pre>
                             <tr>
                                 <th>ID</th>
                                 <th>模型</th>
+                                <th>套餐</th>
                                 <th>输入价格</th>
                                 <th>输出价格</th>
                                 <th>最低扣费</th>
@@ -915,6 +951,57 @@ sandbox = "elevated"</pre>
                             </tr>
                             </thead>
                             <tbody id="models-table"></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="surface-card table-shell">
+                    <div class="section-head">
+                        <div>
+                            <h3>套餐购买记录</h3>
+                            <div class="card-caption">显示最近购买的套餐、价格和有效期。</div>
+                        </div>
+                    </div>
+                    <div class="table-wrap">
+                        <table>
+                            <thead>
+                            <tr>
+                                <th>用户</th>
+                                <th>套餐</th>
+                                <th>价格</th>
+                                <th>开始时间</th>
+                                <th>到期时间</th>
+                                <th>状态</th>
+                                <th>创建时间</th>
+                            </tr>
+                            </thead>
+                            <tbody id="package-purchases-table"></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="surface-card table-shell">
+                    <div class="section-head">
+                        <div>
+                            <h3>余额流水</h3>
+                            <div class="card-caption">显示充值、套餐购买和模型消费等钱包变动记录。</div>
+                        </div>
+                    </div>
+                    <div class="table-wrap">
+                        <table>
+                            <thead>
+                            <tr>
+                                <th>用户</th>
+                                <th>流水类型</th>
+                                <th>方向</th>
+                                <th>金额</th>
+                                <th>变动前</th>
+                                <th>变动后</th>
+                                <th>说明</th>
+                                <th>时间</th>
+                            </tr>
+                            </thead>
+                            <tbody id="wallet-transactions-table"></tbody>
                         </table>
                     </div>
                 </div>
@@ -932,12 +1019,14 @@ sandbox = "elevated"</pre>
                         <table>
                             <thead>
                             <tr>
-                                <th>请求 ID</th>
                                 <th>用户</th>
                                 <th>模型</th>
+                                <th>套餐分组</th>
+                                <th>倍率</th>
                                 <th>耗时</th>
-                                <th>Token 消耗(输入/输出/总计)</th>
-                                <th>金额</th>
+                                <th>Token 用量(输入/输出)</th>
+                                <th>缓存读取</th>
+                                <th>费用</th>
                                 <th>状态</th>
                                 <th>时间</th>
                             </tr>

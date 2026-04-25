@@ -43,29 +43,40 @@ public class AdminApiKeyService {
 
         JwtUser currentUser = AdminContext.require();
         boolean groupSchemaReady = hasColumn("api_keys", "model_group_id") && hasTable("model_groups");
+        boolean packageSchemaReady = hasColumn("api_keys", "user_package_id") && hasTable("user_model_packages");
         String groupSelect = groupSchemaReady
                 ? "g.id as model_group_id, g.group_name as model_group_name,"
                 : "null as model_group_id, null as model_group_name,";
         String groupJoin = groupSchemaReady
                 ? "left join model_groups g on g.id = k.model_group_id"
                 : "";
+        String packageSelect = packageSchemaReady
+                ? "p.id as model_package_id, p.package_name as model_package_name,"
+                : "null as model_package_id, null as model_package_name,";
+        String packageJoin = packageSchemaReady
+                ? "left join user_model_packages p on p.id = k.user_package_id"
+                : "";
         if (!AdminContext.isAdmin()) {
             return jdbcTemplate.query("""
                     select k.id, k.user_id, u.username, k.name, k.access_key, k.status,
+                           %s
                            %s
                            k.total_quota, k.used_quota, k.expires_at, k.last_used_at, k.created_at
                     from api_keys k
                     join users u on u.id = k.user_id
                     %s
+                    %s
                     where k.deleted = 0 and k.user_id = ?
                     order by k.id desc
-                    """.formatted(groupSelect, groupJoin), (rs, rowNum) -> new ApiKeyListItemResponse(
+                    """.formatted(packageSelect, groupSelect, packageJoin, groupJoin), (rs, rowNum) -> new ApiKeyListItemResponse(
                     rs.getLong("id"),
                     rs.getLong("user_id"),
                     rs.getString("username"),
                     rs.getString("name"),
                     rs.getString("access_key"),
                     rs.getString("status"),
+                    rs.getObject("model_package_id") == null ? null : rs.getLong("model_package_id"),
+                    rs.getString("model_package_name"),
                     rs.getObject("model_group_id") == null ? null : rs.getLong("model_group_id"),
                     rs.getString("model_group_name"),
                     rs.getBigDecimal("total_quota"),
@@ -79,19 +90,23 @@ public class AdminApiKeyService {
         return jdbcTemplate.query("""
                 select k.id, k.user_id, u.username, k.name, k.access_key, k.status,
                        %s
+                       %s
                        k.total_quota, k.used_quota, k.expires_at, k.last_used_at, k.created_at
                 from api_keys k
                 join users u on u.id = k.user_id
                 %s
+                %s
                 where k.deleted = 0
                 order by k.id desc
-                """.formatted(groupSelect, groupJoin), (rs, rowNum) -> new ApiKeyListItemResponse(
+                """.formatted(packageSelect, groupSelect, packageJoin, groupJoin), (rs, rowNum) -> new ApiKeyListItemResponse(
                 rs.getLong("id"),
                 rs.getLong("user_id"),
                 rs.getString("username"),
                 rs.getString("name"),
                 rs.getString("access_key"),
                 rs.getString("status"),
+                rs.getObject("model_package_id") == null ? null : rs.getLong("model_package_id"),
+                rs.getString("model_package_name"),
                 rs.getObject("model_group_id") == null ? null : rs.getLong("model_group_id"),
                 rs.getString("model_group_name"),
                 rs.getBigDecimal("total_quota"),
@@ -117,23 +132,27 @@ public class AdminApiKeyService {
         if (userExists == null || userExists == 0) {
             throw new BusinessException("用户不存在");
         }
-        userModelAccessService.validateApiKeyCreationAccess(targetUserId, request.modelGroupId());
-        Long resolvedModelGroupId = userModelAccessService.resolveApiKeyModelGroupId(targetUserId, request.modelGroupId());
+        UserModelAccessService.ApiKeyPackageBinding packageBinding = userModelAccessService.resolveApiKeyPackageBinding(
+                targetUserId,
+                request.modelPackageId(),
+                request.modelGroupId()
+        );
 
         String plainTextKey = generatePlainTextKey();
         String accessKey = plainTextKey.substring(0, ACCESS_KEY_PREFIX_LENGTH);
         LocalDateTime expiresAt = parseDateTime(request.expiresAt());
 
         jdbcTemplate.update("""
-                insert into api_keys (user_id, name, access_key, secret_hash, status, expires_at, model_group_id, total_quota, used_quota, remark)
-                values (?, ?, ?, ?, 'ACTIVE', ?, ?, ?, 0, ?)
+                insert into api_keys (user_id, name, access_key, secret_hash, status, expires_at, user_package_id, model_group_id, total_quota, used_quota, remark)
+                values (?, ?, ?, ?, 'ACTIVE', ?, ?, ?, ?, 0, ?)
                 """,
                 targetUserId,
                 request.name(),
                 accessKey,
                 passwordService.encode(plainTextKey),
                 expiresAt,
-                resolvedModelGroupId,
+                packageBinding.packageId(),
+                packageBinding.modelGroupId(),
                 BigDecimal.ZERO,
                 request.remark()
         );
@@ -165,6 +184,27 @@ public class AdminApiKeyService {
         }
         if (updated == 0) {
             throw new BusinessException("API Key 不存在");
+        }
+    }
+
+    public void delete(Long id) {
+        JwtUser currentUser = AdminContext.require();
+        int updated;
+        if (AdminContext.isAdmin()) {
+            updated = jdbcTemplate.update("""
+                    update api_keys
+                    set deleted = 1, updated_at = now()
+                    where id = ? and deleted = 0
+                    """, id);
+        } else {
+            updated = jdbcTemplate.update("""
+                    update api_keys
+                    set deleted = 1, updated_at = now()
+                    where id = ? and user_id = ? and deleted = 0
+                    """, id, currentUser.userId());
+        }
+        if (updated == 0) {
+            throw new BusinessException("API Key ");
         }
     }
 

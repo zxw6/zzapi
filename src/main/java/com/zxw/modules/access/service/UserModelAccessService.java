@@ -4,15 +4,19 @@ import com.zxw.common.exception.BusinessException;
 import com.zxw.common.security.AdminContext;
 import com.zxw.common.security.JwtUser;
 import com.zxw.modules.access.dto.ModelAccessSummaryResponse;
+import com.zxw.modules.access.dto.ModelGroupCreateRequest;
 import com.zxw.modules.access.dto.ModelGroupOptionResponse;
+import com.zxw.modules.access.dto.ModelPackagePurchaseRecordResponse;
 import com.zxw.modules.access.dto.PurchaseModelPackageRequest;
 import com.zxw.modules.apikey.service.ApiKeyAuthService;
 import com.zxw.modules.gateway.service.GatewayRouteService;
+import com.zxw.modules.user.dto.WalletTransactionItemResponse;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
@@ -32,7 +36,7 @@ public class UserModelAccessService {
     private static final List<PresetGroup> PRESET_GROUPS = List.of(
             new PresetGroup("claude", "Claude 套餐", "适合 Claude / Sonnet / Opus 系列"),
             new PresetGroup("codex", "Codex 套餐", "适合 Codex 与编程模型"),
-            new PresetGroup("gpt", "GPT 套餐", "适合 GPT 系列模型")
+            new PresetGroup("gpt", "GPT 分组", "适合 GPT 系列模型")
     );
 
     private final JdbcTemplate jdbcTemplate;
@@ -92,16 +96,25 @@ public class UserModelAccessService {
                 "alter table users add column package_restriction_enabled tinyint(1) not null default 1");
         ensureColumnExists("api_keys", "model_group_id",
                 "alter table api_keys add column model_group_id bigint null");
+        ensureColumnExists("api_keys", "user_package_id",
+                "alter table api_keys add column user_package_id bigint null");
         ensureColumnExists("api_keys", "total_quota",
                 "alter table api_keys add column total_quota decimal(18, 4) not null default 0.0000");
         ensureColumnExists("api_keys", "used_quota",
                 "alter table api_keys add column used_quota decimal(18, 4) not null default 0.0000");
+        ensureColumnExists("request_logs", "user_package_id",
+                "alter table request_logs add column user_package_id bigint null after api_key_id");
+        ensureColumnExists("request_logs", "cached_prompt_tokens",
+                "alter table request_logs add column cached_prompt_tokens int not null default 0 after total_tokens");
+        ensureIndexExists("api_keys", "idx_api_keys_package",
+                "create index idx_api_keys_package on api_keys (user_package_id)");
         ensureIndexExists("api_keys", "idx_api_keys_group",
                 "create index idx_api_keys_group on api_keys (model_group_id)");
+        ensureIndexExists("request_logs", "idx_request_logs_package_date",
+                "create index idx_request_logs_package_date on request_logs (user_package_id, request_date)");
 
         expirePackages();
         ensurePresetGroups();
-        syncAllPresetModels();
         jdbcTemplate.update("""
                 update users
                 set package_restriction_enabled = case
@@ -119,6 +132,29 @@ public class UserModelAccessService {
         return buildSummary(currentUser.userId());
     }
 
+    public ApiKeyPackageBinding resolveApiKeyPackageBinding(Long userId, Long requestedPackageId, Long requestedGroupId) {
+        initializeDefaults();
+        expirePackages();
+        UserPackageRow targetPackage = requestedPackageId != null
+                ? findPackageById(userId, requestedPackageId)
+                : requestedGroupId == null ? null : findLatestPackage(userId, requestedGroupId);
+        if (targetPackage == null) {
+            throw new BusinessException(403, "请选择一个已购买且有效的套餐");
+        }
+        if (!targetPackage.active()) {
+            throw new BusinessException(403, "套餐已过期");
+        }
+        return new ApiKeyPackageBinding(targetPackage.id(), targetPackage.groupId(), targetPackage.groupName());
+    }
+
+    public Long resolveGatewayPackageId(ApiKeyAuthService.AuthenticatedApiKey auth,
+                                        GatewayRouteService.RouteDefinition route) {
+        initializeDefaults();
+        expirePackages();
+        UserPackageRow targetPackage = resolveGatewayPackage(auth, route);
+        return targetPackage == null ? null : targetPackage.id();
+    }
+
     public Long resolveApiKeyModelGroupId(Long userId, Long requestedGroupId) {
         initializeDefaults();
         expirePackages();
@@ -127,6 +163,41 @@ public class UserModelAccessService {
         }
         validateApiKeyCreationAccess(userId, requestedGroupId);
         return requestedGroupId;
+    }
+
+    @Transactional
+    public ModelAccessSummaryResponse createGroup(ModelGroupCreateRequest request) {
+        AdminContext.requireAdmin();
+        initializeDefaults();
+
+        String groupCode = normalizeGroupCode(request.groupCode());
+        if (groupCode.isBlank()) {
+            throw new BusinessException(400, "套餐编码不能为空");
+        }
+
+        Integer exists = jdbcTemplate.queryForObject("""
+                select count(*)
+                from model_groups
+                where group_code = ?
+                """, Integer.class, groupCode);
+        if (exists != null && exists > 0) {
+            throw new BusinessException(400, "套餐编码已存在");
+        }
+
+        jdbcTemplate.update("""
+                insert into model_groups (group_code, group_name, sale_price, package_days, daily_quota, weekly_quota, monthly_quota, status, remark)
+                values (?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?)
+                """,
+                groupCode,
+                trimToLength(request.groupName(), 64),
+                numberOrZero(request.salePrice()),
+                request.packageDays() == null || request.packageDays() <= 0 ? DEFAULT_PACKAGE_DAYS : request.packageDays(),
+                numberOrZero(request.dailyQuota()),
+                numberOrZero(request.weeklyQuota()),
+                numberOrZero(request.monthlyQuota()),
+                trimToLength(request.remark(), 255)
+        );
+        return buildSummary(AdminContext.require().userId());
     }
 
     @Transactional
@@ -140,11 +211,6 @@ public class UserModelAccessService {
         WalletRow wallet = getWallet(userId);
         if (wallet.balance().compareTo(group.salePrice()) < 0) {
             throw new BusinessException(400, "余额不足，请先充值");
-        }
-
-        UserPackageRow activePackage = findActivePackage(userId, group.id());
-        if (activePackage != null) {
-            throw new BusinessException(400, "当前分组套餐仍在有效期内");
         }
 
         LocalDateTime startAt = LocalDateTime.now();
@@ -211,8 +277,8 @@ public class UserModelAccessService {
             throw new BusinessException(403, "请先选择已购买且有效的套餐");
         }
 
-        ModelGroupRow group = getGroupById(modelGroupId);
-        UserPackageRow latestPackage = findLatestPackage(userId, group.id());
+        getGroupById(modelGroupId);
+        UserPackageRow latestPackage = findLatestPackage(userId, modelGroupId);
         if (latestPackage == null) {
             throw new BusinessException(403, "所选套餐尚未购买");
         }
@@ -235,13 +301,34 @@ public class UserModelAccessService {
             throw new BusinessException(403, "当前 API Key 未绑定套餐，请重新创建");
         }
 
+        UserPackageRow matchedPackage = resolveGatewayPackage(auth, route);
+        if (matchedPackage != null) {
+            if (!matchedPackage.active()) {
+                throw new BusinessException(403, "套餐已过期");
+            }
+            LocalDate today = LocalDate.now();
+            BigDecimal usedToday = calculatePackageUsageAmount(matchedPackage.id(), today, today);
+            BigDecimal usedThisWeek = calculatePackageUsageAmount(matchedPackage.id(), today.minusDays(6), today);
+            BigDecimal usedThisMonth = calculatePackageUsageAmount(matchedPackage.id(), today.withDayOfMonth(1), today);
+            validateQuotaLimits(matchedPackage.groupName(), matchedPackage.dailyQuota(), usedToday,
+                    matchedPackage.weeklyQuota(), usedThisWeek,
+                    matchedPackage.monthlyQuota(), usedThisMonth,
+                    resolveTotalQuota(matchedPackage.dailyQuota(), matchedPackage.monthlyQuota(), matchedPackage.packageDays()),
+                    calculatePackageTotalUsageAmount(matchedPackage.id()));
+            return;
+        }
+
         Integer inGroup = jdbcTemplate.queryForObject("""
                 select count(*)
                 from model_group_models
                 where group_id = ? and model_id = ?
                 """, Integer.class, auth.modelGroupId(), route.modelId());
         if (inGroup == null || inGroup == 0) {
-            throw new BusinessException(403, "当前套餐分组不可使用该模型");
+            String groupName = auth.modelGroupName() == null || auth.modelGroupName().isBlank()
+                    ? "当前套餐"
+                    : auth.modelGroupName();
+            throw new BusinessException(400,
+                    "模型错误：当前 API Key 仅支持套餐【" + groupName + "】内的模型，不能使用 " + route.modelCode());
         }
 
         UserPackageRow latestPackage = findLatestPackage(auth.userId(), auth.modelGroupId());
@@ -251,39 +338,194 @@ public class UserModelAccessService {
         if (!latestPackage.active()) {
             throw new BusinessException(403, "套餐过期");
         }
-        if (latestPackage.dailyQuota().compareTo(BigDecimal.ZERO) <= 0) {
+        LocalDate today = LocalDate.now();
+        BigDecimal usedToday = calculateUsageAmount(auth.userId(), auth.modelGroupId(), today, today);
+        BigDecimal usedThisWeek = calculateUsageAmount(auth.userId(), auth.modelGroupId(), today.minusDays(6), today);
+        BigDecimal usedThisMonth = calculateUsageAmount(auth.userId(), auth.modelGroupId(), today.withDayOfMonth(1), today);
+        validateQuotaLimits(latestPackage.groupName(), latestPackage.dailyQuota(), usedToday,
+                latestPackage.weeklyQuota(), usedThisWeek,
+                latestPackage.monthlyQuota(), usedThisMonth,
+                resolveTotalQuota(latestPackage.dailyQuota(), latestPackage.monthlyQuota(), latestPackage.packageDays()),
+                calculatePackageTotalUsageAmount(latestPackage.id()));
+    }
+
+    public void validateGatewayPackageAccess(ApiKeyAuthService.AuthenticatedApiKey auth,
+                                             GatewayRouteService.RouteDefinition route) {
+        initializeDefaults();
+        expirePackages();
+        if (auth == null || route == null) {
             return;
         }
-
-        BigDecimal usedToday = calculateUsageAmount(auth.userId(), auth.modelGroupId(), LocalDate.now(), LocalDate.now());
-        if (usedToday.compareTo(latestPackage.dailyQuota()) >= 0) {
-            throw new BusinessException(403, "今日余额已用完，请明天再来");
+        if ("ADMIN".equalsIgnoreCase(auth.roleCode())
+                && auth.modelGroupId() == null
+                && auth.userPackageId() == null) {
+            return;
         }
+        if (auth.modelGroupId() == null) {
+            throw new BusinessException(403, "当前 API Key 未绑定套餐，请重新创建");
+        }
+
+        Integer inGroup = jdbcTemplate.queryForObject("""
+                select count(*)
+                from model_group_models
+                where group_id = ? and model_id = ?
+                """, Integer.class, auth.modelGroupId(), route.modelId());
+        if (inGroup == null || inGroup == 0) {
+            String groupName = auth.modelGroupName() == null || auth.modelGroupName().isBlank()
+                    ? "当前套餐"
+                    : auth.modelGroupName();
+            throw new BusinessException(400,
+                    "模型错误：当前 API Key 仅支持套餐【" + groupName + "】内的模型，不能使用 " + route.modelCode());
+        }
+
+        UserPackageRow targetPackage = resolveGatewayPackage(auth, route);
+        if (targetPackage == null) {
+            throw new BusinessException(403, "当前套餐不存在或已失效，请重新选择套餐");
+        }
+        if (!targetPackage.active()) {
+            throw new BusinessException(403, "套餐已过期");
+        }
+        LocalDate today = LocalDate.now();
+        BigDecimal usedToday = calculatePackageUsageAmount(targetPackage.id(), today, today);
+        BigDecimal usedThisWeek = calculatePackageUsageAmount(targetPackage.id(), today.minusDays(6), today);
+        BigDecimal usedThisMonth = calculatePackageUsageAmount(targetPackage.id(), today.withDayOfMonth(1), today);
+        validateQuotaLimits(targetPackage.groupName(), targetPackage.dailyQuota(), usedToday,
+                targetPackage.weeklyQuota(), usedThisWeek,
+                targetPackage.monthlyQuota(), usedThisMonth,
+                resolveTotalQuota(targetPackage.dailyQuota(), targetPackage.monthlyQuota(), targetPackage.packageDays()),
+                calculatePackageTotalUsageAmount(targetPackage.id()));
     }
 
     @Transactional
-    public void syncPresetGroupsForModel(Long modelId, String modelCode, String upstreamModel) {
+    public void replaceModelGroupBinding(Long modelId, Long groupId) {
+        AdminContext.requireAdmin();
+        initializeDefaults();
         if (modelId == null) {
+            throw new BusinessException(400, "模型不存在");
+        }
+        getGroupById(groupId);
+        jdbcTemplate.update("delete from model_group_models where model_id = ?", modelId);
+        jdbcTemplate.update("""
+                insert into model_group_models (group_id, model_id)
+                values (?, ?)
+                """, groupId, modelId);
+    }
+
+    @Transactional
+    public void addModelGroupBinding(Long modelId, Long groupId) {
+        AdminContext.requireAdmin();
+        initializeDefaults();
+        if (modelId == null) {
+            throw new BusinessException(400, "模型不存在");
+        }
+        getGroupById(groupId);
+        Integer exists = jdbcTemplate.queryForObject("""
+                select count(*)
+                from model_group_models
+                where group_id = ? and model_id = ?
+                """, Integer.class, groupId, modelId);
+        if (exists != null && exists > 0) {
             return;
         }
-        for (PresetGroup preset : PRESET_GROUPS) {
-            Long groupId = findGroupIdByCode(preset.groupCode());
-            if (groupId == null) {
-                continue;
-            }
-            boolean matches = matchesPreset(preset.groupCode(), modelCode, upstreamModel);
-            if (matches) {
-                jdbcTemplate.update("""
-                        insert ignore into model_group_models (group_id, model_id)
-                        values (?, ?)
-                        """, groupId, modelId);
-            } else {
-                jdbcTemplate.update("""
-                        delete from model_group_models
-                        where group_id = ? and model_id = ?
-                        """, groupId, modelId);
-            }
-        }
+        jdbcTemplate.update("""
+                insert into model_group_models (group_id, model_id)
+                values (?, ?)
+                """, groupId, modelId);
+    }
+
+    @Transactional
+    public void deleteModelBindings(Long modelId) {
+        AdminContext.requireAdmin();
+        jdbcTemplate.update("delete from model_group_models where model_id = ?", modelId);
+    }
+
+    public List<ModelPackagePurchaseRecordResponse> listPurchaseRecords() {
+        initializeDefaults();
+        JwtUser currentUser = AdminContext.require();
+        boolean admin = AdminContext.isAdmin();
+        String sql = """
+                select p.id, p.user_id, u.username, p.group_id, g.group_code, g.group_name,
+                       (
+                           select count(*)
+                           from model_group_models mgm
+                           join models m on m.id = mgm.model_id
+                           where mgm.group_id = g.id and m.deleted = 0 and m.status = 'ACTIVE'
+                       ) as model_count,
+                       p.purchase_price, p.start_at, p.expires_at, p.status, p.created_at,
+                       g.package_days, g.daily_quota, g.weekly_quota, g.monthly_quota
+                from user_model_packages p
+                join users u on u.id = p.user_id and u.deleted = 0
+                join model_groups g on g.id = p.group_id
+                where %s
+                order by p.id desc
+                limit 100
+                """.formatted(admin ? "1 = 1" : "p.user_id = ?");
+        Object[] args = admin ? new Object[]{} : new Object[]{currentUser.userId()};
+        return jdbcTemplate.query(sql, (rs, rowNum) -> {
+            Long packageId = rs.getLong("id");
+            LocalDateTime expiresAt = rs.getTimestamp("expires_at").toLocalDateTime();
+            BigDecimal dailyQuota = rs.getBigDecimal("daily_quota");
+            BigDecimal weeklyQuota = rs.getBigDecimal("weekly_quota");
+            BigDecimal monthlyQuota = rs.getBigDecimal("monthly_quota");
+            BigDecimal totalQuota = resolveTotalQuota(dailyQuota, monthlyQuota, rs.getInt("package_days"));
+            return new ModelPackagePurchaseRecordResponse(
+                    packageId,
+                    rs.getLong("user_id"),
+                    rs.getString("username"),
+                    rs.getLong("group_id"),
+                    rs.getString("group_code"),
+                    rs.getString("group_name"),
+                    rs.getInt("model_count"),
+                    rs.getBigDecimal("purchase_price"),
+                    rs.getTimestamp("start_at").toLocalDateTime(),
+                    expiresAt,
+                    rs.getString("status"),
+                    rs.getTimestamp("created_at").toLocalDateTime(),
+                    "ACTIVE".equalsIgnoreCase(rs.getString("status")) && expiresAt.isAfter(LocalDateTime.now()),
+                    dailyQuota,
+                    weeklyQuota,
+                    monthlyQuota,
+                    totalQuota,
+                    calculatePackageUsageAmount(packageId, LocalDate.now(), LocalDate.now()),
+                    calculatePackageUsageAmount(packageId, LocalDate.now().minusDays(6), LocalDate.now()),
+                    calculatePackageUsageAmount(packageId, LocalDate.now().withDayOfMonth(1), LocalDate.now()),
+                    calculatePackageTotalUsageAmount(packageId),
+                    Math.max(0, ChronoUnit.DAYS.between(LocalDateTime.now(), expiresAt))
+            );
+        }, args);
+    }
+
+    public List<WalletTransactionItemResponse> listWalletTransactions() {
+        initializeDefaults();
+        JwtUser currentUser = AdminContext.require();
+        boolean admin = AdminContext.isAdmin();
+        String sql = """
+                select t.id, t.user_id, u.username, t.wallet_id, t.order_no, t.transaction_type,
+                       t.direction, t.amount, t.balance_before, t.balance_after, t.status,
+                       t.description_text, t.transaction_date, t.created_at
+                from transactions t
+                join users u on u.id = t.user_id and u.deleted = 0
+                where %s
+                order by t.id desc
+                limit 200
+                """.formatted(admin ? "1 = 1" : "t.user_id = ?");
+        Object[] args = admin ? new Object[]{} : new Object[]{currentUser.userId()};
+        return jdbcTemplate.query(sql, (rs, rowNum) -> new WalletTransactionItemResponse(
+                rs.getLong("id"),
+                rs.getLong("user_id"),
+                rs.getString("username"),
+                rs.getLong("wallet_id"),
+                rs.getString("order_no"),
+                rs.getString("transaction_type"),
+                rs.getString("direction"),
+                rs.getBigDecimal("amount"),
+                rs.getBigDecimal("balance_before"),
+                rs.getBigDecimal("balance_after"),
+                rs.getString("status"),
+                rs.getString("description_text"),
+                rs.getDate("transaction_date").toLocalDate(),
+                rs.getTimestamp("created_at").toLocalDateTime()
+        ), args);
     }
 
     private ModelAccessSummaryResponse buildSummary(Long userId) {
@@ -373,7 +615,7 @@ public class UserModelAccessService {
                     ? null
                     : Math.max(0, ChronoUnit.DAYS.between(LocalDateTime.now(), latestPackage.expiresAt()));
             String packageStatus = active ? "ACTIVE" : purchased ? "EXPIRED" : "NOT_PURCHASED";
-            String packageStatusText = active ? "使用中" : purchased ? "套餐过期" : "未购买";
+            String packageStatusText = active ? "使用中" : purchased ? "套餐过期" : "未购买套餐";
 
             result.add(new ModelGroupOptionResponse(
                     group.id(),
@@ -394,7 +636,8 @@ public class UserModelAccessService {
                     monthlyUsed,
                     packageStatus,
                     packageStatusText,
-                    group.remark()
+                    group.remark(),
+                    isSystemPreset(group.groupCode())
             ));
         }
         return result;
@@ -403,7 +646,7 @@ public class UserModelAccessService {
     private UserPackageRow findActivePackage(Long userId, Long groupId) {
         return jdbcTemplate.query("""
                 select p.id, p.group_id, g.group_code, g.group_name, p.expires_at, p.status,
-                       g.daily_quota, g.weekly_quota, g.monthly_quota
+                       g.package_days, g.daily_quota, g.weekly_quota, g.monthly_quota
                 from user_model_packages p
                 join model_groups g on g.id = p.group_id
                 where p.user_id = ? and p.group_id = ? and p.status = 'ACTIVE' and p.expires_at > now()
@@ -416,6 +659,55 @@ public class UserModelAccessService {
                 rs.getString("group_name"),
                 rs.getTimestamp("expires_at").toLocalDateTime(),
                 rs.getString("status"),
+                rs.getInt("package_days"),
+                rs.getBigDecimal("daily_quota"),
+                rs.getBigDecimal("weekly_quota"),
+                rs.getBigDecimal("monthly_quota")
+        ) : null, userId, groupId);
+    }
+
+    private UserPackageRow findPackageById(Long userId, Long packageId) {
+        if (packageId == null) {
+            return null;
+        }
+        return jdbcTemplate.query("""
+                select p.id, p.group_id, g.group_code, g.group_name, p.expires_at, p.status,
+                       g.package_days, g.daily_quota, g.weekly_quota, g.monthly_quota
+                from user_model_packages p
+                join model_groups g on g.id = p.group_id
+                where p.id = ? and p.user_id = ?
+                limit 1
+                """, rs -> rs.next() ? new UserPackageRow(
+                rs.getLong("id"),
+                rs.getLong("group_id"),
+                rs.getString("group_code"),
+                rs.getString("group_name"),
+                rs.getTimestamp("expires_at").toLocalDateTime(),
+                rs.getString("status"),
+                rs.getInt("package_days"),
+                rs.getBigDecimal("daily_quota"),
+                rs.getBigDecimal("weekly_quota"),
+                rs.getBigDecimal("monthly_quota")
+        ) : null, packageId, userId);
+    }
+
+    private UserPackageRow findFirstActivePackage(Long userId, Long groupId) {
+        return jdbcTemplate.query("""
+                select p.id, p.group_id, g.group_code, g.group_name, p.expires_at, p.status,
+                       g.package_days, g.daily_quota, g.weekly_quota, g.monthly_quota
+                from user_model_packages p
+                join model_groups g on g.id = p.group_id
+                where p.user_id = ? and p.group_id = ? and p.status = 'ACTIVE' and p.expires_at > now()
+                order by p.id asc
+                limit 1
+                """, rs -> rs.next() ? new UserPackageRow(
+                rs.getLong("id"),
+                rs.getLong("group_id"),
+                rs.getString("group_code"),
+                rs.getString("group_name"),
+                rs.getTimestamp("expires_at").toLocalDateTime(),
+                rs.getString("status"),
+                rs.getInt("package_days"),
                 rs.getBigDecimal("daily_quota"),
                 rs.getBigDecimal("weekly_quota"),
                 rs.getBigDecimal("monthly_quota")
@@ -426,7 +718,7 @@ public class UserModelAccessService {
         String sql = groupId == null
                 ? """
                 select p.id, p.group_id, g.group_code, g.group_name, p.expires_at, p.status,
-                       g.daily_quota, g.weekly_quota, g.monthly_quota
+                       g.package_days, g.daily_quota, g.weekly_quota, g.monthly_quota
                 from user_model_packages p
                 join model_groups g on g.id = p.group_id
                 where p.user_id = ?
@@ -435,7 +727,7 @@ public class UserModelAccessService {
                 """
                 : """
                 select p.id, p.group_id, g.group_code, g.group_name, p.expires_at, p.status,
-                       g.daily_quota, g.weekly_quota, g.monthly_quota
+                       g.package_days, g.daily_quota, g.weekly_quota, g.monthly_quota
                 from user_model_packages p
                 join model_groups g on g.id = p.group_id
                 where p.user_id = ? and p.group_id = ?
@@ -450,6 +742,7 @@ public class UserModelAccessService {
                 rs.getString("group_name"),
                 rs.getTimestamp("expires_at").toLocalDateTime(),
                 rs.getString("status"),
+                rs.getInt("package_days"),
                 rs.getBigDecimal("daily_quota"),
                 rs.getBigDecimal("weekly_quota"),
                 rs.getBigDecimal("monthly_quota")
@@ -467,6 +760,140 @@ public class UserModelAccessService {
                   and l.request_date between ? and ?
                 """, BigDecimal.class, userId, groupId, startDate, endDate);
         return amount == null ? BigDecimal.ZERO : amount;
+    }
+
+    private BigDecimal calculatePackageUsageAmount(Long packageId, LocalDate startDate, LocalDate endDate) {
+        if (packageId == null) {
+            return BigDecimal.ZERO;
+        }
+        BigDecimal amount = jdbcTemplate.queryForObject("""
+                select coalesce(sum(user_amount), 0)
+                from request_logs
+                where user_package_id = ?
+                  and request_date between ? and ?
+                """, BigDecimal.class, packageId, startDate, endDate);
+        return amount == null ? BigDecimal.ZERO : amount;
+    }
+
+    private BigDecimal calculatePackageTotalUsageAmount(Long packageId) {
+        if (packageId == null) {
+            return BigDecimal.ZERO;
+        }
+        BigDecimal amount = jdbcTemplate.queryForObject("""
+                select coalesce(sum(user_amount), 0)
+                from request_logs
+                where user_package_id = ?
+                """, BigDecimal.class, packageId);
+        return amount == null ? BigDecimal.ZERO : amount;
+    }
+
+    private BigDecimal resolveTotalQuota(BigDecimal dailyQuota, BigDecimal monthlyQuota, Integer packageDays) {
+        if (monthlyQuota != null && monthlyQuota.compareTo(BigDecimal.ZERO) > 0) {
+            return monthlyQuota;
+        }
+        if (dailyQuota == null || dailyQuota.compareTo(BigDecimal.ZERO) <= 0) {
+            return BigDecimal.ZERO;
+        }
+        int days = packageDays == null || packageDays <= 0 ? DEFAULT_PACKAGE_DAYS : packageDays;
+        return dailyQuota.multiply(BigDecimal.valueOf(days)).setScale(4, RoundingMode.HALF_UP);
+    }
+
+    private void validateQuotaLimits(String packageName,
+                                     BigDecimal dailyQuota,
+                                     BigDecimal dailyUsed,
+                                     BigDecimal weeklyQuota,
+                                     BigDecimal weeklyUsed,
+                                     BigDecimal monthlyQuota,
+                                     BigDecimal monthlyUsed,
+                                     BigDecimal totalQuota,
+                                     BigDecimal totalUsed) {
+        String displayName = packageName == null || packageName.isBlank() ? "当前套餐" : packageName;
+        if (isQuotaExceeded(dailyQuota, dailyUsed)) {
+            throw new BusinessException(403,
+                    "套餐额度不足：套餐【" + displayName + "】今日额度已用完，请明天再试或切换其他套餐");
+        }
+        if (isQuotaExceeded(weeklyQuota, weeklyUsed)) {
+            throw new BusinessException(403,
+                    "套餐额度不足：套餐【" + displayName + "】近7天额度已用完，请稍后再试或切换其他套餐");
+        }
+        if (isQuotaExceeded(monthlyQuota, monthlyUsed)) {
+            throw new BusinessException(403,
+                    "套餐额度不足：套餐【" + displayName + "】本月额度已用完，请下月再试或切换其他套餐");
+        }
+        if (isQuotaExceeded(totalQuota, totalUsed)) {
+            throw new BusinessException(403,
+                    "套餐额度不足：套餐【" + displayName + "】总额度已用完，请购买新套餐后继续使用");
+        }
+    }
+
+    private boolean isQuotaExceeded(BigDecimal quota, BigDecimal used) {
+        return quota != null
+                && quota.compareTo(BigDecimal.ZERO) > 0
+                && used != null
+                && used.compareTo(quota) >= 0;
+    }
+
+    private UserPackageRow resolveGatewayPackage(ApiKeyAuthService.AuthenticatedApiKey auth,
+                                                 GatewayRouteService.RouteDefinition route) {
+        if (auth == null) {
+            return null;
+        }
+        Long routeModelId = route == null ? null : route.modelId();
+        if (auth.userPackageId() != null) {
+            UserPackageRow boundPackage = findPackageById(auth.userId(), auth.userPackageId());
+            if (boundPackage != null && isModelInGroup(boundPackage.groupId(), routeModelId)) {
+                return boundPackage;
+            }
+        }
+        if (auth.modelGroupId() != null && isModelInGroup(auth.modelGroupId(), routeModelId)) {
+            UserPackageRow boundGroupPackage = findFirstActivePackage(auth.userId(), auth.modelGroupId());
+            if (boundGroupPackage != null) {
+                return boundGroupPackage;
+            }
+        }
+        return findLatestActivePackageByModel(auth.userId(), routeModelId);
+    }
+
+    private boolean isModelInGroup(Long groupId, Long modelId) {
+        if (groupId == null || modelId == null) {
+            return false;
+        }
+        Integer count = jdbcTemplate.queryForObject("""
+                select count(*)
+                from model_group_models
+                where group_id = ? and model_id = ?
+                """, Integer.class, groupId, modelId);
+        return count != null && count > 0;
+    }
+
+    private UserPackageRow findLatestActivePackageByModel(Long userId, Long modelId) {
+        if (userId == null || modelId == null) {
+            return null;
+        }
+        return jdbcTemplate.query("""
+                select p.id, p.group_id, g.group_code, g.group_name, p.expires_at, p.status,
+                       g.package_days, g.daily_quota, g.weekly_quota, g.monthly_quota
+                from user_model_packages p
+                join model_groups g on g.id = p.group_id
+                join model_group_models mgm on mgm.group_id = g.id
+                where p.user_id = ?
+                  and p.status = 'ACTIVE'
+                  and p.expires_at > now()
+                  and mgm.model_id = ?
+                order by p.expires_at desc, p.id desc
+                limit 1
+                """, rs -> rs.next() ? new UserPackageRow(
+                rs.getLong("id"),
+                rs.getLong("group_id"),
+                rs.getString("group_code"),
+                rs.getString("group_name"),
+                rs.getTimestamp("expires_at").toLocalDateTime(),
+                rs.getString("status"),
+                rs.getInt("package_days"),
+                rs.getBigDecimal("daily_quota"),
+                rs.getBigDecimal("weekly_quota"),
+                rs.getBigDecimal("monthly_quota")
+        ) : null, userId, modelId);
     }
 
     private WalletRow getWallet(Long userId) {
@@ -579,6 +1006,7 @@ public class UserModelAccessService {
                         preset.remark(),
                         existingId
                 );
+                syncPackageSnapshots(existingId, preset.groupName());
                 continue;
             }
 
@@ -595,33 +1023,26 @@ public class UserModelAccessService {
                     DEFAULT_MONTHLY_QUOTA,
                     preset.remark()
             );
+
+            Long createdId = findGroupIdByCode(preset.groupCode());
+            syncPackageSnapshots(createdId, preset.groupName());
         }
     }
 
-    private void syncAllPresetModels() {
-        for (PresetGroup preset : PRESET_GROUPS) {
-            Long groupId = findGroupIdByCode(preset.groupCode());
-            if (groupId == null) {
-                continue;
-            }
-            String matchSql = buildPresetMatchSql(preset.groupCode(), "m", "r");
-            jdbcTemplate.update("""
-                    insert ignore into model_group_models (group_id, model_id)
-                    select distinct ?, m.id
-                    from models m
-                    left join model_routes r on r.model_id = m.id and r.status = 'ACTIVE'
-                    where m.deleted = 0 and m.status = 'ACTIVE' and (%s)
-                    """.formatted(matchSql), groupId);
-
-            jdbcTemplate.update("""
-                    delete mgm
-                    from model_group_models mgm
-                    join models m on m.id = mgm.model_id
-                    left join model_routes r on r.model_id = m.id and r.status = 'ACTIVE'
-                    where mgm.group_id = ?
-                      and (m.deleted <> 0 or m.status <> 'ACTIVE' or not (%s))
-                    """.formatted(matchSql), groupId);
+    private void syncPackageSnapshots(Long groupId, String groupName) {
+        if (groupId == null || groupName == null || groupName.isBlank()) {
+            return;
         }
+        jdbcTemplate.update("""
+                update user_model_packages
+                set package_name = ?, updated_at = now()
+                where group_id = ?
+                  and (package_name is null or package_name <> ?)
+                """,
+                groupName,
+                groupId,
+                groupName
+        );
     }
 
     private Long findGroupIdByCode(String groupCode) {
@@ -631,40 +1052,6 @@ public class UserModelAccessService {
                 where group_code = ?
                 limit 1
                 """, rs -> rs.next() ? rs.getLong("id") : null, groupCode);
-    }
-
-    private String buildPresetMatchSql(String groupCode, String modelAlias, String routeAlias) {
-        String modelCode = "lower(coalesce(%s.model_code, ''))".formatted(modelAlias);
-        String modelName = "lower(coalesce(%s.model_name, ''))".formatted(modelAlias);
-        String upstreamModel = "lower(coalesce(%s.upstream_model, ''))".formatted(routeAlias);
-        return switch (groupCode) {
-            case "claude" -> "%s like 'claude%%' or %s like 'claude%%' or %s like 'claude%%'".formatted(modelCode, modelName, upstreamModel);
-            case "codex" -> "%s like 'codex%%' or %s like 'codex%%' or %s like 'codex%%' or %s like '%%codex%%' or %s like '%%codex%%' or %s like '%%codex%%'"
-                    .formatted(modelCode, modelName, upstreamModel, modelCode, modelName, upstreamModel);
-            case "gpt" -> "(%s like 'gpt%%' or %s like 'gpt%%' or %s like 'gpt%%') and %s not like '%%codex%%' and %s not like '%%codex%%' and %s not like '%%codex%%'"
-                    .formatted(modelCode, modelName, upstreamModel, modelCode, modelName, upstreamModel);
-            default -> "1 = 0";
-        };
-    }
-
-    private boolean matchesPreset(String groupCode, String modelCode, String upstreamModel) {
-        String normalizedModelCode = normalize(modelCode);
-        String normalizedUpstreamModel = normalize(upstreamModel);
-        return switch (groupCode) {
-            case "claude" -> normalizedModelCode.startsWith("claude") || normalizedUpstreamModel.startsWith("claude");
-            case "codex" -> normalizedModelCode.startsWith("codex")
-                    || normalizedUpstreamModel.startsWith("codex")
-                    || normalizedModelCode.contains("codex")
-                    || normalizedUpstreamModel.contains("codex");
-            case "gpt" -> (normalizedModelCode.startsWith("gpt") || normalizedUpstreamModel.startsWith("gpt"))
-                    && !normalizedModelCode.contains("codex")
-                    && !normalizedUpstreamModel.contains("codex");
-            default -> false;
-        };
-    }
-
-    private String normalize(String value) {
-        return value == null ? "" : value.toLowerCase();
     }
 
     private void expirePackages() {
@@ -717,6 +1104,37 @@ public class UserModelAccessService {
         return prefix + System.currentTimeMillis() + UUID.randomUUID().toString().replace("-", "").substring(0, 8).toUpperCase();
     }
 
+    private String normalizeGroupCode(String value) {
+        String normalized = value == null ? "" : value.trim().toLowerCase()
+                .replaceAll("[^a-z0-9._-]+", "-")
+                .replaceAll("-{2,}", "-")
+                .replaceAll("^-+", "")
+                .replaceAll("-+$", "");
+        return normalized.isBlank() ? "" : trimToLength(normalized, 64);
+    }
+
+    private String trimToLength(String value, int maxLength) {
+        if (value == null) {
+            return null;
+        }
+        return value.length() <= maxLength ? value : value.substring(0, maxLength);
+    }
+
+    private BigDecimal numberOrZero(BigDecimal value) {
+        return value == null ? BigDecimal.ZERO : value;
+    }
+
+    private boolean isSystemPreset(String groupCode) {
+        return PRESET_GROUPS.stream().anyMatch(item -> item.groupCode().equalsIgnoreCase(groupCode));
+    }
+
+    public record ApiKeyPackageBinding(
+            Long packageId,
+            Long modelGroupId,
+            String packageName
+    ) {
+    }
+
     private record PresetGroup(
             String groupCode,
             String groupName,
@@ -757,6 +1175,7 @@ public class UserModelAccessService {
             String groupName,
             LocalDateTime expiresAt,
             String status,
+            Integer packageDays,
             BigDecimal dailyQuota,
             BigDecimal weeklyQuota,
             BigDecimal monthlyQuota

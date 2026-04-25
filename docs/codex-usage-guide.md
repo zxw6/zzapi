@@ -50,7 +50,7 @@ C:\Users\你的用户名\.codex
 将下面内容写入 `auth.json`：
 
 ```json
-{"OPENAI_API_KEY": "xxx"}
+{"OPENAI_API_KEY": "sk-live-your-full-api-key"}
 ```
 
 说明：
@@ -73,7 +73,7 @@ sandbox_mode = "workspace-write"
 
 [model_providers.zxw]
 name = "zxw"
-base_url = "http://e5d76292.natappfree.cc/v1"
+base_url = "http://127.0.0.1:9988/v1"
 wire_api = "responses"
 requires_openai_auth = true
 ```

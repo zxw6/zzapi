@@ -10,11 +10,14 @@
     models: [],
     logs: [],
     modelStats: [],
+    packagePurchaseRecords: [],
+    walletTransactions: [],
     upstreamModels: [],
     modelProviderFilter: "ALL",
     selectedPanel: "overview-panel",
     selectedModelId: null,
     selectedPackageGroupId: null,
+    selectedPackageId: null,
     editingUserId: null,
     userDetailMode: "view",
     editingModelId: null
@@ -63,6 +66,8 @@ const elements = {
     openRegisterButton: document.getElementById("open-register-button"),
     closeRegisterButton: document.getElementById("close-register-button"),
     registerForm: document.getElementById("register-form"),
+    sendRegisterCodeButton: document.getElementById("send-register-code-button"),
+    registerCodeHint: document.getElementById("register-code-hint"),
     userDetailModal: document.getElementById("user-detail-modal"),
     closeUserDetailButton: document.getElementById("close-user-detail-button"),
     userDetailForm: document.getElementById("user-detail-form"),
@@ -111,6 +116,11 @@ const elements = {
     modelPackageSummary: document.getElementById("model-package-summary"),
     packageCardGrid: document.getElementById("package-card-grid"),
     packageBalancePill: document.getElementById("package-balance-pill"),
+    togglePackageCreateButton: document.getElementById("toggle-package-create-button"),
+    closePackageCreateButton: document.getElementById("close-package-create-button"),
+    packageCreateBox: document.getElementById("package-create-box"),
+    packageForm: document.getElementById("package-form"),
+    packageSubmitButton: document.getElementById("package-submit-button"),
     plainKeyBox: document.getElementById("plain-key-box"),
     keysList: document.getElementById("keys-list"),
     keysEmpty: document.getElementById("keys-empty"),
@@ -130,6 +140,7 @@ const elements = {
     modelDetailPricing: document.getElementById("model-detail-pricing"),
     modelDetailCode: document.getElementById("model-detail-code"),
     fetchUpstreamModelsButton: document.getElementById("fetch-upstream-models-button"),
+    importGroupSelect: document.getElementById("import-group-select"),
     importProviderSelect: document.getElementById("import-provider-select"),
     importPromptPrice: document.getElementById("import-prompt-price"),
     importCompletionPrice: document.getElementById("import-completion-price"),
@@ -145,6 +156,8 @@ const elements = {
     modelSubmitButton: document.getElementById("model-submit-button"),
     modelCancelEditButton: document.getElementById("model-cancel-edit-button"),
     modelsTable: document.getElementById("models-table"),
+    packagePurchasesTable: document.getElementById("package-purchases-table"),
+    walletTransactionsTable: document.getElementById("wallet-transactions-table"),
     logsTable: document.getElementById("logs-table"),
     agentDebugModel: document.getElementById("agent-debug-model"),
     agentDebugWorkspace: document.getElementById("agent-debug-workspace"),
@@ -165,7 +178,7 @@ const elements = {
 
 function isAdmin() {
     return state.me?.roleCode === "ADMIN";
-}
+}/*
 
 function escapeHtml(value) {
     return String(value ?? "")
@@ -174,7 +187,7 @@ function escapeHtml(value) {
         .replaceAll(">", "&gt;")
         .replaceAll('"', "&quot;")
         .replaceAll("'", "&#39;");
-}
+}*/
 
 function toNumber(value) {
     const num = Number(value ?? 0);
@@ -207,14 +220,32 @@ function rememberPlainApiKey(plainTextKey) {
     writeStoredPlainKeys(store);
 }
 
+function forgetPlainApiKey(accessKey) {
+    const prefix = String(accessKey || "").trim();
+    if (!prefix) {
+        return;
+    }
+    const store = readStoredPlainKeys();
+    if (!store[prefix]) {
+        return;
+    }
+    delete store[prefix];
+    writeStoredPlainKeys(store);
+}
+
 function hydrateApiKeys(keys) {
     const store = readStoredPlainKeys();
     return (keys || []).map((key) => ({
         ...key,
         plainTextKey: store[key.accessKey] || ""
     }));
+}/*
+            showToast("API Key 已复制");
+        }
+    }));
 }
 
+*/
 function getUsableApiKey(keys) {
     const activeKey = (keys || []).find((key) => key.status === "ACTIVE" && key.plainTextKey);
     if (activeKey) {
@@ -334,7 +365,15 @@ async function sendAgentDebugRequest() {
 }
 
 function formatMoney(value) {
-    return `$${toNumber(value).toFixed(2)}`;
+    const amount = toNumber(value);
+    const abs = Math.abs(amount);
+    if (abs > 0 && abs < 0.0001) {
+        return `$${amount.toFixed(6)}`;
+    }
+    if (abs > 0 && abs < 0.01) {
+        return `$${amount.toFixed(4)}`;
+    }
+    return `$${amount.toFixed(2)}`;
 }
 
 function formatDecimal(value, digits = 4) {
@@ -402,6 +441,15 @@ function getSelectedPackageGroup() {
     if (explicit) {
         return explicit;
     }
+    const latestPurchasedPackage = getPurchasedPackages()
+        .slice()
+        .sort((a, b) => toNumber(b.id) - toNumber(a.id))[0];
+    if (latestPurchasedPackage) {
+        const matchedGroup = groups.find((item) => String(item.id) === String(latestPurchasedPackage.groupId));
+        if (matchedGroup) {
+            return matchedGroup;
+        }
+    }
     return groups.find((item) => item.active)
         || groups.find((item) => item.purchased)
         || groups[0];
@@ -416,9 +464,124 @@ function getPurchasedGroups() {
     return getAccessGroups().filter((item) => item.purchased);
 }
 
+function getPurchasedPackages() {
+    const groups = getAccessGroups();
+    return (state.packagePurchaseRecords || [])
+        .map((item) => {
+            const group = groups.find((groupItem) => String(groupItem.id) === String(item.groupId)) || {};
+            return {
+                ...group,
+                ...item,
+                modelCount: item.modelCount ?? group.modelCount ?? 0,
+                packageDays: item.packageDays ?? group.packageDays ?? 30,
+                remark: item.remark ?? group.remark ?? ""
+            };
+        })
+        .sort((a, b) => toNumber(a.id) - toNumber(b.id));
+}
+
+function isPackageUsable(item) {
+    if (!item) {
+        return false;
+    }
+    if (item.active === true) {
+        return true;
+    }
+    const status = String(item.status || item.packageStatus || "").toUpperCase();
+    if (status && status !== "ACTIVE") {
+        return false;
+    }
+    if (!item.expiresAt) {
+        return status === "ACTIVE";
+    }
+    const expiresAt = new Date(item.expiresAt);
+    return !Number.isNaN(expiresAt.getTime()) && expiresAt.getTime() > Date.now();
+}
+
+function packageAvailabilityLabel(item) {
+    return isPackageUsable(item) ? "可用" : "不可用";
+}
+
+function getSelectedPurchasedPackage() {
+    const packages = getPurchasedPackages();
+    if (!packages.length) {
+        return null;
+    }
+    const explicit = packages.find((item) => String(item.id) === String(state.selectedPackageId));
+    if (explicit) {
+        return explicit;
+    }
+    if (state.selectedPackageGroupId) {
+        const latestByGroup = getLatestPurchasedPackageByGroup(state.selectedPackageGroupId);
+        if (latestByGroup) {
+            return latestByGroup;
+        }
+    }
+    return packages.slice().sort((a, b) => toNumber(b.id) - toNumber(a.id)).find((item) => isPackageUsable(item))
+        || packages.slice().sort((a, b) => toNumber(b.id) - toNumber(a.id))[0];
+}
+
+function syncSelectedPurchasedPackage() {
+    const selected = getSelectedPurchasedPackage();
+    state.selectedPackageId = selected?.id ?? null;
+}
+
+function getFirstPurchasedPackageByGroup(groupId) {
+    return getPurchasedPackages()
+        .filter((item) => String(item.groupId) === String(groupId))
+        .sort((a, b) => toNumber(b.id) - toNumber(a.id))[0] || null;
+}
+
+function getLatestPurchasedPackageByGroup(groupId) {
+    return getPurchasedPackages()
+        .filter((item) => String(item.groupId) === String(groupId))
+        .sort((a, b) => toNumber(b.id) - toNumber(a.id))[0] || null;
+}
+
+function buildPurchasedPackageLabel(item) {
+    if (!item) {
+        return "未购买套餐";
+    }
+    return `${item.groupName || item.groupCode || "套餐"} #${item.id}`;
+}
+
+function getManageableGroups() {
+    return getAccessGroups();
+}
+
+function populatePackageGroupSelects() {
+    const groups = getManageableGroups();
+    const options = groups.length
+        ? groups.map((group) => `<option value="${escapeHtml(group.id)}">${escapeHtml(group.groupName)} (${escapeHtml(group.groupCode)})</option>`).join("")
+        : '<option value="">暂无套餐</option>';
+
+    if (elements.importGroupSelect) {
+        elements.importGroupSelect.innerHTML = groups.length
+            ? `<option value="">请选择套餐</option>${options}`
+            : options;
+        if (state.selectedPackageGroupId && groups.some((item) => String(item.id) === String(state.selectedPackageGroupId))) {
+            elements.importGroupSelect.value = String(state.selectedPackageGroupId);
+        }
+    }
+
+    const modelGroupSelect = elements.modelForm?.elements?.groupId;
+    if (modelGroupSelect) {
+        modelGroupSelect.innerHTML = groups.length
+            ? `<option value="">请选择套餐</option>${options}`
+            : options;
+        if (!state.editingModelId && state.selectedPackageGroupId && groups.some((item) => String(item.id) === String(state.selectedPackageGroupId))) {
+            modelGroupSelect.value = String(state.selectedPackageGroupId);
+        }
+    }
+}
+
 function getPackageTotalQuota(group) {
     if (!group) {
         return 0;
+    }
+    const total = toNumber(group.totalQuota);
+    if (total > 0) {
+        return total;
     }
     const monthly = toNumber(group.monthlyQuota);
     if (monthly > 0) {
@@ -480,7 +643,23 @@ function accessStatusBadge(status) {
     return '<span class="soft-badge">待处理</span>';
 }
 
+async function copyApiKey(id) {
+    const key = state.keys.find((item) => String(item.id) === String(id));
+    if (!key) {
+        throw new Error("未找到对应的 API Key");
+    }
+    if (!key.plainTextKey) {
+        throw new Error("当前浏览器没有保存这个 Key 的完整明文，请使用创建成功时返回的密钥，或重新创建一个新的 Key。");
+    }
+    await navigator.clipboard.writeText(key.plainTextKey);
+    showToast("完整 API Key 已复制");
+}
+
 let toastTimer = null;
+let registerCodeCooldownTimer = null;
+let registerCodeSentToEmail = "";
+const REGISTER_CODE_HINT_DEFAULT = "验证码将发送到你的 QQ 邮箱，5 分钟内有效。";
+
 function showToast(message, isError = false) {
     elements.toast.textContent = message || (isError ? "操作失败" : "操作成功");
     elements.toast.style.background = isError ? "rgba(140, 42, 27, 0.94)" : "rgba(51, 31, 18, 0.92)";
@@ -507,6 +686,47 @@ async function fetchJson(url, options = {}) {
         throw new Error(data?.message || `请求失败: HTTP ${response.status}`);
     }
     return data.data;
+}
+
+function updateRegisterCodeUi(secondsLeft = 0) {
+    if (!elements.sendRegisterCodeButton || !elements.registerCodeHint) {
+        return;
+    }
+    const coolingDown = secondsLeft > 0;
+    elements.sendRegisterCodeButton.disabled = coolingDown;
+    elements.sendRegisterCodeButton.textContent = coolingDown
+        ? `重新发送 (${secondsLeft}s)`
+        : "发送验证码";
+}
+
+function resetRegisterCodeState({ resetForm = false } = {}) {
+    window.clearInterval(registerCodeCooldownTimer);
+    registerCodeCooldownTimer = null;
+    registerCodeSentToEmail = "";
+    updateRegisterCodeUi(0);
+    if (elements.registerCodeHint) {
+        elements.registerCodeHint.textContent = REGISTER_CODE_HINT_DEFAULT;
+    }
+    if (resetForm) {
+        elements.registerForm?.reset();
+    }
+}
+
+function startRegisterCodeCooldown(durationSeconds = 60) {
+    window.clearInterval(registerCodeCooldownTimer);
+    let secondsLeft = Math.max(0, Math.floor(durationSeconds));
+    updateRegisterCodeUi(secondsLeft);
+    if (secondsLeft <= 0) {
+        return;
+    }
+    registerCodeCooldownTimer = window.setInterval(() => {
+        secondsLeft -= 1;
+        updateRegisterCodeUi(secondsLeft);
+        if (secondsLeft <= 0) {
+            window.clearInterval(registerCodeCooldownTimer);
+            registerCodeCooldownTimer = null;
+        }
+    }, 1000);
 }
 
 function setMenuLabel() {
@@ -560,8 +780,8 @@ function populateKeyGroupOptions() {
     if (!elements.keyForm) {
         return;
     }
-    const selectableGroups = getPurchasedGroups().filter((item) => item.active);
-    const currentValue = elements.keyForm.querySelector('input[name="modelGroupId"]:checked')?.value || "";
+    const selectableGroups = getPurchasedPackages().filter((item) => isPackageUsable(item));
+    const currentValue = elements.keyForm.querySelector('input[name="modelPackageId"]:checked')?.value || "";
     let selectedValue = currentValue;
 
     if (!elements.keyGroupOptions) {
@@ -580,20 +800,38 @@ function populateKeyGroupOptions() {
     }
 
     if (!selectedValue) {
-        selectedValue = selectableGroups[0]?.id ? String(selectableGroups[0].id) : "";
+        const selectedGroupPackage = state.selectedPackageGroupId
+            ? getLatestPurchasedPackageByGroup(state.selectedPackageGroupId)
+            : null;
+        selectedValue = selectedGroupPackage?.id ? String(selectedGroupPackage.id) : (state.selectedPackageId ? String(state.selectedPackageId) : "");
     }
 
-    elements.keyGroupHint.textContent = "请选择一个已购买且未过期的套餐分组来创建 Key。";
+    if (!selectedValue) {
+        const latestActivePackage = selectableGroups
+            .slice()
+            .sort((a, b) => toNumber(b.id) - toNumber(a.id))[0];
+        selectedValue = latestActivePackage?.id ? String(latestActivePackage.id) : "";
+    }
+
+    if (selectedValue && !selectableGroups.some((item) => String(item.id) === String(selectedValue))) {
+        const latestActivePackage = selectableGroups
+            .slice()
+            .sort((a, b) => toNumber(b.id) - toNumber(a.id))[0];
+        selectedValue = latestActivePackage?.id ? String(latestActivePackage.id) : "";
+    }
+
+    elements.keyGroupHint.textContent = "请选择一个已购买且未过期的具体套餐来创建 Key。";
+    state.selectedPackageId = selectedValue || null;
 
     const options = selectableGroups.map((group) => `
         <label class="key-group-card ${String(selectedValue) === String(group.id) ? "selected" : ""}">
-            <input type="radio" name="modelGroupId" value="${escapeHtml(group.id)}" ${String(selectedValue) === String(group.id) ? "checked" : ""}>
+            <input type="radio" name="modelPackageId" value="${escapeHtml(group.id)}" ${String(selectedValue) === String(group.id) ? "checked" : ""}>
             <span class="key-group-card-check"></span>
             <span class="key-group-card-main">
-                <strong>${escapeHtml(group.groupName)}</strong>
+                <strong>${escapeHtml(buildPurchasedPackageLabel(group))}</strong>
                 <small>${escapeHtml(group.remark || `${group.modelCount || 0} 个模型 · ${group.packageDays || 30} 天有效期`)}</small>
             </span>
-            <span class="key-group-card-pill">${escapeHtml(formatMoney(group.salePrice || 0))}</span>
+            <span class="key-group-card-pill">${escapeHtml(formatMoney(group.purchasePrice || 0))}</span>
         </label>
     `).join("");
 
@@ -603,8 +841,9 @@ function populateKeyGroupOptions() {
 function renderModelAccessSummary() {
     const summary = state.accessSummary || {};
     const groups = getAccessGroups();
-    const purchasedGroups = getPurchasedGroups();
+    const purchasedPackages = getPurchasedPackages();
     const selectedGroup = getSelectedPackageGroup();
+    const selectedPackage = getSelectedPurchasedPackage();
     const detail = state.users.find((item) => item.id === state.me?.userId) || state.users[0] || {};
 
     if (!elements.modelPackageSummary || !elements.packageCardGrid) {
@@ -617,7 +856,7 @@ function renderModelAccessSummary() {
 
     elements.packageCardGrid.innerHTML = groups.length
         ? groups.map((group, index) => {
-            const isSelected = String(selectedGroup?.id) === String(group.id);
+            const isSelected = String(selectedPackage?.groupId || selectedGroup?.id) === String(group.id);
             return `
             <article class="package-plan-card ${group.active ? "active" : ""} ${isSelected ? "selected" : ""}" data-select-package="${escapeHtml(group.id)}">
                 <div class="package-plan-badge-row">
@@ -638,9 +877,8 @@ function renderModelAccessSummary() {
                         type="button"
                         class="primary-button wide-button package-buy-button"
                         data-purchase-group="${escapeHtml(group.id)}"
-                        ${group.active ? "disabled" : ""}
                     >
-                        ${group.active ? "套餐使用中" : group.purchased ? "重新购买" : "立即购买"}
+                        ${group.purchased ? "再次购买" : "立即购买"}
                     </button>
                     ${isAdmin() ? `<button type="button" class="mini-button danger-button package-delete-button" data-delete-group="${escapeHtml(group.id)}">删除套餐</button>` : ""}
                 </div>
@@ -649,20 +887,21 @@ function renderModelAccessSummary() {
         }).join("")
         : '<div class="empty-state">当前还没有可购买的套餐分组。</div>';
 
-    if (purchasedGroups.length) {
-        elements.modelPackageSummary.innerHTML = purchasedGroups.map((group) => `
+    if (purchasedPackages.length) {
+        elements.modelPackageSummary.innerHTML = purchasedPackages.map((item) => `
             <article class="package-summary-card">
                 <div class="package-summary-top">
                     <div>
-                        <div class="package-summary-name">${escapeHtml(group.groupName)}</div>
-                        <div class="card-caption">${escapeHtml(group.packageStatusText || "已购买")}</div>
+                        <div class="package-summary-name">${escapeHtml(buildPurchasedPackageLabel(item))}</div>
+                        <div class="card-caption">${escapeHtml(item.active ? "可用中" : (item.status || "已购买"))}</div>
                     </div>
-                    ${accessStatusBadge(group.packageStatus)}
+                    ${accessStatusBadge(item.active ? "ACTIVE" : (item.status || "EXPIRED"))}
                 </div>
                 <div class="package-summary-meta">
-                    <span>到期 ${escapeHtml(formatDateTime(group.expiresAt))}</span>
-                    <span>今日 ${escapeHtml(formatQuotaText(group.dailyUsed, group.dailyQuota))}</span>
-                    <span>本周 ${escapeHtml(formatQuotaText(group.weeklyUsed, group.weeklyQuota))}</span>
+                    <span>到期 ${escapeHtml(formatDateTime(item.expiresAt))}</span>
+                    <span>今日 ${escapeHtml(formatQuotaText(item.dailyUsed, item.dailyQuota))}</span>
+                    <span>本周 ${escapeHtml(formatQuotaText(item.weeklyUsed, item.weeklyQuota))}</span>
+                    <span>总额 ${escapeHtml(formatQuotaText(item.totalUsed, getPackageTotalQuota(item)))}</span>
                 </div>
             </article>
         `).join("");
@@ -681,9 +920,10 @@ function renderModelAccessSummary() {
     }
 
     if (elements.dashboardPackageSelect) {
-        elements.dashboardPackageSelect.value = selectedGroup ? String(selectedGroup.id) : "";
+        elements.dashboardPackageSelect.value = selectedPackage ? String(selectedPackage.id) : "";
     }
     populateKeyGroupOptions();
+    populatePackageGroupSelects();
 }
 
 function renderAllSections() {
@@ -697,9 +937,12 @@ function renderAllSections() {
     renderKeysTable();
     renderProvidersTable();
     populateImportProviderOptions();
+    populatePackageGroupSelects();
     renderModelProviderFilters();
     renderModelCards();
     renderModelsTable();
+    renderPackagePurchaseRecords();
+    renderWalletTransactions();
     renderLogsTable();
     renderBillingModelStats();
 }
@@ -824,12 +1067,12 @@ function renderProfileCard() {
         return;
     }
     const detail = state.users.find((item) => item.id === state.me?.userId) || state.users[0] || {};
-    const selectedGroup = getSelectedPackageGroup();
+    const selectedPackage = getSelectedPurchasedPackage();
     const displayName = detail.nickname || detail.username || state.me?.nickname || state.me?.username || "开发者";
     const email = detail.email || "未设置邮箱";
     const lastLogin = detail.lastLoginAt ? relativeTimeFromNow(detail.lastLoginAt) : "尚未登录";
     const createdAt = detail.createdAt ? formatDateTime(detail.createdAt) : "-";
-    const packageLabel = selectedGroup?.groupName || "未购买套餐";
+    const packageLabel = selectedPackage ? buildPurchasedPackageLabel(selectedPackage) : "未购买套餐";
 
     elements.profileCardBody.innerHTML = `
         <div class="dashboard-user-top">
@@ -874,23 +1117,25 @@ function renderProfileCard() {
 
 function renderQuotaCard() {
     const summary = state.accessSummary || {};
-    const purchasedGroups = getPurchasedGroups();
-    const selectedGroup = getSelectedPackageGroup();
+    const purchasedPackages = getPurchasedPackages();
+    const selectedPackage = getSelectedPurchasedPackage();
     if (!elements.quotaCardBody || !elements.dashboardPackageSelect) {
         return;
     }
 
-    elements.quotaCardTitle.textContent = selectedGroup?.groupName || "套餐额度";
-    elements.quotaStatusBadge.innerHTML = accessStatusBadge(selectedGroup?.packageStatus || summary.packageStatus);
-    elements.dashboardPackageSelect.innerHTML = purchasedGroups.length
-        ? purchasedGroups.map((group) => `
-            <option value="${escapeHtml(group.id)}" ${String(group.id) === String(selectedGroup?.id) ? "selected" : ""}>
-                ${escapeHtml(group.groupName)}${group.active ? "（使用中）" : ""}
+    elements.quotaCardTitle.textContent = selectedPackage ? buildPurchasedPackageLabel(selectedPackage) : "套餐额度";
+    elements.quotaStatusBadge.innerHTML = accessStatusBadge(
+        selectedPackage ? (isPackageUsable(selectedPackage) ? "ACTIVE" : "EXPIRED") : summary.packageStatus
+    );
+    elements.dashboardPackageSelect.innerHTML = purchasedPackages.length
+        ? purchasedPackages.map((item) => `
+            <option value="${escapeHtml(item.id)}" ${String(item.id) === String(selectedPackage?.id) ? "selected" : ""}>
+                ${escapeHtml(buildPurchasedPackageLabel(item))}${item.active ? "（可用）" : ""}
             </option>
         `).join("")
         : '<option value="">未购买套餐</option>';
 
-    if (!purchasedGroups.length) {
+    if (!purchasedPackages.length) {
         elements.quotaCardBody.innerHTML = `
             <div class="dashboard-package-empty">
                 <div class="quota-plan">还没有已购套餐</div>
@@ -901,25 +1146,27 @@ function renderQuotaCard() {
         return;
     }
 
-    const dailyQuota = toNumber(selectedGroup?.dailyQuota);
-    const weeklyQuota = toNumber(selectedGroup?.weeklyQuota);
-    const monthlyQuota = toNumber(selectedGroup?.monthlyQuota);
-    const dailyUsed = toNumber(selectedGroup?.dailyUsed);
-    const weeklyUsed = toNumber(selectedGroup?.weeklyUsed);
-    const monthlyUsed = toNumber(selectedGroup?.monthlyUsed);
+    const dailyQuota = toNumber(selectedPackage?.dailyQuota);
+    const weeklyQuota = toNumber(selectedPackage?.weeklyQuota);
+    const monthlyQuota = toNumber(selectedPackage?.monthlyQuota);
+    const totalQuota = getPackageTotalQuota(selectedPackage);
+    const dailyUsed = toNumber(selectedPackage?.dailyUsed);
+    const weeklyUsed = toNumber(selectedPackage?.weeklyUsed);
+    const monthlyUsed = toNumber(selectedPackage?.monthlyUsed);
+    const totalUsed = toNumber(selectedPackage?.totalUsed);
 
     elements.quotaCardBody.innerHTML = `
         <div class="quota-headline">
             <div>
-                <div class="quota-plan">${escapeHtml(selectedGroup?.groupName || "套餐")}</div>
+                <div class="quota-plan">${escapeHtml(selectedPackage ? buildPurchasedPackageLabel(selectedPackage) : "套餐")}</div>
                 <div class="quota-plan-subtitle">
-                    ${escapeHtml(selectedGroup?.packageStatusText || summary.packageStatusText || "未购买套餐")}
-                    ${selectedGroup?.remainingDays != null ? ` · 剩余 ${escapeHtml(selectedGroup.remainingDays)} 天` : ""}
+                    ${escapeHtml(selectedPackage?.active ? "可用中" : (selectedPackage?.status || summary.packageStatusText || "未购买套餐"))}
+                    ${selectedPackage?.remainingDays != null ? ` · 剩余 ${escapeHtml(selectedPackage.remainingDays)} 天` : ""}
                 </div>
             </div>
             <div class="quota-meta">
                 <span>到期时间</span>
-                <strong>${escapeHtml(formatDateTime(selectedGroup?.expiresAt))}</strong>
+                <strong>${escapeHtml(formatDateTime(selectedPackage?.expiresAt))}</strong>
             </div>
         </div>
         <div class="quota-bars">
@@ -935,15 +1182,19 @@ function renderQuotaCard() {
                 <div class="bar-label"><span>每月额度</span><strong>${escapeHtml(formatQuotaText(monthlyUsed, monthlyQuota))}</strong></div>
                 <div class="progress-track"><div class="progress-fill" style="width:${percentage(monthlyUsed, monthlyQuota)}%"></div></div>
             </div>
+            <div>
+                <div class="bar-label"><span>总额度</span><strong>${escapeHtml(formatQuotaText(totalUsed, totalQuota))}</strong></div>
+                <div class="progress-track"><div class="progress-fill" style="width:${percentage(totalUsed, totalQuota)}%"></div></div>
+            </div>
         </div>
         <div class="quota-footer">
             <div class="quota-meta">
                 <span>购买价格</span>
-                <strong>${escapeHtml(formatMoney(selectedGroup?.salePrice || 0))}</strong>
+                <strong>${escapeHtml(formatMoney(selectedPackage?.purchasePrice || 0))}</strong>
             </div>
             <div class="quota-meta">
                 <span>分组模型</span>
-                <strong>${escapeHtml(selectedGroup?.modelCount || 0)} 个</strong>
+                <strong>${escapeHtml(getSelectedPackageGroup()?.modelCount || 0)} 个</strong>
             </div>
         </div>
     `;
@@ -953,7 +1204,30 @@ function renderPackageSelectionViews() {
     renderOverviewCards();
     renderProfileCard();
     renderQuotaCard();
+    refreshPackageAvailabilityUi();
     renderModelAccessSummary();
+}
+
+function refreshPackageAvailabilityUi() {
+    if (!elements.dashboardPackageSelect) {
+        return;
+    }
+    const purchasedPackages = getPurchasedPackages();
+    const selectedPackage = getSelectedPurchasedPackage();
+    const summary = state.accessSummary || {};
+    elements.dashboardPackageSelect.innerHTML = purchasedPackages.length
+        ? purchasedPackages.map((item) => `
+            <option value="${escapeHtml(item.id)}" ${String(item.id) === String(selectedPackage?.id) ? "selected" : ""}>
+                ${escapeHtml(`${item.groupName || item.groupCode || "套餐"} #${item.id}（${packageAvailabilityLabel(item)}）`)}
+            </option>
+        `).join("")
+        : '<option value="">未购买套餐</option>';
+
+    if (elements.quotaStatusBadge) {
+        elements.quotaStatusBadge.innerHTML = accessStatusBadge(
+            selectedPackage ? (isPackageUsable(selectedPackage) ? "ACTIVE" : "EXPIRED") : summary.packageStatus
+        );
+    }
 }
 
 function renderTrend() {
@@ -1370,11 +1644,14 @@ function renderKeysTable() {
                 <div class="key-card-meta"><div class="key-card-meta-icon">E</div><div><div class="card-caption">过期时间</div><div class="key-card-meta-value">${escapeHtml(formatDateTime(key.expiresAt))}</div></div></div>
             </div>
             <div class="key-card-tags">
+                ${key.modelPackageName ? `<span class="key-tag">套餐 ${escapeHtml(key.modelPackageName)} #${escapeHtml(key.modelPackageId)}</span>` : ""}
                 ${key.modelGroupName ? `<span class="key-tag">分组 ${escapeHtml(key.modelGroupName)}</span>` : ""}
                 <span class="key-tag">最近使用 ${escapeHtml(formatDateTime(key.lastUsedAt))}</span>
             </div>
             <div class="key-card-actions">
+                <button class="mini-button" type="button" data-key-copy="${key.id}">复制</button>
                 <button class="mini-button" type="button" data-key-toggle="${key.id}" data-next-status="${key.status === "ACTIVE" ? "DISABLED" : "ACTIVE"}">${key.status === "ACTIVE" ? "禁用" : "启用"}</button>
+                <button class="mini-button danger-button" type="button" data-key-delete="${key.id}" data-key-name="${escapeHtml(key.name)}" data-key-access="${escapeHtml(key.accessKey)}">删除</button>
             </div>
         </article>
     `).join("");
@@ -1468,7 +1745,7 @@ function inferGatewayRouteMode(model) {
     if (providerType === "ANTHROPIC") {
         return "原生 Messages";
     }
-    if (code.includes("codex") || code.includes("gpt-5.4") || upstream.includes("codex") || upstream.includes("gpt-5.4")) {
+    if (isAgentCapableModel(code) || isAgentCapableModel(upstream)) {
         return "原生 Responses";
     }
     return "兼容转发";
@@ -1481,10 +1758,15 @@ function inferIdeCapability(model) {
     if (providerType === "ANTHROPIC") {
         return "对话为主";
     }
-    if (code.includes("codex") || code.includes("gpt-5.4") || upstream.includes("codex") || upstream.includes("gpt-5.4")) {
+    if (isAgentCapableModel(code) || isAgentCapableModel(upstream)) {
         return "完整代理";
     }
     return "工具受限";
+}
+
+function isAgentCapableModel(value) {
+    const normalized = String(value || "").toLowerCase();
+    return normalized.includes("codex") || normalized.includes("gpt-5");
 }
 
 function buildIdeClientHint(model) {
@@ -1529,6 +1811,7 @@ function renderSelectedModelDetail(model) {
     elements.modelDetailDesc.textContent = `${buildModelSummary(model)} 当前网关路由为 ${routeMode}，IDE 能力等级为 ${ideCapability}。`;
     elements.modelDetailSpecs.innerHTML = `
         <div class="detail-spec-row"><span>模型编码</span><strong>${escapeHtml(model.modelCode)}</strong></div>
+        <div class="detail-spec-row"><span>所属套餐</span><strong>${escapeHtml(model.groupName || "-")}</strong></div>
         <div class="detail-spec-row"><span>模型类型</span><strong>${escapeHtml(model.modelType || "CHAT")}</strong></div>
         <div class="detail-spec-row"><span>上游模型</span><strong>${escapeHtml(model.upstreamModel || "-")}</strong></div>
         <div class="detail-spec-row"><span>网关路由</span><strong>${escapeHtml(routeMode)}</strong></div>
@@ -1561,13 +1844,18 @@ function renderSelectedModelDetail(model) {
 }
 
 function renderModelCards() {
-    const list = state.models.filter((item) => state.modelProviderFilter === "ALL" || (item.providerType || item.providerName || "UNKNOWN") === state.modelProviderFilter);
+    const selectedGroup = getSelectedPackageGroup();
+    const list = state.models.filter((item) => {
+        const matchesProvider = state.modelProviderFilter === "ALL" || (item.providerType || item.providerName || "UNKNOWN") === state.modelProviderFilter;
+        const matchesGroup = !selectedGroup || String(item.groupId) === String(selectedGroup.id);
+        return matchesProvider && matchesGroup;
+    });
     elements.modelsEmpty.classList.toggle("hidden", list.length > 0);
     if (!list.length) {
         elements.modelsCardGrid.innerHTML = "";
         renderSelectedModelDetail(null);
         if (elements.modelsMarketMeta) {
-            elements.modelsMarketMeta.textContent = "0 个模型可用";
+            elements.modelsMarketMeta.textContent = selectedGroup ? `${selectedGroup.groupName} 暂无可用模型` : "0 个模型可用";
         }
         return;
     }
@@ -1575,7 +1863,9 @@ function renderModelCards() {
         state.selectedModelId = list[0].id;
     }
     if (elements.modelsMarketMeta) {
-        elements.modelsMarketMeta.textContent = `${list.length} 个模型可用`;
+        elements.modelsMarketMeta.textContent = selectedGroup
+            ? `${selectedGroup.groupName} 可用 ${list.length} 个模型`
+            : `${list.length} 个模型可用`;
     }
     elements.modelsCardGrid.innerHTML = list.map((model) => {
         const providerLabel = normalizeModelProviderLabel(model);
@@ -1604,7 +1894,7 @@ function renderModelCards() {
                     <div class="model-price-box"><span>最低扣费</span><strong>$${escapeHtml(formatModelRate(model.requestPrice || 0.07))}</strong></div>
                 </div>
                 <div class="model-price-foot">
-                    <span>倍率 ${escapeHtml(formatDecimal(model.multiplier, 2))}x</span>
+                    <span>${escapeHtml(model.groupName || "未分组")} · 倍率 ${escapeHtml(formatDecimal(model.multiplier, 2))}x</span>
                     ${statusChip(model.status)}
                 </div>
                 ${isAdmin() ? `
@@ -1625,13 +1915,14 @@ function renderModelsTable() {
         return;
     }
     if (!state.models.length) {
-        elements.modelsTable.innerHTML = '<tr><td colspan="11" class="empty-state">暂无模型配置。</td></tr>';
+        elements.modelsTable.innerHTML = '<tr><td colspan="12" class="empty-state">暂无模型配置。</td></tr>';
         return;
     }
     elements.modelsTable.innerHTML = state.models.map((model) => `
         <tr>
             <td>${escapeHtml(model.id)}</td>
             <td>${escapeHtml(model.modelCode)}</td>
+            <td>${escapeHtml(model.groupName || "-")}</td>
             <td>${escapeHtml(formatModelRate(model.promptPrice))}</td>
             <td>${escapeHtml(formatModelRate(model.completionPrice))}</td>
             <td>${escapeHtml(formatModelRate(model.requestPrice || 0.07))}</td>
@@ -1645,6 +1936,49 @@ function renderModelsTable() {
                 <button class="mini-button" type="button" data-model-toggle="${model.id}" data-next-status="${model.status === "ACTIVE" ? "DISABLED" : "ACTIVE"}">${model.status === "ACTIVE" ? "禁用" : "启用"}</button>
                 <button class="mini-button danger-button" type="button" data-model-delete="${model.id}" data-model-code="${escapeHtml(model.modelCode)}">删除</button>
             </td>
+        </tr>
+    `).join("");
+}
+
+function renderPackagePurchaseRecords() {
+    if (!elements.packagePurchasesTable) {
+        return;
+    }
+    if (!state.packagePurchaseRecords.length) {
+        elements.packagePurchasesTable.innerHTML = '<tr><td colspan="7" class="empty-state">暂时还没有套餐购买记录。</td></tr>';
+        return;
+    }
+    elements.packagePurchasesTable.innerHTML = state.packagePurchaseRecords.map((item) => `
+        <tr>
+            <td>${escapeHtml(item.username || "-")}</td>
+            <td>${escapeHtml(item.groupName || item.groupCode || "-")}</td>
+            <td>${escapeHtml(formatMoney(item.purchasePrice || 0))}</td>
+            <td>${escapeHtml(formatDateTime(item.startAt))}</td>
+            <td>${escapeHtml(formatDateTime(item.expiresAt))}</td>
+            <td>${statusChip(item.status || "-")}</td>
+            <td>${escapeHtml(formatDateTime(item.createdAt))}</td>
+        </tr>
+    `).join("");
+}
+
+function renderWalletTransactions() {
+    if (!elements.walletTransactionsTable) {
+        return;
+    }
+    if (!state.walletTransactions.length) {
+        elements.walletTransactionsTable.innerHTML = '<tr><td colspan="8" class="empty-state">暂时还没有余额流水。</td></tr>';
+        return;
+    }
+    elements.walletTransactionsTable.innerHTML = state.walletTransactions.map((item) => `
+        <tr>
+            <td>${escapeHtml(item.username || "-")}</td>
+            <td>${escapeHtml(item.transactionType || "-")}</td>
+            <td>${escapeHtml(item.direction || "-")}</td>
+            <td>${escapeHtml(formatMoney(item.amount || 0))}</td>
+            <td>${escapeHtml(formatMoney(item.balanceBefore || 0))}</td>
+            <td>${escapeHtml(formatMoney(item.balanceAfter || 0))}</td>
+            <td>${escapeHtml(item.descriptionText || "-")}</td>
+            <td>${escapeHtml(formatDateTime(item.createdAt))}</td>
         </tr>
     `).join("");
 }
@@ -1682,19 +2016,21 @@ function renderUpstreamModels() {
 
 function renderLogsTable() {
     if (!state.logs.length) {
-        elements.logsTable.innerHTML = '<tr><td colspan="8" class="empty-state">暂无请求日志。</td></tr>';
+        elements.logsTable.innerHTML = '<tr><td colspan="10" class="empty-state">暂无请求日志。</td></tr>';
         return;
     }
     elements.logsTable.innerHTML = state.logs.map((log) => `
         <tr>
-            <td>${escapeHtml(log.requestId)}</td>
             <td>${escapeHtml(log.username || "-")}</td>
             <td>${escapeHtml(log.modelCode || "-")}</td>
+            <td>${escapeHtml(log.packageName || "-")}</td>
+            <td>${escapeHtml(`${formatDecimal(log.multiplier || 1, 1)}x`)}</td>
             <td>${escapeHtml(formatLatency(log.latencyMs || 0))}</td>
-            <td>${escapeHtml(formatTokenBreakdown(log.promptTokens, log.completionTokens, log.totalTokens))}</td>
+            <td>${escapeHtml(`${formatCompactNumber(log.promptTokens || 0)} / ${formatCompactNumber(log.completionTokens || 0)}`)}</td>
+            <td>${escapeHtml(formatCompactNumber(log.cachedPromptTokens || 0))}</td>
             <td>${escapeHtml(formatMoney(log.userAmount || 0))}</td>
             <td>${statusChip(log.success ? "SUCCESS" : `HTTP ${log.statusCode || 0}`)}</td>
-            <td>${escapeHtml(formatDateTime(log.createdAt))}</td>
+            <td>${escapeHtml(relativeTimeFromNow(log.createdAt))}<br><small>${escapeHtml(formatDateTime(log.createdAt))}</small></td>
         </tr>
     `).join("");
 }
@@ -1725,6 +2061,12 @@ async function loadOverview(render = true) {
 async function loadAccessSummary(render = true) {
     state.accessSummary = await fetchJson("/admin/model-access/summary");
     syncSelectedPackageGroup();
+    if (!state.selectedPackageId) {
+        const fallbackPackage = getLatestPurchasedPackageByGroup(state.selectedPackageGroupId);
+        if (fallbackPackage) {
+            state.selectedPackageId = fallbackPackage.id;
+        }
+    }
     if (render) {
         renderPackageSelectionViews();
     }
@@ -1770,9 +2112,30 @@ async function loadModels(render = true) {
     if (render) {
         renderModelAccessSummary();
         renderModelProviderFilters();
+        populatePackageGroupSelects();
         renderModelCards();
         renderModelsTable();
         renderProfileCard();
+    }
+}
+
+async function loadPackagePurchaseRecords(render = true) {
+    state.packagePurchaseRecords = await fetchJson("/admin/model-access/purchases");
+    syncSelectedPurchasedPackage();
+    const selectedPackage = getSelectedPurchasedPackage();
+    if (selectedPackage) {
+        state.selectedPackageGroupId = selectedPackage.groupId;
+    }
+    if (render) {
+        renderPackagePurchaseRecords();
+        renderPackageSelectionViews();
+    }
+}
+
+async function loadWalletTransactions(render = true) {
+    state.walletTransactions = await fetchJson("/admin/model-access/wallet-transactions");
+    if (render) {
+        renderWalletTransactions();
     }
 }
 
@@ -1788,7 +2151,16 @@ async function loadLogs(render = true) {
 }
 
 async function loadAllData() {
-    const loaders = [loadOverview(false), loadAccessSummary(false), loadUsers(false), loadKeys(false), loadModels(false), loadLogs(false)];
+    const loaders = [
+        loadOverview(false),
+        loadAccessSummary(false),
+        loadUsers(false),
+        loadKeys(false),
+        loadModels(false),
+        loadLogs(false),
+        loadPackagePurchaseRecords(false),
+        loadWalletTransactions(false)
+    ];
     if (isAdmin()) {
         loaders.push(loadProviders(false));
     } else {
@@ -1814,6 +2186,8 @@ function resetRuntimeState() {
     state.models = [];
     state.logs = [];
     state.modelStats = [];
+    state.packagePurchaseRecords = [];
+    state.walletTransactions = [];
     state.upstreamModels = [];
     state.modelProviderFilter = "ALL";
     state.selectedPanel = "overview-panel";
@@ -1866,25 +2240,65 @@ async function onLogin(event) {
 async function onRegister(event) {
     event.preventDefault();
     const formData = new FormData(elements.registerForm);
+    const email = String(formData.get("email") || "").trim().toLowerCase();
+    if (registerCodeSentToEmail && registerCodeSentToEmail !== email) {
+        throw new Error(`验证码发送到的是 ${registerCodeSentToEmail}，请保持邮箱一致或重新发送验证码`);
+    }
     const data = await fetchJson("/admin/auth/register", {
         method: "POST",
         body: {
             username: String(formData.get("username") || "").trim(),
             password: String(formData.get("password") || ""),
             nickname: String(formData.get("nickname") || "").trim(),
-            email: String(formData.get("email") || "").trim(),
-            phone: String(formData.get("phone") || "").trim()
+            email,
+            phone: String(formData.get("phone") || "").trim(),
+            verificationCode: String(formData.get("verificationCode") || "").trim()
         }
     });
     state.token = data.token;
     state.me = data;
     localStorage.setItem("zxw-console-token", data.token);
+    resetRegisterCodeState({ resetForm: true });
     elements.registerModal.classList.add("hidden");
     toggleAuth(true);
     applyRoleView();
     selectPanel("overview-panel");
     await loadAllData();
     showToast("注册成功，已自动登录");
+}
+
+async function sendRegisterCode() {
+    const email = String(elements.registerForm?.elements?.email?.value || "").trim();
+    if (!email) {
+        throw new Error("请先填写 QQ 邮箱");
+    }
+    if (!/^[^@\s]+@qq\.com$/i.test(email)) {
+        throw new Error("请输入正确的 QQ 邮箱");
+    }
+    const data = await fetchJson("/admin/auth/register/code", {
+        method: "POST",
+        body: { email }
+    });
+    registerCodeSentToEmail = String(data?.email || email).trim().toLowerCase();
+    startRegisterCodeCooldown(60);
+    if (elements.registerCodeHint) {
+        const debugSuffix = data?.code ? ` 当前验证码：${data.code}` : "";
+        elements.registerCodeHint.textContent = `验证码已发送到 ${registerCodeSentToEmail}，${data?.expireSeconds || 300} 秒内有效。${debugSuffix}`;
+    }
+    showToast(data?.code
+        ? `验证码已发送，当前验证码：${data.code}`
+        : "验证码已发送，请检查邮箱");
+}
+
+function onRegisterEmailChange(event) {
+    const email = String(event?.target?.value || "").trim().toLowerCase();
+    if (!registerCodeSentToEmail || registerCodeSentToEmail === email) {
+        return;
+    }
+    resetRegisterCodeState();
+    if (elements.registerCodeHint) {
+        elements.registerCodeHint.textContent = "邮箱已修改，请重新发送验证码。";
+    }
 }
 
 async function onCreateUser(event) {
@@ -1905,7 +2319,7 @@ async function onCreateUser(event) {
     elements.userForm.reset();
     elements.userForm.elements.roleCode.value = "USER";
     elements.userForm.elements.initialBalance.value = "0";
-    await Promise.all([loadUsers(), loadOverview()]);
+    await Promise.all([loadUsers(), loadOverview(), loadWalletTransactions()]);
     showToast("用户创建成功");
 }
 
@@ -1921,7 +2335,7 @@ async function onRecharge(event) {
         }
     });
     elements.rechargeForm.reset();
-    await Promise.all([loadUsers(), loadOverview()]);
+    await Promise.all([loadUsers(), loadOverview(), loadWalletTransactions()]);
     showToast("充值成功");
 }
 
@@ -1990,6 +2404,42 @@ function toggleKeyCreateBox(forceVisible) {
     }
 }
 
+function togglePackageCreateBox(forceVisible) {
+    if (!elements.packageCreateBox) {
+        return;
+    }
+    const shouldShow = typeof forceVisible === "boolean"
+        ? forceVisible
+        : elements.packageCreateBox.classList.contains("hidden");
+    elements.packageCreateBox.classList.toggle("hidden", !shouldShow);
+    if (!shouldShow) {
+        elements.packageForm?.reset();
+        return;
+    }
+    elements.packageCreateBox.scrollIntoView({ behavior: "auto", block: "start" });
+}
+
+async function onCreatePackage(event) {
+    event.preventDefault();
+    const formData = new FormData(elements.packageForm);
+    await fetchJson("/admin/model-access/groups", {
+        method: "POST",
+        body: {
+            groupCode: String(formData.get("groupCode") || "").trim(),
+            groupName: String(formData.get("groupName") || "").trim(),
+            salePrice: toNumber(formData.get("salePrice")),
+            packageDays: toNumber(formData.get("packageDays")),
+            dailyQuota: toNumber(formData.get("dailyQuota")),
+            weeklyQuota: toNumber(formData.get("weeklyQuota")),
+            monthlyQuota: toNumber(formData.get("monthlyQuota")),
+            remark: String(formData.get("remark") || "").trim()
+        }
+    });
+    togglePackageCreateBox(false);
+    await Promise.all([loadAccessSummary(), loadModels(), loadPackagePurchaseRecords()]);
+    showToast("套餐创建成功");
+}
+
 async function purchaseModelGroup(groupId) {
     const groups = getAccessGroups();
     const targetGroup = groups.find((item) => String(item.id) === String(groupId));
@@ -2001,7 +2451,14 @@ async function purchaseModelGroup(groupId) {
         body: { groupId: targetGroup.id }
     });
     state.selectedPackageGroupId = targetGroup.id;
-    await Promise.all([loadAccessSummary(), loadUsers(), loadOverview()]);
+    state.selectedPackageId = null;
+    await Promise.all([loadAccessSummary(), loadUsers(), loadOverview(), loadPackagePurchaseRecords(), loadWalletTransactions()]);
+    const newestPackage = getLatestPurchasedPackageByGroup(targetGroup.id);
+    if (newestPackage) {
+        state.selectedPackageId = newestPackage.id;
+        state.selectedPackageGroupId = newestPackage.groupId;
+    }
+    renderPackageSelectionViews();
     showToast(`${targetGroup.groupName} 购买成功`);
 }
 
@@ -2021,31 +2478,48 @@ async function deleteModelGroup(groupId) {
     if (String(state.selectedPackageGroupId) === String(targetGroup.id)) {
         state.selectedPackageGroupId = null;
     }
-    await Promise.all([loadAccessSummary(), loadModels(), loadOverview()]);
+    await Promise.all([loadAccessSummary(), loadModels(), loadOverview(), loadPackagePurchaseRecords()]);
     showToast(`${targetGroup.groupName} 已删除`);
 }
 
 async function onCreateKey(event) {
     event.preventDefault();
     const formData = new FormData(elements.keyForm);
-    const rawModelGroupId = String(formData.get("modelGroupId") || "").trim();
-    const modelGroupId = rawModelGroupId ? toNumber(rawModelGroupId) : null;
-    if (!modelGroupId) {
-        throw new Error("请先选择已购买且有效的套餐分组");
+    const checkedPackageInput = elements.keyForm.querySelector('input[name="modelPackageId"]:checked');
+    const fallbackActivePackage = getPurchasedPackages()
+        .filter((item) => isPackageUsable(item))
+        .sort((a, b) => toNumber(b.id) - toNumber(a.id))[0] || null;
+    const rawModelPackageId = String(
+        checkedPackageInput?.value
+        || state.selectedPackageId
+        || fallbackActivePackage?.id
+        || formData.get("modelPackageId")
+        || ""
+    ).trim();
+    const modelPackageId = rawModelPackageId ? toNumber(rawModelPackageId) : null;
+    if (!modelPackageId) {
+        throw new Error("请先选择已购买且有效的具体套餐");
     }
+    state.selectedPackageId = modelPackageId;
     const data = await fetchJson("/admin/api-keys", {
         method: "POST",
         body: {
             userId: isAdmin() ? toNumber(formData.get("userId")) : state.me.userId,
             name: String(formData.get("name") || "").trim(),
             expiresAt: String(formData.get("expiresAt") || "").trim(),
-            modelGroupId,
+            modelPackageId,
             remark: String(formData.get("remark") || "").trim()
         }
     });
     rememberPlainApiKey(data.plainTextKey);
     elements.plainKeyBox.innerHTML = `新密钥已创建：<code>${escapeHtml(data.plainTextKey)}</code>`;
     elements.plainKeyBox.classList.remove("hidden");
+    elements.plainKeyBox.innerHTML = `
+        <div>新密钥已创建：<code>${escapeHtml(data.plainTextKey)}</code></div>
+        <div class="inline-actions">
+            <button type="button" class="mini-button" data-copy-key-value="${escapeHtml(data.plainTextKey)}">一键复制</button>
+        </div>
+    `;
     elements.keyForm.reset();
     if (!isAdmin()) {
         elements.keyForm.elements.userId.value = state.me.userId;
@@ -2062,6 +2536,19 @@ async function toggleKeyStatus(id, nextStatus) {
     });
     await loadKeys();
     showToast("密钥状态已更新");
+}
+
+async function deleteKey(id, keyName, accessKey) {
+    const confirmed = window.confirm(`确认删除 API Key ${keyName || id} 吗？删除后这个 Key 会立即不可用。`);
+    if (!confirmed) {
+        return;
+    }
+    await fetchJson(`/admin/api-keys/${id}`, {
+        method: "DELETE"
+    });
+    forgetPlainApiKey(accessKey);
+    await loadKeys();
+    showToast("API Key 已删除");
 }
 
 async function onCreateProvider(event) {
@@ -2109,16 +2596,20 @@ async function onCreateModel(event) {
         requestPrice: toNumber(formData.get("requestPrice")) || 0.07,
         multiplier: toNumber(formData.get("multiplier")) || 1,
         isPublic: String(formData.get("isPublic")) === "true",
+        groupId: toNumber(formData.get("groupId")),
         providerId: toNumber(formData.get("providerId")),
         upstreamModel: String(formData.get("upstreamModel") || "").trim()
     };
+    if (!payload.groupId) {
+        throw new Error("请先选择套餐分组");
+    }
     if (state.editingModelId) {
         await fetchJson(`/admin/models/${state.editingModelId}`, {
             method: "PUT",
             body: payload
         });
         resetModelForm();
-        await Promise.all([loadModels(), loadOverview()]);
+        await Promise.all([loadModels(), loadOverview(), loadAccessSummary()]);
         showToast("模型已更新");
         return;
     }
@@ -2131,7 +2622,7 @@ async function onCreateModel(event) {
         }
     });
     resetModelForm();
-    await Promise.all([loadModels(), loadOverview()]);
+    await Promise.all([loadModels(), loadOverview(), loadAccessSummary()]);
     showToast("模型创建成功");
 }
 
@@ -2148,6 +2639,9 @@ function resetModelForm() {
     elements.modelForm.elements.requestPrice.value = "0.07";
     elements.modelForm.elements.multiplier.value = "1";
     elements.modelForm.elements.isPublic.value = "true";
+    if (state.selectedPackageGroupId) {
+        elements.modelForm.elements.groupId.value = String(state.selectedPackageGroupId);
+    }
     elements.modelFormTitle.textContent = "手动创建模型";
     elements.modelFormCaption.textContent = "普通用户不能创建模型，只能使用管理员已创建的公开模型。";
     elements.modelSubmitButton.textContent = "创建模型";
@@ -2171,6 +2665,7 @@ function startModelEdit(id) {
     elements.modelForm.elements.requestPrice.value = formatDecimal(model.requestPrice || 0.07, 6);
     elements.modelForm.elements.multiplier.value = formatDecimal(model.multiplier, 4);
     elements.modelForm.elements.isPublic.value = String(model.isPublic) === "1" ? "true" : "false";
+    elements.modelForm.elements.groupId.value = model.groupId || "";
     elements.modelForm.elements.providerId.value = model.providerId || "";
     elements.modelForm.elements.upstreamModel.value = model.upstreamModel || "";
     elements.modelFormTitle.textContent = `编辑价格 / ${model.modelCode}`;
@@ -2185,7 +2680,7 @@ async function toggleModelStatus(id, nextStatus) {
         method: "PUT",
         body: { status: nextStatus }
     });
-    await Promise.all([loadModels(), loadOverview()]);
+    await Promise.all([loadModels(), loadOverview(), loadAccessSummary()]);
     showToast("模型状态已更新");
 }
 
@@ -2200,12 +2695,16 @@ async function deleteModel(id, modelCode) {
     if (String(state.editingModelId) === String(id)) {
         resetModelForm();
     }
-    await Promise.all([loadModels(), loadOverview()]);
+    await Promise.all([loadModels(), loadOverview(), loadAccessSummary()]);
     showToast("模型已删除");
 }
 
 async function fetchUpstreamModels() {
+    const groupId = toNumber(elements.importGroupSelect.value);
     const providerId = toNumber(elements.importProviderSelect.value);
+    if (!groupId) {
+        throw new Error("请先选择套餐");
+    }
     if (!providerId) {
         throw new Error("请先选择渠道");
     }
@@ -2225,8 +2724,12 @@ function toggleAllUpstreamModels() {
 }
 
 async function importUpstreamModels() {
+    const groupId = toNumber(elements.importGroupSelect.value);
     const providerId = toNumber(elements.importProviderSelect.value);
     const selected = state.upstreamModels.filter((item) => item.selected).map((item) => item.id);
+    if (!groupId) {
+        throw new Error("请先选择套餐");
+    }
     if (!providerId) {
         throw new Error("请先选择渠道");
     }
@@ -2236,6 +2739,7 @@ async function importUpstreamModels() {
     const result = await fetchJson("/admin/models/import", {
         method: "POST",
         body: {
+            groupId,
             providerId,
             upstreamModels: selected,
             promptPrice: toNumber(elements.importPromptPrice.value),
@@ -2246,7 +2750,7 @@ async function importUpstreamModels() {
     });
     elements.importResultBox.classList.remove("hidden");
     elements.importResultBox.innerHTML = `导入完成：成功 ${escapeHtml(result.importedCount)} 个，跳过 ${escapeHtml(result.skippedCount)} 个。`;
-    await Promise.all([loadModels(), loadOverview()]);
+    await Promise.all([loadModels(), loadOverview(), loadAccessSummary()]);
     showToast("批量导入完成");
 }
 
@@ -2258,7 +2762,7 @@ async function refreshSection(section) {
     } else if (section === "providers") {
         await loadProviders();
     } else if (section === "models") {
-        await Promise.all([loadModels(), loadAccessSummary()]);
+        await Promise.all([loadModels(), loadAccessSummary(), loadPackagePurchaseRecords(), loadWalletTransactions()]);
     } else if (section === "logs") {
         await loadLogs();
     }
@@ -2281,13 +2785,18 @@ function handleAction(action) {
 function bindEvents() {
     elements.loginForm.addEventListener("submit", handleAction(onLogin));
     elements.registerForm.addEventListener("submit", handleAction(onRegister));
+    elements.sendRegisterCodeButton?.addEventListener("click", handleAction(sendRegisterCode));
+    elements.registerForm?.elements?.email?.addEventListener("input", onRegisterEmailChange);
     elements.userForm.addEventListener("submit", handleAction(onCreateUser));
     elements.rechargeForm.addEventListener("submit", handleAction(onRecharge));
     elements.userDetailForm.addEventListener("submit", handleAction(onUpdateUser));
     elements.keyForm.addEventListener("submit", handleAction(onCreateKey));
     elements.providerForm.addEventListener("submit", handleAction(onCreateProvider));
+    elements.packageForm?.addEventListener("submit", handleAction(onCreatePackage));
     elements.modelForm.addEventListener("submit", handleAction(onCreateModel));
     elements.modelCancelEditButton.addEventListener("click", resetModelForm);
+    elements.togglePackageCreateButton?.addEventListener("click", () => togglePackageCreateBox());
+    elements.closePackageCreateButton?.addEventListener("click", () => togglePackageCreateBox(false));
     elements.refreshAllButton.addEventListener("click", handleAction(async () => {
         await loadSession();
         await loadAllData();
@@ -2311,15 +2820,27 @@ function bindEvents() {
     elements.refreshButtons.forEach((button) => button.addEventListener("click", handleAction(() => refreshSection(button.dataset.refresh))));
 
     elements.dashboardPackageSelect?.addEventListener("change", () => {
-        state.selectedPackageGroupId = elements.dashboardPackageSelect.value || null;
+        state.selectedPackageId = elements.dashboardPackageSelect.value || null;
+        const selectedPackage = getSelectedPurchasedPackage();
+        state.selectedPackageGroupId = selectedPackage?.groupId || null;
         renderPackageSelectionViews();
     });
 
+    elements.importGroupSelect?.addEventListener("change", () => {
+        if (elements.importGroupSelect.value) {
+            state.selectedPackageGroupId = elements.importGroupSelect.value;
+            renderPackageSelectionViews();
+        }
+    });
+
     elements.keyGroupOptions?.addEventListener("change", (event) => {
-        const target = event.target.closest('input[name="modelGroupId"]');
+        const target = event.target.closest('input[name="modelPackageId"]');
         if (!target) {
             return;
         }
+        state.selectedPackageId = target.value || null;
+        const selectedPackage = getSelectedPurchasedPackage();
+        state.selectedPackageGroupId = selectedPackage?.groupId || null;
         populateKeyGroupOptions();
     });
 
@@ -2337,7 +2858,12 @@ function bindEvents() {
         const card = event.target.closest("[data-select-package]");
         if (card) {
             state.selectedPackageGroupId = card.dataset.selectPackage;
+            const selectedPackage = getFirstPurchasedPackageByGroup(card.dataset.selectPackage);
+            if (selectedPackage) {
+                state.selectedPackageId = selectedPackage.id;
+            }
             renderPackageSelectionViews();
+            populatePackageGroupSelects();
         }
     }));
 
@@ -2370,15 +2896,37 @@ function bindEvents() {
     }
 
     elements.keysList.addEventListener("click", handleAction(async (event) => {
-        const button = event.target.closest("button[data-key-toggle]");
-        if (button) {
+        const button = event.target.closest("button");
+        if (!button) {
+            return;
+        }
+        if (button.dataset.keyCopy) {
+            await copyApiKey(button.dataset.keyCopy);
+            return;
+        }
+        if (button.dataset.keyDelete) {
+            await deleteKey(button.dataset.keyDelete, button.dataset.keyName, button.dataset.keyAccess);
+            return;
+        }
+        if (button.dataset.keyToggle) {
             await toggleKeyStatus(button.dataset.keyToggle, button.dataset.nextStatus);
         }
     }));
 
     elements.keysTable.addEventListener("click", handleAction(async (event) => {
-        const button = event.target.closest("button[data-key-toggle]");
-        if (button) {
+        const button = event.target.closest("button");
+        if (!button) {
+            return;
+        }
+        if (button.dataset.keyCopy) {
+            await copyApiKey(button.dataset.keyCopy);
+            return;
+        }
+        if (button.dataset.keyDelete) {
+            await deleteKey(button.dataset.keyDelete, button.dataset.keyName, button.dataset.keyAccess);
+            return;
+        }
+        if (button.dataset.keyToggle) {
             await toggleKeyStatus(button.dataset.keyToggle, button.dataset.nextStatus);
         }
     }));
@@ -2449,6 +2997,15 @@ function bindEvents() {
         }
     }));
 
+    document.addEventListener("click", handleAction(async (event) => {
+        const copyKeyButton = event.target.closest("[data-copy-key-value]");
+        if (!copyKeyButton) {
+            return;
+        }
+        await navigator.clipboard.writeText(copyKeyButton.dataset.copyKeyValue || "");
+        showToast("API Key 已复制");
+    }));
+
     elements.agentDebugCopyPayloadButton?.addEventListener("click", handleAction(copyAgentDebugPayload));
     elements.agentDebugCopyCurlButton?.addEventListener("click", handleAction(copyAgentDebugCurl));
     elements.agentDebugSendButton?.addEventListener("click", handleAction(sendAgentDebugRequest));
@@ -2470,6 +3027,7 @@ function bindEvents() {
 async function bootstrap() {
     bindEvents();
     resetModelForm();
+    updateRegisterCodeUi(0);
     renderAgentDebugPreview();
     if (!state.token) {
         toggleAuth(false);

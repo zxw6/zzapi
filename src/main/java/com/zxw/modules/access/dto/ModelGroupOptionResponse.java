@@ -22,6 +22,7 @@ public record ModelGroupOptionResponse(
         BigDecimal monthlyUsed,
         String packageStatus,
         String packageStatusText,
-        String remark
+        String remark,
+        boolean systemPreset
 ) {
 }

@@ -22,12 +22,15 @@ public class AntigravityPresetService {
     private static final BigDecimal MONTHLY_QUOTA = new BigDecimal("1800.0000");
 
     private static final List<AntigravityModelPreset> PRESET_MODELS = List.of(
-            new AntigravityModelPreset("antigravity-claude-gpt", "Claude/GPT", "Claude/GPT", "CHAT"),
-            new AntigravityModelPreset("antigravity-gemini-3-1-pro-series", "Gemini 3.1 Pro Series", "Gemini 3.1 Pro Series", "CHAT"),
-            new AntigravityModelPreset("antigravity-gemini-2-5-flash", "Gemini 2.5 Flash", "Gemini 2.5 Flash", "CHAT"),
-            new AntigravityModelPreset("antigravity-gemini-2-5-flash-lite", "Gemini 2.5 Flash Lite", "Gemini 2.5 Flash Lite", "CHAT"),
-            new AntigravityModelPreset("antigravity-gemini-3-flash", "Gemini 3 Flash", "Gemini 3 Flash", "CHAT"),
-            new AntigravityModelPreset("antigravity-gemini-3-1-flash-image", "Gemini 3.1 Flash Image", "Gemini 3.1 Flash Image", "IMAGE")
+            new AntigravityModelPreset("antigravity-claude-sonnet-4-6", "claude-sonnet-4-6", "claude-sonnet-4-6", "CHAT"),
+            new AntigravityModelPreset("antigravity-claude-opus-4-6-thinking", "claude-opus-4-6-thinking", "claude-opus-4-6-thinking", "CHAT"),
+            new AntigravityModelPreset("antigravity-gpt-oss-120b-medium", "gpt-oss-120b-medium", "gpt-oss-120b-medium", "CHAT"),
+            new AntigravityModelPreset("antigravity-gemini-2-5-flash", "gemini-2.5-flash", "gemini-2.5-flash", "CHAT"),
+            new AntigravityModelPreset("antigravity-gemini-2-5-flash-lite", "gemini-2.5-flash-lite", "gemini-2.5-flash-lite", "CHAT"),
+            new AntigravityModelPreset("antigravity-gemini-3-flash", "gemini-3-flash", "gemini-3-flash", "CHAT"),
+            new AntigravityModelPreset("antigravity-gemini-3-1-pro-high", "gemini-3.1-pro-high", "gemini-3.1-pro-high", "CHAT"),
+            new AntigravityModelPreset("antigravity-gemini-3-1-pro-low", "gemini-3.1-pro-low", "gemini-3.1-pro-low", "CHAT"),
+            new AntigravityModelPreset("antigravity-gemini-3-1-flash-image", "gemini-3.1-flash-image", "gemini-3.1-flash-image", "IMAGE")
     );
 
     private final JdbcTemplate jdbcTemplate;
@@ -121,8 +124,6 @@ public class AntigravityPresetService {
                     insert ignore into model_group_models (group_id, model_id)
                     values (?, ?)
                     """, groupId, modelId);
-
-            userModelAccessService.syncPresetGroupsForModel(modelId, preset.modelCode(), preset.upstreamModel());
         }
     }
 

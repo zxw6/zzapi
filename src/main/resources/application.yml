@@ -8,9 +8,9 @@ spring:
     password: ${DB_PASSWORD:123456}
   data:
     redis:
-      host: ${REDIS_HOST:localhost}
+      host: ${REDIS_HOST:82.157.100.179}
       port: ${REDIS_PORT:6379}
-      password: ${REDIS_PASSWORD:}
+      password: ${REDIS_PASSWORD:syf33618}
       database: ${REDIS_DATABASE:0}
       timeout: ${REDIS_TIMEOUT:5s}
   sql:

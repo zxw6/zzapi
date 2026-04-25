@@ -59,8 +59,15 @@ public class AdminModelService {
             return jdbcTemplate.query("""
                     select m.id, m.model_code, m.model_name, m.model_type, m.billing_type, m.prompt_price,
                            m.completion_price, m.request_price, m.multiplier, m.is_public, m.status, m.created_at,
+                           g.id as group_id, g.group_code, g.group_name,
                            p.id as provider_id, p.provider_name, p.provider_type, r.upstream_model
                     from models m
+                    left join (
+                        select model_id, min(group_id) as group_id
+                        from model_group_models
+                        group by model_id
+                    ) mgm on mgm.model_id = m.id
+                    left join model_groups g on g.id = mgm.group_id and g.status = 'ACTIVE'
                     left join model_routes r on r.model_id = m.id and r.status = 'ACTIVE'
                     left join providers p on p.id = r.provider_id
                     where m.deleted = 0 and m.status = 'ACTIVE' and m.is_public = 1
@@ -77,6 +84,9 @@ public class AdminModelService {
                     rs.getBigDecimal("multiplier"),
                     rs.getInt("is_public"),
                     rs.getString("status"),
+                    rs.getObject("group_id") == null ? null : rs.getLong("group_id"),
+                    rs.getString("group_code"),
+                    rs.getString("group_name"),
                     rs.getObject("provider_id") == null ? null : rs.getLong("provider_id"),
                     rs.getString("provider_name"),
                     rs.getString("provider_type"),
@@ -88,8 +98,15 @@ public class AdminModelService {
         return jdbcTemplate.query("""
                 select m.id, m.model_code, m.model_name, m.model_type, m.billing_type, m.prompt_price,
                        m.completion_price, m.request_price, m.multiplier, m.is_public, m.status, m.created_at,
+                       g.id as group_id, g.group_code, g.group_name,
                        p.id as provider_id, p.provider_name, p.provider_type, r.upstream_model
                 from models m
+                left join (
+                    select model_id, min(group_id) as group_id
+                    from model_group_models
+                    group by model_id
+                ) mgm on mgm.model_id = m.id
+                left join model_groups g on g.id = mgm.group_id and g.status = 'ACTIVE'
                 left join model_routes r on r.model_id = m.id and r.status = 'ACTIVE'
                 left join providers p on p.id = r.provider_id
                 where m.deleted = 0
@@ -106,6 +123,9 @@ public class AdminModelService {
                 rs.getBigDecimal("multiplier"),
                 rs.getInt("is_public"),
                 rs.getString("status"),
+                rs.getObject("group_id") == null ? null : rs.getLong("group_id"),
+                rs.getString("group_code"),
+                rs.getString("group_name"),
                 rs.getObject("provider_id") == null ? null : rs.getLong("provider_id"),
                 rs.getString("provider_name"),
                 rs.getString("provider_type"),
@@ -155,6 +175,7 @@ public class AdminModelService {
                 numberOrZero(request.imagePrice()),
                 request.multiplier() == null ? BigDecimal.ONE : request.multiplier(),
                 Boolean.TRUE.equals(request.isPublic()),
+                request.groupId(),
                 request.providerId(),
                 request.upstreamModel()
         );
@@ -184,8 +205,7 @@ public class AdminModelService {
         }
 
         replaceModelRoutes(id, request.providerId(), request.upstreamModel());
-        String modelCode = jdbcTemplate.queryForObject("select model_code from models where id = ?", String.class, id);
-        userModelAccessService.syncPresetGroupsForModel(id, modelCode, request.upstreamModel());
+        userModelAccessService.replaceModelGroupBinding(id, request.groupId());
     }
 
     @Transactional
@@ -207,8 +227,14 @@ public class AdminModelService {
         List<String> skippedModels = new ArrayList<>();
 
         for (String upstreamModel : upstreamModels) {
-            if (routeExists(request.providerId(), upstreamModel)) {
-                skippedModels.add(upstreamModel);
+            ExistingRouteModel existingRouteModel = findExistingRouteModel(request.providerId(), upstreamModel);
+            if (existingRouteModel != null) {
+                if (isModelBoundToGroup(existingRouteModel.modelId(), request.groupId())) {
+                    skippedModels.add(upstreamModel);
+                    continue;
+                }
+                userModelAccessService.addModelGroupBinding(existingRouteModel.modelId(), request.groupId());
+                importedModels.add(existingRouteModel.modelCode());
                 continue;
             }
 
@@ -225,6 +251,7 @@ public class AdminModelService {
                     BigDecimal.ZERO,
                     request.multiplier() == null ? BigDecimal.ONE : request.multiplier(),
                     request.isPublic() == null || request.isPublic(),
+                    request.groupId(),
                     request.providerId(),
                     upstreamModel
             );
@@ -267,6 +294,7 @@ public class AdminModelService {
                 delete from model_routes
                 where model_id = ?
                 """, id);
+        userModelAccessService.deleteModelBindings(id);
         jdbcTemplate.update("""
                 delete from models
                 where id = ?
@@ -283,6 +311,7 @@ public class AdminModelService {
                                       BigDecimal imagePrice,
                                       BigDecimal multiplier,
                                       boolean isPublic,
+                                      Long groupId,
                                       Long providerId,
                                       String upstreamModel) {
         try {
@@ -315,7 +344,7 @@ public class AdminModelService {
                 insert into model_routes (model_id, provider_id, provider_token_id, upstream_model, route_type, priority_no, status)
                 values (?, ?, null, ?, 'PRIMARY', 100, 'ACTIVE')
                 """, modelId, providerId, trimToLength(upstreamModel, 128));
-        userModelAccessService.syncPresetGroupsForModel(modelId, modelCode, upstreamModel);
+        userModelAccessService.replaceModelGroupBinding(modelId, groupId);
         return modelId;
     }
 
@@ -409,14 +438,28 @@ public class AdminModelService {
         return result;
     }
 
-    private boolean routeExists(Long providerId, String upstreamModel) {
-        Integer count = jdbcTemplate.queryForObject("""
-                select count(*)
+    private ExistingRouteModel findExistingRouteModel(Long providerId, String upstreamModel) {
+        List<ExistingRouteModel> models = jdbcTemplate.query("""
+                select m.id, m.model_code
                 from model_routes r
                 join models m on m.id = r.model_id
                 where r.provider_id = ? and r.upstream_model = ? and r.status = 'ACTIVE'
                   and m.deleted = 0
-                """, Integer.class, providerId, trimToLength(upstreamModel, 128));
+                order by m.id asc
+                limit 1
+                """, (rs, rowNum) -> new ExistingRouteModel(
+                rs.getLong("id"),
+                rs.getString("model_code")
+        ), providerId, trimToLength(upstreamModel, 128));
+        return models.isEmpty() ? null : models.get(0);
+    }
+
+    private boolean isModelBoundToGroup(Long modelId, Long groupId) {
+        Integer count = jdbcTemplate.queryForObject("""
+                select count(*)
+                from model_group_models
+                where model_id = ? and group_id = ?
+                """, Integer.class, modelId, groupId);
         return count != null && count > 0;
     }
 
@@ -533,6 +576,9 @@ public class AdminModelService {
             Integer timeoutMs,
             String token
     ) {
+    }
+
+    private record ExistingRouteModel(Long modelId, String modelCode) {
     }
 }
 

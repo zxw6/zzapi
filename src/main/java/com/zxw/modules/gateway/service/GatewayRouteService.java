@@ -48,9 +48,28 @@ public class GatewayRouteService {
         ));
     }
 
+    public List<ModelCard> listModelsByGroup(Long groupId) {
+        if (groupId == null) {
+            return listPublicModels();
+        }
+        return jdbcTemplate.query("""
+                select distinct m.model_code, m.model_name, m.model_type
+                from model_group_models mgm
+                join models m on m.id = mgm.model_id
+                where mgm.group_id = ?
+                  and m.deleted = 0
+                  and m.status = 'ACTIVE'
+                order by m.id desc
+                """, (rs, rowNum) -> new ModelCard(
+                rs.getString("model_code"),
+                rs.getString("model_name"),
+                rs.getString("model_type")
+        ), groupId);
+    }
+
     private List<RouteDefinition> findRoutes(String modelCode) {
         return jdbcTemplate.query("""
-                select m.id as model_id, m.model_code, m.model_name, m.prompt_price, m.completion_price,
+                select m.id as model_id, m.model_code, m.model_name, m.billing_type, m.prompt_price, m.completion_price,
                        m.request_price, m.multiplier, p.id as provider_id, p.provider_name, p.base_url, p.provider_type,
                        p.timeout_ms, r.upstream_model, t.id as provider_token_id, t.token_value_encrypted
                 from models m
@@ -71,6 +90,7 @@ public class GatewayRouteService {
                 rs.getString("provider_type"),
                 rs.getInt("timeout_ms"),
                 rs.getString("upstream_model"),
+                rs.getString("billing_type"),
                 rs.getBigDecimal("prompt_price"),
                 rs.getBigDecimal("completion_price"),
                 rs.getBigDecimal("request_price"),
@@ -110,6 +130,7 @@ public class GatewayRouteService {
             String providerType,
             Integer timeoutMs,
             String upstreamModel,
+            String billingType,
             BigDecimal promptPrice,
             BigDecimal completionPrice,
             BigDecimal requestPrice,

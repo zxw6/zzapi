@@ -531,6 +531,23 @@ textarea:focus {
     grid-column: 1 / -1;
 }
 
+.register-code-actions {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+    margin-top: 4px;
+}
+
+.register-code-actions .secondary-button {
+    width: 100%;
+}
+
+.register-code-actions .card-caption {
+    margin: 0;
+    max-width: 100%;
+}
+
 .modal-close {
     position: absolute;
     top: 16px;

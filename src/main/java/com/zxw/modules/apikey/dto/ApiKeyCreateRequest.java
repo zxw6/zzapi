@@ -8,6 +8,7 @@ public record ApiKeyCreateRequest(
         Long userId,
         @NotBlank(message = "密钥名称不能为空")
         String name,
+        Long modelPackageId,
         Long modelGroupId,
         String expiresAt,
         String remark
