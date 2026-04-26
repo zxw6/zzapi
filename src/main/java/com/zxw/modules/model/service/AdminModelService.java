@@ -238,7 +238,18 @@ public class AdminModelService {
                 continue;
             }
 
-            String modelCode = buildUniqueModelCode(normalizeModelCode(upstreamModel));
+            String modelCode = normalizeModelCode(upstreamModel);
+            Long existingModelId = findModelIdByCode(modelCode);
+            if (existingModelId != null) {
+                if (isModelBoundToGroup(existingModelId, request.groupId())) {
+                    skippedModels.add(upstreamModel);
+                    continue;
+                }
+                userModelAccessService.addModelGroupBinding(existingModelId, request.groupId());
+                importedModels.add(modelCode);
+                continue;
+            }
+
             String modelName = trimToLength(upstreamModel, 64);
             insertModelWithRoute(
                     modelCode,
@@ -344,7 +355,7 @@ public class AdminModelService {
                 insert into model_routes (model_id, provider_id, provider_token_id, upstream_model, route_type, priority_no, status)
                 values (?, ?, null, ?, 'PRIMARY', 100, 'ACTIVE')
                 """, modelId, providerId, trimToLength(upstreamModel, 128));
-        userModelAccessService.replaceModelGroupBinding(modelId, groupId);
+        userModelAccessService.addModelGroupBinding(modelId, groupId);
         return modelId;
     }
 
@@ -463,29 +474,13 @@ public class AdminModelService {
         return count != null && count > 0;
     }
 
-    private String buildUniqueModelCode(String baseCode) {
-        String normalized = trimToLength(baseCode.isBlank() ? "model" : baseCode, 64);
-        if (!modelCodeExists(normalized)) {
-            return normalized;
-        }
-
-        for (int i = 2; i < 1000; i++) {
-            String suffix = "-" + i;
-            String candidate = trimToLength(normalized, 64 - suffix.length()) + suffix;
-            if (!modelCodeExists(candidate)) {
-                return candidate;
-            }
-        }
-        throw new BusinessException("鑷姩鐢熸垚妯″瀷缂栫爜澶辫触锛岃绋嶅悗閲嶈瘯");
-    }
-
-    private boolean modelCodeExists(String modelCode) {
-        Integer count = jdbcTemplate.queryForObject(
-                "select count(*) from models where model_code = ?",
-                Integer.class,
-                modelCode
+    private Long findModelIdByCode(String modelCode) {
+        List<Long> ids = jdbcTemplate.queryForList(
+                "select id from models where model_code = ? and deleted = 0 limit 1",
+                Long.class,
+                trimToLength(modelCode, 64)
         );
-        return count != null && count > 0;
+        return ids.isEmpty() ? null : ids.get(0);
     }
 
     private String normalizeModelCode(String upstreamModel) {

@@ -178,7 +178,7 @@ const elements = {
 
 function isAdmin() {
     return state.me?.roleCode === "ADMIN";
-}/*
+}
 
 function escapeHtml(value) {
     return String(value ?? "")
@@ -187,7 +187,7 @@ function escapeHtml(value) {
         .replaceAll(">", "&gt;")
         .replaceAll('"', "&quot;")
         .replaceAll("'", "&#39;");
-}*/
+}
 
 function toNumber(value) {
     const num = Number(value ?? 0);
