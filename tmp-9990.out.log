@@ -1,212 +1,0 @@
-[INFO] Scanning for projects...
-Downloading from central: https://repo.maven.apache.org/maven2/org/flywaydb/maven-metadata.xml
-Downloading from central: https://repo.maven.apache.org/maven2/org/cyclonedx/maven-metadata.xml
-Downloading from central: https://repo.maven.apache.org/maven2/org/springframework/boot/maven-metadata.xml
-Downloading from central: https://repo.maven.apache.org/maven2/io/github/git-commit-id/maven-metadata.xml
-Progress (1): 249 BProgress (2): 249 B | 243 B                           Downloaded from central: https://repo.maven.apache.org/maven2/org/cyclonedx/maven-metadata.xml (243 B at 234 B/s)
-Downloaded from central: https://repo.maven.apache.org/maven2/org/springframework/boot/maven-metadata.xml (249 B at 239 B/s)
-Downloading from central: https://repo.maven.apache.org/maven2/org/jooq/maven-metadata.xml
-Downloading from central: https://repo.maven.apache.org/maven2/org/jetbrains/kotlin/maven-metadata.xml
-Progress (1): 234 B                   Downloaded from central: https://repo.maven.apache.org/maven2/org/flywaydb/maven-metadata.xml (234 B at 212 B/s)
-Downloading from central: https://repo.maven.apache.org/maven2/org/liquibase/maven-metadata.xml
-Progress (1): 375 BProgress (2): 375 B | 398 B                           Downloaded from central: https://repo.maven.apache.org/maven2/org/jetbrains/kotlin/maven-metadata.xml (375 B at 1.8 kB/s)
-Downloading from central: https://repo.maven.apache.org/maven2/org/graalvm/buildtools/maven-metadata.xml
-Downloaded from central: https://repo.maven.apache.org/maven2/org/jooq/maven-metadata.xml (398 B at 1.9 kB/s)
-Downloading from central: https://repo.maven.apache.org/maven2/org/apache/maven/plugins/maven-metadata.xml
-Progress (1): 394 B                   Downloaded from central: https://repo.maven.apache.org/maven2/org/liquibase/maven-metadata.xml (394 B at 2.0 kB/s)
-Downloading from central: https://repo.maven.apache.org/maven2/org/codehaus/mojo/maven-metadata.xml
-Progress (1): 255 BProgress (2): 255 B | 4.6 kBProgress (2): 255 B | 9.7 kBProgress (2): 255 B | 14 kB Progress (3): 255 B | 14 kB | 242 B                                   Downloaded from central: https://repo.maven.apache.org/maven2/io/github/git-commit-id/maven-metadata.xml (255 B at 175 B/s)
-Downloaded from central: https://repo.maven.apache.org/maven2/org/graalvm/buildtools/maven-metadata.xml (242 B at 1.1 kB/s)
-Progress (2): 14 kB | 3.1 kBProgress (2): 14 kB | 7.7 kBProgress (2): 14 kB | 12 kB Progress (2): 14 kB | 17 kBProgress (2): 14 kB | 20 kBProgress (2): 14 kB | 21 kB                           Downloaded from central: https://repo.maven.apache.org/maven2/org/apache/maven/plugins/maven-metadata.xml (14 kB at 66 kB/s)
-Downloaded from central: https://repo.maven.apache.org/maven2/org/codehaus/mojo/maven-metadata.xml (21 kB at 57 kB/s)
-[INFO] 
-[INFO] ----------------------------< com.zxw:Test >----------------------------
-[INFO] Building Test 0.0.1-SNAPSHOT
-[INFO]   from pom.xml
-[INFO] --------------------------------[ jar ]---------------------------------
-[INFO] 
-[INFO] >>> spring-boot:3.5.13:run (default-cli) > test-compile @ Test >>>
-[INFO] 
-[INFO] --- resources:3.3.1:resources (default-resources) @ Test ---
-[INFO] Copying 1 resource from src\main\resources to target\classes
-[INFO] Copying 4 resources from src\main\resources to target\classes
-[INFO] 
-[INFO] --- compiler:3.14.1:compile (default-compile) @ Test ---
-[INFO] Nothing to compile - all classes are up to date.
-[INFO] 
-[INFO] --- resources:3.3.1:testResources (default-testResources) @ Test ---
-[INFO] skip non existing resourceDirectory E:\project-ai\Test\src\test\resources
-[INFO] 
-[INFO] --- compiler:3.14.1:testCompile (default-testCompile) @ Test ---
-[INFO] Nothing to compile - all classes are up to date.
-[INFO] 
-[INFO] <<< spring-boot:3.5.13:run (default-cli) < test-compile @ Test <<<
-[INFO] 
-[INFO] 
-[INFO] --- spring-boot:3.5.13:run (default-cli) @ Test ---
-[WARNING] Error injecting: org.springframework.boot.maven.RunMojo
-java.lang.TypeNotPresentException: Type org.springframework.boot.maven.RunMojo not present
-    at org.eclipse.sisu.space.URLClassSpace.loadClass (URLClassSpace.java:125)
-    at org.eclipse.sisu.space.NamedClass.load (NamedClass.java:45)
-    at org.eclipse.sisu.space.AbstractDeferredClass.get (AbstractDeferredClass.java:45)
-    at com.google.inject.internal.ProviderInternalFactory.provision (ProviderInternalFactory.java:86)
-    at com.google.inject.internal.InternalFactoryToInitializableAdapter.provision (InternalFactoryToInitializableAdapter.java:57)
-    at com.google.inject.internal.ProviderInternalFactory$1.call (ProviderInternalFactory.java:67)
-    at com.google.inject.internal.ProvisionListenerStackCallback$Provision.provision (ProvisionListenerStackCallback.java:109)
-    at com.google.inject.internal.ProvisionListenerStackCallback$Provision.provision (ProvisionListenerStackCallback.java:124)
-    at com.google.inject.internal.ProvisionListenerStackCallback.provision (ProvisionListenerStackCallback.java:66)
-    at com.google.inject.internal.ProviderInternalFactory.circularGet (ProviderInternalFactory.java:62)
-    at com.google.inject.internal.InternalFactoryToInitializableAdapter.get (InternalFactoryToInitializableAdapter.java:47)
-    at com.google.inject.internal.InjectorImpl$1.get (InjectorImpl.java:1101)
-    at org.eclipse.sisu.inject.Guice4$2.get (Guice4.java:184)
-    at org.eclipse.sisu.inject.LazyBeanEntry.getValue (LazyBeanEntry.java:71)
-    at org.eclipse.sisu.plexus.LazyPlexusBean.getValue (LazyPlexusBean.java:48)
-    at org.codehaus.plexus.DefaultPlexusContainer.lookup (DefaultPlexusContainer.java:246)
-    at org.codehaus.plexus.DefaultPlexusContainer.lookup (DefaultPlexusContainer.java:240)
-    at org.apache.maven.plugin.internal.DefaultMavenPluginManager.getConfiguredMojo (DefaultMavenPluginManager.java:503)
-    at org.apache.maven.plugin.DefaultBuildPluginManager.executeMojo (DefaultBuildPluginManager.java:114)
-    at org.apache.maven.lifecycle.internal.MojoExecutor.doExecute2 (MojoExecutor.java:328)
-    at org.apache.maven.lifecycle.internal.MojoExecutor.doExecute (MojoExecutor.java:316)
-    at org.apache.maven.lifecycle.internal.MojoExecutor.execute (MojoExecutor.java:212)
-    at org.apache.maven.lifecycle.internal.MojoExecutor.execute (MojoExecutor.java:174)
-    at org.apache.maven.lifecycle.internal.MojoExecutor.access$000 (MojoExecutor.java:75)
-    at org.apache.maven.lifecycle.internal.MojoExecutor$1.run (MojoExecutor.java:162)
-    at org.apache.maven.plugin.DefaultMojosExecutionStrategy.execute (DefaultMojosExecutionStrategy.java:39)
-    at org.apache.maven.lifecycle.internal.MojoExecutor.execute (MojoExecutor.java:159)
-    at org.apache.maven.lifecycle.internal.LifecycleModuleBuilder.buildProject (LifecycleModuleBuilder.java:105)
-    at org.apache.maven.lifecycle.internal.LifecycleModuleBuilder.buildProject (LifecycleModuleBuilder.java:73)
-    at org.apache.maven.lifecycle.internal.builder.singlethreaded.SingleThreadedBuilder.build (SingleThreadedBuilder.java:53)
-    at org.apache.maven.lifecycle.internal.LifecycleStarter.execute (LifecycleStarter.java:118)
-    at org.apache.maven.DefaultMaven.doExecute (DefaultMaven.java:261)
-    at org.apache.maven.DefaultMaven.doExecute (DefaultMaven.java:173)
-    at org.apache.maven.DefaultMaven.execute (DefaultMaven.java:101)
-    at org.apache.maven.cli.MavenCli.execute (MavenCli.java:919)
-    at org.apache.maven.cli.MavenCli.doMain (MavenCli.java:285)
-    at org.apache.maven.cli.MavenCli.main (MavenCli.java:207)
-    at sun.reflect.NativeMethodAccessorImpl.invoke0 (Native Method)
-    at sun.reflect.NativeMethodAccessorImpl.invoke (NativeMethodAccessorImpl.java:62)
-    at sun.reflect.DelegatingMethodAccessorImpl.invoke (DelegatingMethodAccessorImpl.java:43)
-    at java.lang.reflect.Method.invoke (Method.java:498)
-    at org.codehaus.plexus.classworlds.launcher.Launcher.launchEnhanced (Launcher.java:255)
-    at org.codehaus.plexus.classworlds.launcher.Launcher.launch (Launcher.java:201)
-    at org.codehaus.plexus.classworlds.launcher.Launcher.mainWithExitCode (Launcher.java:361)
-    at org.codehaus.plexus.classworlds.launcher.Launcher.main (Launcher.java:314)
-Caused by: java.lang.UnsupportedClassVersionError: org/springframework/boot/maven/RunMojo has been compiled by a more recent version of the Java Runtime (class file version 61.0), this version of the Java Runtime only recognizes class file versions up to 52.0
-    at java.lang.ClassLoader.defineClass1 (Native Method)
-    at java.lang.ClassLoader.defineClass (ClassLoader.java:756)
-    at java.security.SecureClassLoader.defineClass (SecureClassLoader.java:142)
-    at java.net.URLClassLoader.defineClass (URLClassLoader.java:468)
-    at java.net.URLClassLoader.access$100 (URLClassLoader.java:74)
-    at java.net.URLClassLoader$1.run (URLClassLoader.java:369)
-    at java.net.URLClassLoader$1.run (URLClassLoader.java:363)
-    at java.security.AccessController.doPrivileged (Native Method)
-    at java.net.URLClassLoader.findClass (URLClassLoader.java:362)
-    at org.codehaus.plexus.classworlds.realm.ClassRealm.findClassInternal (ClassRealm.java:256)
-    at org.codehaus.plexus.classworlds.realm.ClassRealm.loadClassFromSelf (ClassRealm.java:351)
-    at org.codehaus.plexus.classworlds.strategy.SelfFirstStrategy.loadClass (SelfFirstStrategy.java:36)
-    at org.codehaus.plexus.classworlds.realm.ClassRealm.unsynchronizedLoadClass (ClassRealm.java:225)
-    at org.codehaus.plexus.classworlds.realm.ClassRealm.loadClass (ClassRealm.java:210)
-    at org.codehaus.plexus.classworlds.realm.ClassRealm.loadClass (ClassRealm.java:205)
-    at org.eclipse.sisu.space.URLClassSpace.loadClass (URLClassSpace.java:123)
-    at org.eclipse.sisu.space.NamedClass.load (NamedClass.java:45)
-    at org.eclipse.sisu.space.AbstractDeferredClass.get (AbstractDeferredClass.java:45)
-    at com.google.inject.internal.ProviderInternalFactory.provision (ProviderInternalFactory.java:86)
-    at com.google.inject.internal.InternalFactoryToInitializableAdapter.provision (InternalFactoryToInitializableAdapter.java:57)
-    at com.google.inject.internal.ProviderInternalFactory$1.call (ProviderInternalFactory.java:67)
-    at com.google.inject.internal.ProvisionListenerStackCallback$Provision.provision (ProvisionListenerStackCallback.java:109)
-    at com.google.inject.internal.ProvisionListenerStackCallback$Provision.provision (ProvisionListenerStackCallback.java:124)
-    at com.google.inject.internal.ProvisionListenerStackCallback.provision (ProvisionListenerStackCallback.java:66)
-    at com.google.inject.internal.ProviderInternalFactory.circularGet (ProviderInternalFactory.java:62)
-    at com.google.inject.internal.InternalFactoryToInitializableAdapter.get (InternalFactoryToInitializableAdapter.java:47)
-    at com.google.inject.internal.InjectorImpl$1.get (InjectorImpl.java:1101)
-    at org.eclipse.sisu.inject.Guice4$2.get (Guice4.java:184)
-    at org.eclipse.sisu.inject.LazyBeanEntry.getValue (LazyBeanEntry.java:71)
-    at org.eclipse.sisu.plexus.LazyPlexusBean.getValue (LazyPlexusBean.java:48)
-    at org.codehaus.plexus.DefaultPlexusContainer.lookup (DefaultPlexusContainer.java:246)
-    at org.codehaus.plexus.DefaultPlexusContainer.lookup (DefaultPlexusContainer.java:240)
-    at org.apache.maven.plugin.internal.DefaultMavenPluginManager.getConfiguredMojo (DefaultMavenPluginManager.java:503)
-    at org.apache.maven.plugin.DefaultBuildPluginManager.executeMojo (DefaultBuildPluginManager.java:114)
-    at org.apache.maven.lifecycle.internal.MojoExecutor.doExecute2 (MojoExecutor.java:328)
-    at org.apache.maven.lifecycle.internal.MojoExecutor.doExecute (MojoExecutor.java:316)
-    at org.apache.maven.lifecycle.internal.MojoExecutor.execute (MojoExecutor.java:212)
-    at org.apache.maven.lifecycle.internal.MojoExecutor.execute (MojoExecutor.java:174)
-    at org.apache.maven.lifecycle.internal.MojoExecutor.access$000 (MojoExecutor.java:75)
-    at org.apache.maven.lifecycle.internal.MojoExecutor$1.run (MojoExecutor.java:162)
-    at org.apache.maven.plugin.DefaultMojosExecutionStrategy.execute (DefaultMojosExecutionStrategy.java:39)
-    at org.apache.maven.lifecycle.internal.MojoExecutor.execute (MojoExecutor.java:159)
-    at org.apache.maven.lifecycle.internal.LifecycleModuleBuilder.buildProject (LifecycleModuleBuilder.java:105)
-    at org.apache.maven.lifecycle.internal.LifecycleModuleBuilder.buildProject (LifecycleModuleBuilder.java:73)
-    at org.apache.maven.lifecycle.internal.builder.singlethreaded.SingleThreadedBuilder.build (SingleThreadedBuilder.java:53)
-    at org.apache.maven.lifecycle.internal.LifecycleStarter.execute (LifecycleStarter.java:118)
-    at org.apache.maven.DefaultMaven.doExecute (DefaultMaven.java:261)
-    at org.apache.maven.DefaultMaven.doExecute (DefaultMaven.java:173)
-    at org.apache.maven.DefaultMaven.execute (DefaultMaven.java:101)
-    at org.apache.maven.cli.MavenCli.execute (MavenCli.java:919)
-    at org.apache.maven.cli.MavenCli.doMain (MavenCli.java:285)
-    at org.apache.maven.cli.MavenCli.main (MavenCli.java:207)
-    at sun.reflect.NativeMethodAccessorImpl.invoke0 (Native Method)
-    at sun.reflect.NativeMethodAccessorImpl.invoke (NativeMethodAccessorImpl.java:62)
-    at sun.reflect.DelegatingMethodAccessorImpl.invoke (DelegatingMethodAccessorImpl.java:43)
-    at java.lang.reflect.Method.invoke (Method.java:498)
-    at org.codehaus.plexus.classworlds.launcher.Launcher.launchEnhanced (Launcher.java:255)
-    at org.codehaus.plexus.classworlds.launcher.Launcher.launch (Launcher.java:201)
-    at org.codehaus.plexus.classworlds.launcher.Launcher.mainWithExitCode (Launcher.java:361)
-    at org.codehaus.plexus.classworlds.launcher.Launcher.main (Launcher.java:314)
-[INFO] ------------------------------------------------------------------------
-[INFO] BUILD FAILURE
-[INFO] ------------------------------------------------------------------------
-[INFO] Total time:  5.095 s
-[INFO] Finished at: 2026-04-15T17:24:45+08:00
-[INFO] ------------------------------------------------------------------------
-[ERROR] Failed to execute goal org.springframework.boot:spring-boot-maven-plugin:3.5.13:run (default-cli) on project Test: Execution default-cli of goal org.springframework.boot:spring-boot-maven-plugin:3.5.13:run failed: Unable to load the mojo 'run' in the plugin 'org.springframework.boot:spring-boot-maven-plugin:3.5.13' due to an API incompatibility: org.codehaus.plexus.component.repository.exception.ComponentLookupException: org/springframework/boot/maven/RunMojo has been compiled by a more recent version of the Java Runtime (class file version 61.0), this version of the Java Runtime only recognizes class file versions up to 52.0
-[ERROR] -----------------------------------------------------
-[ERROR] realm =    plugin>org.springframework.boot:spring-boot-maven-plugin:3.5.13
-[ERROR] strategy = org.codehaus.plexus.classworlds.strategy.SelfFirstStrategy
-[ERROR] urls[0] = file:/C:/Users/EDY/.m2/repository/org/springframework/boot/spring-boot-maven-plugin/3.5.13/spring-boot-maven-plugin-3.5.13.jar
-[ERROR] urls[1] = file:/C:/Users/EDY/.m2/repository/org/springframework/boot/spring-boot-buildpack-platform/3.5.13/spring-boot-buildpack-platform-3.5.13.jar
-[ERROR] urls[2] = file:/C:/Users/EDY/.m2/repository/com/fasterxml/jackson/core/jackson-databind/2.21.2/jackson-databind-2.21.2.jar
-[ERROR] urls[3] = file:/C:/Users/EDY/.m2/repository/com/fasterxml/jackson/core/jackson-annotations/2.21/jackson-annotations-2.21.jar
-[ERROR] urls[4] = file:/C:/Users/EDY/.m2/repository/com/fasterxml/jackson/core/jackson-core/2.21.2/jackson-core-2.21.2.jar
-[ERROR] urls[5] = file:/C:/Users/EDY/.m2/repository/com/fasterxml/jackson/module/jackson-module-parameter-names/2.21.2/jackson-module-parameter-names-2.21.2.jar
-[ERROR] urls[6] = file:/C:/Users/EDY/.m2/repository/net/java/dev/jna/jna-platform/5.17.0/jna-platform-5.17.0.jar
-[ERROR] urls[7] = file:/C:/Users/EDY/.m2/repository/net/java/dev/jna/jna/5.17.0/jna-5.17.0.jar
-[ERROR] urls[8] = file:/C:/Users/EDY/.m2/repository/org/apache/commons/commons-compress/1.27.1/commons-compress-1.27.1.jar
-[ERROR] urls[9] = file:/C:/Users/EDY/.m2/repository/commons-codec/commons-codec/1.17.1/commons-codec-1.17.1.jar
-[ERROR] urls[10] = file:/C:/Users/EDY/.m2/repository/org/apache/commons/commons-lang3/3.16.0/commons-lang3-3.16.0.jar
-[ERROR] urls[11] = file:/C:/Users/EDY/.m2/repository/org/apache/httpcomponents/client5/httpclient5/5.5.2/httpclient5-5.5.2.jar
-[ERROR] urls[12] = file:/C:/Users/EDY/.m2/repository/org/apache/httpcomponents/core5/httpcore5/5.3.6/httpcore5-5.3.6.jar
-[ERROR] urls[13] = file:/C:/Users/EDY/.m2/repository/org/apache/httpcomponents/core5/httpcore5-h2/5.3.6/httpcore5-h2-5.3.6.jar
-[ERROR] urls[14] = file:/C:/Users/EDY/.m2/repository/org/tomlj/tomlj/1.0.0/tomlj-1.0.0.jar
-[ERROR] urls[15] = file:/C:/Users/EDY/.m2/repository/org/antlr/antlr4-runtime/4.7.2/antlr4-runtime-4.7.2.jar
-[ERROR] urls[16] = file:/C:/Users/EDY/.m2/repository/com/google/code/findbugs/jsr305/3.0.2/jsr305-3.0.2.jar
-[ERROR] urls[17] = file:/C:/Users/EDY/.m2/repository/org/springframework/boot/spring-boot-loader-tools/3.5.13/spring-boot-loader-tools-3.5.13.jar
-[ERROR] urls[18] = file:/C:/Users/EDY/.m2/repository/org/apache/maven/shared/maven-common-artifact-filters/3.4.0/maven-common-artifact-filters-3.4.0.jar
-[ERROR] urls[19] = file:/C:/Users/EDY/.m2/repository/org/sonatype/plexus/plexus-build-api/0.0.7/plexus-build-api-0.0.7.jar
-[ERROR] urls[20] = file:/C:/Users/EDY/.m2/repository/org/springframework/spring-core/6.2.17/spring-core-6.2.17.jar
-[ERROR] urls[21] = file:/C:/Users/EDY/.m2/repository/org/springframework/spring-jcl/6.2.17/spring-jcl-6.2.17.jar
-[ERROR] urls[22] = file:/C:/Users/EDY/.m2/repository/org/springframework/spring-context/6.2.17/spring-context-6.2.17.jar
-[ERROR] urls[23] = file:/C:/Users/EDY/.m2/repository/org/springframework/spring-aop/6.2.17/spring-aop-6.2.17.jar
-[ERROR] urls[24] = file:/C:/Users/EDY/.m2/repository/org/springframework/spring-beans/6.2.17/spring-beans-6.2.17.jar
-[ERROR] urls[25] = file:/C:/Users/EDY/.m2/repository/org/springframework/spring-expression/6.2.17/spring-expression-6.2.17.jar
-[ERROR] urls[26] = file:/C:/Users/EDY/.m2/repository/io/micrometer/micrometer-observation/1.15.10/micrometer-observation-1.15.10.jar
-[ERROR] urls[27] = file:/C:/Users/EDY/.m2/repository/io/micrometer/micrometer-commons/1.15.10/micrometer-commons-1.15.10.jar
-[ERROR] urls[28] = file:/C:/Users/EDY/.m2/repository/org/apache/maven/plugins/maven-shade-plugin/3.6.0/maven-shade-plugin-3.6.0.jar
-[ERROR] urls[29] = file:/C:/Users/EDY/.m2/repository/org/codehaus/plexus/plexus-utils/3.5.1/plexus-utils-3.5.1.jar
-[ERROR] urls[30] = file:/C:/Users/EDY/.m2/repository/org/ow2/asm/asm/9.7/asm-9.7.jar
-[ERROR] urls[31] = file:/C:/Users/EDY/.m2/repository/org/ow2/asm/asm-commons/9.7/asm-commons-9.7.jar
-[ERROR] urls[32] = file:/C:/Users/EDY/.m2/repository/org/ow2/asm/asm-tree/9.7/asm-tree-9.7.jar
-[ERROR] urls[33] = file:/C:/Users/EDY/.m2/repository/org/jdom/jdom2/2.0.6.1/jdom2-2.0.6.1.jar
-[ERROR] urls[34] = file:/C:/Users/EDY/.m2/repository/commons-io/commons-io/2.16.1/commons-io-2.16.1.jar
-[ERROR] urls[35] = file:/C:/Users/EDY/.m2/repository/org/vafer/jdependency/2.10/jdependency-2.10.jar
-[ERROR] Number of foreign imports: 1
-[ERROR] import: Entry[import  from realm ClassRealm[maven.api, parent: null]]
-[ERROR] 
-[ERROR] -----------------------------------------------------
-[ERROR] 
-[ERROR] -> [Help 1]
-[ERROR] 
-[ERROR] To see the full stack trace of the errors, re-run Maven with the -e switch.
-[ERROR] Re-run Maven using the -X switch to enable full debug logging.
-[ERROR] 
-[ERROR] For more information about the errors and possible solutions, please read the following articles:
-[ERROR] [Help 1] http://cwiki.apache.org/confluence/display/MAVEN/PluginContainerException

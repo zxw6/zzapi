@@ -452,26 +452,17 @@ function getSelectedPackageGroup() {
         return null;
     }
     const explicit = groups.find((item) => String(item.id) === String(state.selectedPackageGroupId));
-    if (explicit) {
-        return explicit;
-    }
-    const latestPurchasedPackage = getPurchasedPackages()
-        .slice()
-        .sort((a, b) => toNumber(b.id) - toNumber(a.id))[0];
-    if (latestPurchasedPackage) {
-        const matchedGroup = groups.find((item) => String(item.id) === String(latestPurchasedPackage.groupId));
-        if (matchedGroup) {
-            return matchedGroup;
-        }
-    }
-    return groups.find((item) => item.active)
-        || groups.find((item) => item.purchased)
-        || groups[0];
+    return explicit || null;
 }
 
 function syncSelectedPackageGroup() {
-    const selected = getSelectedPackageGroup();
-    state.selectedPackageGroupId = selected?.id ?? null;
+    if (!state.selectedPackageGroupId) {
+        return;
+    }
+    const groups = getAccessGroups();
+    if (!groups.some((item) => String(item.id) === String(state.selectedPackageGroupId))) {
+        state.selectedPackageGroupId = null;
+    }
 }
 
 function getPurchasedGroups() {
@@ -535,13 +526,17 @@ function getSelectedPurchasedPackage() {
             return latestByGroup;
         }
     }
-    return packages.slice().sort((a, b) => toNumber(b.id) - toNumber(a.id)).find((item) => isPackageUsable(item))
-        || packages.slice().sort((a, b) => toNumber(b.id) - toNumber(a.id))[0];
+    return null;
 }
 
 function syncSelectedPurchasedPackage() {
-    const selected = getSelectedPurchasedPackage();
-    state.selectedPackageId = selected?.id ?? null;
+    if (!state.selectedPackageId) {
+        return;
+    }
+    const packages = getPurchasedPackages();
+    if (!packages.some((item) => String(item.id) === String(state.selectedPackageId))) {
+        state.selectedPackageId = null;
+    }
 }
 
 function getFirstPurchasedPackageByGroup(groupId) {
@@ -569,14 +564,11 @@ function getModelRowKey(model) {
 
 function getModelPreviewGroup() {
     const filter = String(state.modelProviderFilter || "");
-    if (filter === "ALL_GROUPS" || filter === "ALL") {
-        return null;
-    }
     if (filter.startsWith("GROUP:")) {
         const groupId = filter.slice("GROUP:".length);
         return getAccessGroups().find((item) => String(item.id) === String(groupId)) || null;
     }
-    return getSelectedPackageGroup();
+    return null;
 }
 
 function getManageableGroups() {
@@ -1235,7 +1227,7 @@ function renderQuotaCard() {
             </div>
             <div class="quota-meta">
                 <span>分组模型</span>
-                <strong>${escapeHtml(getSelectedPackageGroup()?.modelCount || 0)} 个</strong>
+                <strong>${escapeHtml(selectedPackage?.modelCount || 0)} 个</strong>
             </div>
         </div>
     `;
@@ -1753,7 +1745,7 @@ function renderModelProviderFilters() {
     const groups = getAccessGroups();
     const validFilters = new Set(["ALL", "ALL_GROUPS", ...groups.map((group) => `GROUP:${group.id}`)]);
     if (!validFilters.has(state.modelProviderFilter)) {
-        state.modelProviderFilter = state.selectedPackageGroupId ? `GROUP:${state.selectedPackageGroupId}` : "ALL_GROUPS";
+        state.modelProviderFilter = "ALL_GROUPS";
     }
     const filterButtons = ['<button type="button" class="filter-pill' + (state.modelProviderFilter === "ALL_GROUPS" || state.modelProviderFilter === "ALL" ? ' active' : '') + '" data-provider-filter="ALL_GROUPS">全部</button>']
         .concat(groups.map((group) => {
@@ -1766,7 +1758,6 @@ function renderModelProviderFilters() {
 function showPackageModelDetails(groupId) {
     const groups = getAccessGroups();
     const targetGroup = groups.find((item) => String(item.id) === String(groupId));
-    state.selectedPackageGroupId = groupId;
     state.modelProviderFilter = `GROUP:${groupId}`;
 
     const groupModels = state.models.filter((item) => String(item.groupId) === String(groupId));
@@ -2147,12 +2138,6 @@ async function loadOverview(render = true) {
 async function loadAccessSummary(render = true) {
     state.accessSummary = await fetchJson("/admin/model-access/summary");
     syncSelectedPackageGroup();
-    if (!state.selectedPackageId) {
-        const fallbackPackage = getLatestPurchasedPackageByGroup(state.selectedPackageGroupId);
-        if (fallbackPackage) {
-            state.selectedPackageId = fallbackPackage.id;
-        }
-    }
     if (render) {
         renderPackageSelectionViews();
     }
@@ -2208,10 +2193,6 @@ async function loadModels(render = true) {
 async function loadPackagePurchaseRecords(render = true) {
     state.packagePurchaseRecords = await fetchJson("/admin/model-access/purchases");
     syncSelectedPurchasedPackage();
-    const selectedPackage = getSelectedPurchasedPackage();
-    if (selectedPackage) {
-        state.selectedPackageGroupId = selectedPackage.groupId;
-    }
     if (render) {
         renderPackagePurchaseRecords();
         renderPackageSelectionViews();
@@ -3011,7 +2992,6 @@ function bindEvents() {
         const card = event.target.closest("[data-select-package]");
         if (card) {
             state.selectedPackageGroupId = card.dataset.selectPackage;
-            state.modelProviderFilter = `GROUP:${state.selectedPackageGroupId}`;
             const selectedPackage = getFirstPurchasedPackageByGroup(card.dataset.selectPackage);
             if (selectedPackage) {
                 state.selectedPackageId = selectedPackage.id;

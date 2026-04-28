@@ -7,7 +7,6 @@ import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
 import java.util.List;
-import java.util.Locale;
 
 @Service
 public class GatewayRouteService {
@@ -139,23 +138,7 @@ public class GatewayRouteService {
     }
 
     private String resolveAliasModelCode(String modelCode) {
-        if (modelCode == null || modelCode.isBlank()) {
-            return null;
-        }
-        return findLatestSuffixedModelCode(modelCode);
-    }
-
-    private String findLatestSuffixedModelCode(String modelCode) {
-        List<String> candidates = jdbcTemplate.query("""
-                select model_code
-                from models
-                where deleted = 0
-                  and status = 'ACTIVE'
-                  and model_code like concat(?, '-%%')
-                order by id desc
-                limit 1
-                """, (rs, rowNum) -> rs.getString("model_code"), modelCode);
-        return candidates.isEmpty() ? null : candidates.get(0);
+        return null;
     }
 
     public record RouteDefinition(

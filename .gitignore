@@ -31,3 +31,12 @@ build/
 
 ### VS Code ###
 .vscode/
+
+### Local Runtime Files ###
+*.log
+hs_err_pid*
+tmp-*.json
+tmp-*.txt
+.claude/
+.m2/
+.m2home/
