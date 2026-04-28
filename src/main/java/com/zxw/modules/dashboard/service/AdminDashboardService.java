@@ -38,13 +38,13 @@ public class AdminDashboardService {
                         (select count(*) from models where deleted = 0 and status = 'ACTIVE' and is_public = 1) as model_count,
                         (select count(*) from request_logs where request_date = curdate() and user_id = ?) as request_count_today,
                         coalesce((select sum(total_tokens) from request_logs where request_date = curdate() and user_id = ?), 0) as total_tokens_today,
-                        coalesce((select sum(total_tokens) from usage_daily where user_id = ? and stat_date >= curdate() - interval 6 day), 0) as total_tokens_7d,
+                        coalesce((select sum(total_tokens) from request_logs where user_id = ? and request_date >= curdate() - interval 6 day), 0) as total_tokens_7d,
                         coalesce((select sum(case when direction = 'IN' then amount else 0 end)
                                   from transactions
                                   where transaction_date = curdate() and user_id = ?), 0) as recharge_amount_today,
-                        coalesce((select sum(case when direction = 'OUT' then amount else 0 end)
-                                  from transactions
-                                  where transaction_date = curdate() and user_id = ?), 0) as consume_amount_today,
+                        coalesce((select sum(user_amount)
+                                  from request_logs
+                                  where request_date = curdate() and user_id = ?), 0) as consume_amount_today,
                         coalesce((select balance from wallets where user_id = ?), 0) as wallet_balance_total
                     """, (rs, rowNum) -> new DashboardOverviewResponse(
                     rs.getLong("user_count"),
@@ -68,13 +68,13 @@ public class AdminDashboardService {
                     (select count(*) from models where deleted = 0) as model_count,
                     (select count(*) from request_logs where request_date = curdate()) as request_count_today,
                     coalesce((select sum(total_tokens) from request_logs where request_date = curdate()), 0) as total_tokens_today,
-                    coalesce((select sum(total_tokens) from usage_daily where stat_date >= curdate() - interval 6 day), 0) as total_tokens_7d,
+                    coalesce((select sum(total_tokens) from request_logs where request_date >= curdate() - interval 6 day), 0) as total_tokens_7d,
                     coalesce((select sum(case when direction = 'IN' then amount else 0 end)
                               from transactions
                               where transaction_date = curdate()), 0) as recharge_amount_today,
-                    coalesce((select sum(case when direction = 'OUT' then amount else 0 end)
-                              from transactions
-                              where transaction_date = curdate()), 0) as consume_amount_today,
+                    coalesce((select sum(user_amount)
+                              from request_logs
+                              where request_date = curdate()), 0) as consume_amount_today,
                     coalesce((select sum(balance) from wallets), 0) as wallet_balance_total
                 """, (rs, rowNum) -> new DashboardOverviewResponse(
                 rs.getLong("user_count"),
@@ -98,10 +98,16 @@ public class AdminDashboardService {
         JwtUser currentUser = AdminContext.require();
         if (!AdminContext.isAdmin()) {
             return jdbcTemplate.query("""
-                    select stat_date, request_count, success_count, total_tokens, user_amount, cost_amount
-                    from usage_daily
-                    where user_id = ? and stat_date >= curdate() - interval ? day
-                    order by stat_date asc
+                    select request_date as stat_date,
+                           count(*) as request_count,
+                           sum(case when success = 1 then 1 else 0 end) as success_count,
+                           coalesce(sum(total_tokens), 0) as total_tokens,
+                           coalesce(sum(user_amount), 0) as user_amount,
+                           coalesce(sum(cost_amount), 0) as cost_amount
+                    from request_logs
+                    where user_id = ? and request_date >= curdate() - interval ? day
+                    group by request_date
+                    order by request_date asc
                     """, (rs, rowNum) -> new DashboardTrendPointResponse(
                     rs.getObject("stat_date", Date.class).toLocalDate(),
                     rs.getLong("request_count"),
@@ -113,10 +119,16 @@ public class AdminDashboardService {
         }
 
         return jdbcTemplate.query("""
-                select stat_date, request_count, success_count, total_tokens, user_amount, cost_amount
-                from usage_daily
-                where stat_date >= curdate() - interval ? day
-                order by stat_date asc
+                select request_date as stat_date,
+                       count(*) as request_count,
+                       sum(case when success = 1 then 1 else 0 end) as success_count,
+                       coalesce(sum(total_tokens), 0) as total_tokens,
+                       coalesce(sum(user_amount), 0) as user_amount,
+                       coalesce(sum(cost_amount), 0) as cost_amount
+                from request_logs
+                where request_date >= curdate() - interval ? day
+                group by request_date
+                order by request_date asc
                 """, (rs, rowNum) -> new DashboardTrendPointResponse(
                 rs.getObject("stat_date", Date.class).toLocalDate(),
                 rs.getLong("request_count"),

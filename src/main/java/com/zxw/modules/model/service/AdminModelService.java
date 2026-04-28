@@ -35,7 +35,7 @@ import java.util.Set;
 @Service
 public class AdminModelService {
 
-    private static final BigDecimal DEFAULT_REQUEST_PRICE = new BigDecimal("0.070000");
+    private static final BigDecimal DEFAULT_REQUEST_PRICE = new BigDecimal("0.200000");
 
     private final JdbcTemplate jdbcTemplate;
     private final AesCryptoService aesCryptoService;
@@ -57,28 +57,32 @@ public class AdminModelService {
     public List<ModelListItemResponse> listModels() {
         if (!AdminContext.isAdmin()) {
             return jdbcTemplate.query("""
-                    select m.id, m.model_code, m.model_name, m.model_type, m.billing_type, m.prompt_price,
-                           m.completion_price, m.request_price, m.multiplier, m.is_public, m.status, m.created_at,
+                    select m.id, mgm.id as binding_id, m.model_code, m.model_name, m.model_type,
+                           coalesce(mgm.billing_type, m.billing_type) as billing_type,
+                           coalesce(mgm.prompt_price, m.prompt_price) as prompt_price,
+                           coalesce(mgm.cached_prompt_price, m.cached_prompt_price) as cached_prompt_price,
+                           coalesce(mgm.completion_price, m.completion_price) as completion_price,
+                           coalesce(mgm.request_price, m.request_price) as request_price,
+                           coalesce(mgm.multiplier, m.multiplier) as multiplier,
+                           m.is_public, m.status, m.created_at,
                            g.id as group_id, g.group_code, g.group_name,
                            p.id as provider_id, p.provider_name, p.provider_type, r.upstream_model
                     from models m
-                    left join (
-                        select model_id, min(group_id) as group_id
-                        from model_group_models
-                        group by model_id
-                    ) mgm on mgm.model_id = m.id
+                    left join model_group_models mgm on mgm.model_id = m.id
                     left join model_groups g on g.id = mgm.group_id and g.status = 'ACTIVE'
                     left join model_routes r on r.model_id = m.id and r.status = 'ACTIVE'
                     left join providers p on p.id = r.provider_id
                     where m.deleted = 0 and m.status = 'ACTIVE' and m.is_public = 1
-                    order by m.id desc
+                    order by g.id asc, m.id desc
                     """, (rs, rowNum) -> new ModelListItemResponse(
                     rs.getLong("id"),
+                    rs.getObject("binding_id") == null ? null : rs.getLong("binding_id"),
                     rs.getString("model_code"),
                     rs.getString("model_name"),
                     rs.getString("model_type"),
                     rs.getString("billing_type"),
                     rs.getBigDecimal("prompt_price"),
+                    rs.getBigDecimal("cached_prompt_price"),
                     rs.getBigDecimal("completion_price"),
                     rs.getBigDecimal("request_price"),
                     rs.getBigDecimal("multiplier"),
@@ -96,28 +100,32 @@ public class AdminModelService {
         }
 
         return jdbcTemplate.query("""
-                select m.id, m.model_code, m.model_name, m.model_type, m.billing_type, m.prompt_price,
-                       m.completion_price, m.request_price, m.multiplier, m.is_public, m.status, m.created_at,
+                select m.id, mgm.id as binding_id, m.model_code, m.model_name, m.model_type,
+                       coalesce(mgm.billing_type, m.billing_type) as billing_type,
+                       coalesce(mgm.prompt_price, m.prompt_price) as prompt_price,
+                       coalesce(mgm.cached_prompt_price, m.cached_prompt_price) as cached_prompt_price,
+                       coalesce(mgm.completion_price, m.completion_price) as completion_price,
+                       coalesce(mgm.request_price, m.request_price) as request_price,
+                       coalesce(mgm.multiplier, m.multiplier) as multiplier,
+                       m.is_public, m.status, m.created_at,
                        g.id as group_id, g.group_code, g.group_name,
                        p.id as provider_id, p.provider_name, p.provider_type, r.upstream_model
                 from models m
-                left join (
-                    select model_id, min(group_id) as group_id
-                    from model_group_models
-                    group by model_id
-                ) mgm on mgm.model_id = m.id
+                left join model_group_models mgm on mgm.model_id = m.id
                 left join model_groups g on g.id = mgm.group_id and g.status = 'ACTIVE'
                 left join model_routes r on r.model_id = m.id and r.status = 'ACTIVE'
                 left join providers p on p.id = r.provider_id
                 where m.deleted = 0
-                order by m.id desc
+                order by g.id asc, m.id desc
                 """, (rs, rowNum) -> new ModelListItemResponse(
                 rs.getLong("id"),
+                rs.getObject("binding_id") == null ? null : rs.getLong("binding_id"),
                 rs.getString("model_code"),
                 rs.getString("model_name"),
                 rs.getString("model_type"),
                 rs.getString("billing_type"),
                 rs.getBigDecimal("prompt_price"),
+                rs.getBigDecimal("cached_prompt_price"),
                 rs.getBigDecimal("completion_price"),
                 rs.getBigDecimal("request_price"),
                 rs.getBigDecimal("multiplier"),
@@ -170,6 +178,7 @@ public class AdminModelService {
                 blankToDefault(request.modelType(), "CHAT"),
                 blankToDefault(request.billingType(), "TOKEN"),
                 numberOrZero(request.promptPrice()),
+                numberOrZero(request.cachedPromptPrice()),
                 numberOrZero(request.completionPrice()),
                 request.requestPrice() == null ? DEFAULT_REQUEST_PRICE : numberOrZero(request.requestPrice()),
                 numberOrZero(request.imagePrice()),
@@ -186,17 +195,11 @@ public class AdminModelService {
         AdminContext.requireAdmin();
         int updated = jdbcTemplate.update("""
                 update models
-                set model_name = ?, model_type = ?, billing_type = ?, prompt_price = ?, completion_price = ?,
-                    request_price = ?, multiplier = ?, is_public = ?, updated_at = now()
+                set model_name = ?, model_type = ?, is_public = ?, updated_at = now()
                 where id = ? and deleted = 0
                 """,
                 trimToLength(request.modelName(), 64),
                 blankToDefault(request.modelType(), "CHAT"),
-                blankToDefault(request.billingType(), "TOKEN"),
-                numberOrZero(request.promptPrice()),
-                numberOrZero(request.completionPrice()),
-                request.requestPrice() == null ? DEFAULT_REQUEST_PRICE : numberOrZero(request.requestPrice()),
-                request.multiplier() == null ? BigDecimal.ONE : request.multiplier(),
                 Boolean.TRUE.equals(request.isPublic()) ? 1 : 0,
                 id
         );
@@ -205,7 +208,16 @@ public class AdminModelService {
         }
 
         replaceModelRoutes(id, request.providerId(), request.upstreamModel());
-        userModelAccessService.replaceModelGroupBinding(id, request.groupId());
+        userModelAccessService.updateModelGroupBindingPrice(
+                id,
+                request.groupId(),
+                blankToDefault(request.billingType(), "TOKEN"),
+                numberOrZero(request.promptPrice()),
+                numberOrZero(request.cachedPromptPrice()),
+                numberOrZero(request.completionPrice()),
+                request.requestPrice() == null ? DEFAULT_REQUEST_PRICE : numberOrZero(request.requestPrice()),
+                request.multiplier() == null ? BigDecimal.ONE : request.multiplier()
+        );
     }
 
     @Transactional
@@ -233,7 +245,16 @@ public class AdminModelService {
                     skippedModels.add(upstreamModel);
                     continue;
                 }
-                userModelAccessService.addModelGroupBinding(existingRouteModel.modelId(), request.groupId());
+                userModelAccessService.addModelGroupBindingWithPrices(
+                        existingRouteModel.modelId(),
+                        request.groupId(),
+                        "TOKEN",
+                        numberOrZero(request.promptPrice()),
+                        numberOrZero(request.cachedPromptPrice()),
+                        numberOrZero(request.completionPrice()),
+                        DEFAULT_REQUEST_PRICE,
+                        request.multiplier() == null ? BigDecimal.ONE : request.multiplier()
+                );
                 importedModels.add(existingRouteModel.modelCode());
                 continue;
             }
@@ -245,7 +266,16 @@ public class AdminModelService {
                     skippedModels.add(upstreamModel);
                     continue;
                 }
-                userModelAccessService.addModelGroupBinding(existingModelId, request.groupId());
+                userModelAccessService.addModelGroupBindingWithPrices(
+                        existingModelId,
+                        request.groupId(),
+                        "TOKEN",
+                        numberOrZero(request.promptPrice()),
+                        numberOrZero(request.cachedPromptPrice()),
+                        numberOrZero(request.completionPrice()),
+                        DEFAULT_REQUEST_PRICE,
+                        request.multiplier() == null ? BigDecimal.ONE : request.multiplier()
+                );
                 importedModels.add(modelCode);
                 continue;
             }
@@ -257,6 +287,7 @@ public class AdminModelService {
                     "CHAT",
                     "TOKEN",
                     numberOrZero(request.promptPrice()),
+                    numberOrZero(request.cachedPromptPrice()),
                     numberOrZero(request.completionPrice()),
                     DEFAULT_REQUEST_PRICE,
                     BigDecimal.ZERO,
@@ -317,6 +348,7 @@ public class AdminModelService {
                                       String modelType,
                                       String billingType,
                                       BigDecimal promptPrice,
+                                      BigDecimal cachedPromptPrice,
                                       BigDecimal completionPrice,
                                       BigDecimal requestPrice,
                                       BigDecimal imagePrice,
@@ -327,15 +359,16 @@ public class AdminModelService {
                                       String upstreamModel) {
         try {
             jdbcTemplate.update("""
-                    insert into models (model_code, model_name, model_type, billing_type, prompt_price, completion_price,
+                    insert into models (model_code, model_name, model_type, billing_type, prompt_price, cached_prompt_price, completion_price,
                                         request_price, image_price, multiplier, is_public, status)
-                    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE')
+                    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE')
                     """,
                     trimToLength(modelCode, 64),
                     trimToLength(modelName, 64),
                     modelType,
                     billingType,
                     promptPrice,
+                    cachedPromptPrice,
                     completionPrice,
                     requestPrice,
                     imagePrice,
@@ -355,7 +388,16 @@ public class AdminModelService {
                 insert into model_routes (model_id, provider_id, provider_token_id, upstream_model, route_type, priority_no, status)
                 values (?, ?, null, ?, 'PRIMARY', 100, 'ACTIVE')
                 """, modelId, providerId, trimToLength(upstreamModel, 128));
-        userModelAccessService.addModelGroupBinding(modelId, groupId);
+        userModelAccessService.addModelGroupBindingWithPrices(
+                modelId,
+                groupId,
+                billingType,
+                promptPrice,
+                cachedPromptPrice,
+                completionPrice,
+                requestPrice,
+                multiplier
+        );
         return modelId;
     }
 
@@ -576,4 +618,3 @@ public class AdminModelService {
     private record ExistingRouteModel(Long modelId, String modelCode) {
     }
 }
-

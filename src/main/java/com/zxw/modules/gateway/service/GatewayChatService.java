@@ -41,6 +41,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -62,6 +63,7 @@ public class GatewayChatService {
     private static final BigDecimal DEFAULT_MIN_TOKEN_CHARGE = new BigDecimal("0.003000");
     private static final BigDecimal MAX_MIN_TOKEN_CHARGE = new BigDecimal("0.010000");
     private static final BigDecimal TOKEN_REQUEST_PRICE_RATIO = new BigDecimal("0.100000");
+    private static final ZoneId APP_ZONE = ZoneId.of("Asia/Shanghai");
 
     private static final int AGENT_MAX_STEPS = 6;
     private static final int AGENT_HISTORY_LIMIT = 24;
@@ -137,6 +139,7 @@ public class GatewayChatService {
         ApiKeyAuthService.AuthenticatedApiKey auth = apiKeyAuthService.authenticate(bearerToken);
         apiKeyAuthService.markUsed(auth.id());
 
+        long failureStart = System.currentTimeMillis();
         try {
             JsonNode input = objectMapper.readTree(requestBody);
             String effectiveRequestBody = requestBody;
@@ -144,6 +147,7 @@ public class GatewayChatService {
             boolean stream = input.path("stream").asBoolean(false);
             GatewayRouteService.RouteDefinition route = gatewayRouteService.resolve(modelCode);
             userModelAccessService.validateGatewayPackageAccess(auth, route);
+            route = gatewayRouteService.applyGroupPricing(route, userModelAccessService.resolveGatewayPackageGroupId(auth, route));
             String requestId = buildRequestId();
             long startTime = System.currentTimeMillis();
 
@@ -177,8 +181,10 @@ public class GatewayChatService {
             }
             return normalChat(auth, route, requestId, requestBody, upstreamBody, servletRequest, startTime);
         } catch (BusinessException ex) {
+            logFailedRequest(auth, requestBody, servletRequest, failureStart, ex.getStatus(), ex.getMessage());
             throw ex;
         } catch (Exception ex) {
+            logFailedRequest(auth, requestBody, servletRequest, failureStart, 500, ex.getMessage());
             throw new BusinessException(500, "请求转发失败: " + ex.getMessage());
         }
     }
@@ -188,6 +194,7 @@ public class GatewayChatService {
         ApiKeyAuthService.AuthenticatedApiKey auth = apiKeyAuthService.authenticate(bearerToken);
         apiKeyAuthService.markUsed(auth.id());
 
+        long failureStart = System.currentTimeMillis();
         try {
             JsonNode input = objectMapper.readTree(requestBody);
             String effectiveRequestBody = requestBody;
@@ -195,6 +202,7 @@ public class GatewayChatService {
             boolean stream = input.path("stream").asBoolean(false);
             GatewayRouteService.RouteDefinition route = gatewayRouteService.resolve(modelCode);
             userModelAccessService.validateGatewayPackageAccess(auth, route);
+            route = gatewayRouteService.applyGroupPricing(route, userModelAccessService.resolveGatewayPackageGroupId(auth, route));
             String requestId = buildRequestId();
             long startTime = System.currentTimeMillis();
 
@@ -234,8 +242,10 @@ public class GatewayChatService {
             }
             return normalResponses(auth, route, requestId, effectiveRequestBody, upstreamBody, servletRequest, startTime);
         } catch (BusinessException ex) {
+            logFailedRequest(auth, requestBody, servletRequest, failureStart, ex.getStatus(), ex.getMessage());
             throw ex;
         } catch (Exception ex) {
+            logFailedRequest(auth, requestBody, servletRequest, failureStart, 500, ex.getMessage());
             throw new BusinessException(500, "Responses 转发失败: " + ex.getMessage());
         }
     }
@@ -245,12 +255,14 @@ public class GatewayChatService {
         ApiKeyAuthService.AuthenticatedApiKey auth = apiKeyAuthService.authenticate(bearerToken);
         apiKeyAuthService.markUsed(auth.id());
 
+        long failureStart = System.currentTimeMillis();
         try {
             JsonNode input = objectMapper.readTree(requestBody);
             String modelCode = getRequiredText(input, "model");
             boolean stream = input.path("stream").asBoolean(false);
             GatewayRouteService.RouteDefinition route = gatewayRouteService.resolve(modelCode);
             userModelAccessService.validateGatewayPackageAccess(auth, route);
+            route = gatewayRouteService.applyGroupPricing(route, userModelAccessService.resolveGatewayPackageGroupId(auth, route));
             String requestId = buildRequestId();
             long startTime = System.currentTimeMillis();
 
@@ -279,8 +291,10 @@ public class GatewayChatService {
                     .header(HttpHeaders.CONTENT_TYPE, "text/event-stream;charset=UTF-8")
                     .body(buildAnthropicMessageStream(anthropicJson));
         } catch (BusinessException ex) {
+            logFailedRequest(auth, requestBody, servletRequest, failureStart, ex.getStatus(), ex.getMessage());
             throw ex;
         } catch (Exception ex) {
+            logFailedRequest(auth, requestBody, servletRequest, failureStart, 500, ex.getMessage());
             throw new BusinessException(500, "Messages forwarding failed: " + ex.getMessage());
         }
     }
@@ -388,7 +402,7 @@ public class GatewayChatService {
 
         String responseBody = objectMapper.writeValueAsString(result.responseJson());
         ChargeAmounts charge = calculateCharge(route, originalRequestBody,
-                result.promptTokens(), result.completionTokens(), result.totalTokens(), (int) latency);
+                result.promptTokens(), result.completionTokens(), result.totalTokens(), 0, (int) latency);
 
         logAndCharge(auth, route, requestId, servletRequest, originalRequestBody, responseBody,
                 result.promptTokens(), result.completionTokens(), result.totalTokens(), 0, charge.userAmount(), charge.costAmount(),
@@ -411,7 +425,7 @@ public class GatewayChatService {
             AgentExecutionResult result = executeLocalAgentResponses(auth, route, requestId, input.deepCopy(), sink);
             long latency = System.currentTimeMillis() - startTime;
             ChargeAmounts charge = calculateCharge(route, originalRequestBody,
-                    result.promptTokens(), result.completionTokens(), result.totalTokens(), (int) latency);
+                    result.promptTokens(), result.completionTokens(), result.totalTokens(), 0, (int) latency);
 
             logAndCharge(auth, route, requestId, servletRequest, originalRequestBody, sink.fullBody(),
                     result.promptTokens(), result.completionTokens(), result.totalTokens(), 0, charge.userAmount(), charge.costAmount(),
@@ -460,7 +474,7 @@ public class GatewayChatService {
         int completionTokens = usage == null ? 0 : usage.path("output_tokens").asInt(0);
         int totalTokens = promptTokens + completionTokens;
         ChargeAmounts charge = calculateCharge(route, originalRequestBody,
-                promptTokens, completionTokens, totalTokens, (int) latency);
+                promptTokens, completionTokens, totalTokens, 0, (int) latency);
 
         boolean success = response.statusCode() >= 200 && response.statusCode() < 300;
         String responseBody = success && responseJson != null
@@ -494,7 +508,7 @@ public class GatewayChatService {
         int completionTokens = usage.completionTokens();
         int totalTokens = usage.totalTokens();
         ChargeAmounts charge = calculateCharge(route, originalRequestBody,
-                usage.billablePromptTokens(), completionTokens, totalTokens, (int) latency);
+                promptTokens, completionTokens, totalTokens, usage.cachedPromptTokens(), (int) latency);
 
         boolean success = response.statusCode() >= 200 && response.statusCode() < 300;
         logAndCharge(auth, route, requestId, servletRequest, originalRequestBody, response.body(),
@@ -528,7 +542,7 @@ public class GatewayChatService {
         int completionTokens = usage.completionTokens();
         int totalTokens = usage.totalTokens();
         ChargeAmounts charge = calculateCharge(route, originalRequestBody,
-                usage.billablePromptTokens(), completionTokens, totalTokens, (int) latency);
+                promptTokens, completionTokens, totalTokens, usage.cachedPromptTokens(), (int) latency);
 
         boolean success = response.statusCode() >= 200 && response.statusCode() < 300;
         String clientBody = success && openAiJson != null
@@ -564,7 +578,7 @@ public class GatewayChatService {
         int completionTokens = usage.completionTokens();
         int totalTokens = usage.totalTokens();
         ChargeAmounts charge = calculateCharge(route, originalRequestBody,
-                usage.billablePromptTokens(), completionTokens, totalTokens, (int) latency);
+                promptTokens, completionTokens, totalTokens, usage.cachedPromptTokens(), (int) latency);
 
         boolean success = response.statusCode() >= 200 && response.statusCode() < 300;
         logAndCharge(auth, route, requestId, servletRequest, originalRequestBody, responseBody,
@@ -600,7 +614,7 @@ public class GatewayChatService {
         int completionTokens = usage.completionTokens();
         int totalTokens = usage.totalTokens();
         ChargeAmounts charge = calculateCharge(route, originalRequestBody,
-                usage.billablePromptTokens(), completionTokens, totalTokens, (int) latency);
+                promptTokens, completionTokens, totalTokens, usage.cachedPromptTokens(), (int) latency);
 
         boolean success = response.statusCode() >= 200 && response.statusCode() < 300;
         logAndCharge(auth, route, requestId, servletRequest, originalRequestBody, responseBody,
@@ -641,7 +655,7 @@ public class GatewayChatService {
             totalTokens = usage.totalTokens();
             cachedPromptTokens = usage.cachedPromptTokens();
             ChargeAmounts charge = calculateCharge(route, originalRequestBody,
-                    usage.billablePromptTokens(), usage.completionTokens(), usage.totalTokens(), (int) latency);
+                    usage.promptTokens(), usage.completionTokens(), usage.totalTokens(), cachedPromptTokens, (int) latency);
             costAmount = charge.costAmount();
             userAmount = charge.userAmount();
         }
@@ -681,7 +695,7 @@ public class GatewayChatService {
                 totalTokens = usage.totalTokens();
                 cachedPromptTokens = usage.cachedPromptTokens();
                 ChargeAmounts charge = calculateCharge(route, originalRequestBody,
-                        usage.billablePromptTokens(), usage.completionTokens(), usage.totalTokens(), (int) latency);
+                        usage.promptTokens(), usage.completionTokens(), usage.totalTokens(), cachedPromptTokens, (int) latency);
                 costAmount = charge.costAmount();
                 userAmount = charge.userAmount();
             }
@@ -718,7 +732,7 @@ public class GatewayChatService {
             totalTokens = usage.totalTokens();
             cachedPromptTokens = usage.cachedPromptTokens();
             ChargeAmounts charge = calculateCharge(route, originalRequestBody,
-                    usage.billablePromptTokens(), usage.completionTokens(), usage.totalTokens(), (int) latency);
+                    usage.promptTokens(), usage.completionTokens(), usage.totalTokens(), cachedPromptTokens, (int) latency);
             costAmount = charge.costAmount();
             userAmount = charge.userAmount();
         }
@@ -761,7 +775,7 @@ public class GatewayChatService {
                 totalTokens = usage.totalTokens();
                 cachedPromptTokens = usage.cachedPromptTokens();
                 ChargeAmounts charge = calculateCharge(route, originalRequestBody,
-                        usage.billablePromptTokens(), completionTokens, totalTokens, (int) latency);
+                        promptTokens, completionTokens, totalTokens, cachedPromptTokens, (int) latency);
                 costAmount = charge.costAmount();
                 userAmount = charge.userAmount();
                 clientBody = buildResponsesEventStreamFromChatCompletion(chatJson, route.modelCode());
@@ -4478,13 +4492,15 @@ public class GatewayChatService {
                                 boolean success,
                                 String errorMessage) {
         Long chargedPackageId = userModelAccessService.resolveGatewayPackageId(auth, route);
+        LocalDate requestDate = currentDate();
+        LocalDateTime createdAt = currentDateTime();
         try {
             jdbcTemplate.update("""
                     insert into request_logs (request_id, user_id, api_key_id, user_package_id, model_code, provider_id, provider_token_id, upstream_model,
                                               request_path, request_method, request_ip, request_body_json, response_body_json,
                                               prompt_tokens, completion_tokens, total_tokens, cached_prompt_tokens, user_amount, cost_amount, latency_ms,
                                               success, status_code, error_message, request_date, created_at)
-                    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, cast(? as json), cast(? as json), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, now())
+                    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, cast(? as json), cast(? as json), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     requestId,
                     auth.userId(),
@@ -4509,7 +4525,8 @@ public class GatewayChatService {
                     success ? 1 : 0,
                     statusCode,
                     truncateForColumn(errorMessage, 500),
-                    LocalDate.now()
+                    requestDate,
+                    createdAt
             );
         } catch (Exception ex) {
             log.warn("Failed to persist request log for requestId={}, model={}: {}",
@@ -4530,8 +4547,8 @@ public class GatewayChatService {
                 BigDecimal balanceBefore = balanceAfter == null ? BigDecimal.ZERO : balanceAfter.add(userAmount);
                 jdbcTemplate.update("""
                         insert into transactions (user_id, wallet_id, order_no, transaction_type, direction, amount,
-                                                  balance_before, balance_after, status, description_text, transaction_date)
-                        values (?, ?, ?, 'CONSUME', 'OUT', ?, ?, ?, 'SUCCESS', ?, curdate())
+                                                  balance_before, balance_after, status, transaction_date, description_text)
+                        values (?, ?, ?, 'CONSUME', 'OUT', ?, ?, ?, 'SUCCESS', ?, ?)
                         """,
                         auth.userId(),
                         walletId,
@@ -4539,6 +4556,7 @@ public class GatewayChatService {
                         userAmount,
                         balanceBefore,
                         balanceAfter,
+                        requestDate,
                         "模型调用扣费: " + route.modelCode()
                 );
             }
@@ -4561,7 +4579,7 @@ public class GatewayChatService {
                     cost_amount = cost_amount + values(cost_amount),
                     updated_at = now()
                 """,
-                LocalDate.now(),
+                requestDate,
                 auth.userId(),
                 route.modelCode(),
                 route.providerId(),
@@ -4572,13 +4590,112 @@ public class GatewayChatService {
         );
     }
 
+    private void logFailedRequest(ApiKeyAuthService.AuthenticatedApiKey auth,
+                                  String requestBody,
+                                  HttpServletRequest servletRequest,
+                                  long startTime,
+                                  int statusCode,
+                                  String errorMessage) {
+        try {
+            String modelCode = extractModelCodeFromBody(requestBody);
+            Long modelId = modelCode == null ? null : findModelIdByCode(modelCode);
+            Long chargedPackageId = null;
+            if (auth != null && modelId != null) {
+                if (auth.userPackageId() != null) {
+                    chargedPackageId = jdbcTemplate.query("""
+                            select p.id
+                            from user_model_packages p
+                            join model_group_models mgm on mgm.group_id = p.group_id
+                            where p.id = ?
+                              and p.user_id = ?
+                              and p.status = 'ACTIVE'
+                              and p.expires_at > now()
+                              and mgm.model_id = ?
+                            limit 1
+                            """, rs -> rs.next() ? rs.getLong("id") : null,
+                            auth.userPackageId(), auth.userId(), modelId);
+                } else if (auth.modelGroupId() != null) {
+                    chargedPackageId = jdbcTemplate.query("""
+                        select p.id
+                        from user_model_packages p
+                        join model_group_models mgm on mgm.group_id = p.group_id
+                        where p.user_id = ?
+                          and p.group_id = ?
+                          and p.status = 'ACTIVE'
+                          and p.expires_at > now()
+                          and mgm.model_id = ?
+                        order by p.id asc
+                        limit 1
+                        """, rs -> rs.next() ? rs.getLong("id") : null,
+                            auth.userId(), auth.modelGroupId(), modelId);
+                }
+            }
+            int latencyMs = (int) Math.max(0, System.currentTimeMillis() - startTime);
+            LocalDate requestDate = currentDate();
+            LocalDateTime createdAt = currentDateTime();
+            jdbcTemplate.update("""
+                    insert into request_logs (request_id, user_id, api_key_id, user_package_id, model_code, provider_id, provider_token_id, upstream_model,
+                                              request_path, request_method, request_ip, request_body_json, response_body_json,
+                                              prompt_tokens, completion_tokens, total_tokens, cached_prompt_tokens, user_amount, cost_amount, latency_ms,
+                                              success, status_code, error_message, request_date, created_at)
+                    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, cast(? as json), cast(? as json), 0, 0, 0, 0, 0, 0, ?, 0, ?, ?, ?, ?)
+                    """,
+                    buildRequestId(),
+                    auth == null ? null : auth.userId(),
+                    auth == null ? null : auth.id(),
+                    chargedPackageId,
+                    modelCode == null ? "-" : modelCode,
+                    null,
+                    null,
+                    null,
+                    servletRequest.getRequestURI(),
+                    servletRequest.getMethod(),
+                    extractRequestIp(servletRequest),
+                    normalizeJson(requestBody),
+                    null,
+                    latencyMs,
+                    statusCode,
+                    truncateForColumn(errorMessage, 500),
+                    requestDate,
+                    createdAt
+            );
+        } catch (Exception ex) {
+            log.warn("Failed to persist failed-request log: {}", ex.getMessage());
+        }
+    }
+
+    private String extractModelCodeFromBody(String requestBody) {
+        if (requestBody == null || requestBody.isBlank()) {
+            return null;
+        }
+        try {
+            JsonNode json = objectMapper.readTree(requestBody);
+            String value = json.path("model").asText("");
+            return value.isBlank() ? null : value;
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private Long findModelIdByCode(String modelCode) {
+        try {
+            return jdbcTemplate.query(
+                    "select id from models where model_code = ? and deleted = 0 limit 1",
+                    rs -> rs.next() ? rs.getLong(1) : null,
+                    modelCode);
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
     private ChargeAmounts calculateCharge(GatewayRouteService.RouteDefinition route,
                                           String requestBody,
                                           int promptTokens,
                                           int completionTokens,
                                           int totalTokens,
+                                          int cachedPromptTokens,
                                           int latencyMs) {
-        BigDecimal costAmount = calculateCostAmount(route, requestBody, promptTokens, completionTokens, totalTokens, latencyMs);
+        BigDecimal costAmount = calculateCostAmount(route, requestBody, promptTokens, completionTokens, totalTokens, cachedPromptTokens, latencyMs);
         BigDecimal userAmount = costAmount.multiply(resolveMultiplier(route)).setScale(6, RoundingMode.HALF_UP);
         return new ChargeAmounts(userAmount, costAmount);
     }
@@ -4588,23 +4705,26 @@ public class GatewayChatService {
                                            int promptTokens,
                                            int completionTokens,
                                            int totalTokens,
+                                           int cachedPromptTokens,
                                            int latencyMs) {
-        if (isRequestBilling(route)) {
-            return resolveRequestPrice(route);
-        }
         if (promptTokens <= 0 && completionTokens <= 0 && totalTokens <= 0) {
             return BigDecimal.ZERO.setScale(6, RoundingMode.HALF_UP);
         }
-        BigDecimal tokenCost = calculateTokenCost(route, promptTokens, completionTokens);
+        BigDecimal tokenCost = calculateTokenCost(route, promptTokens, completionTokens, cachedPromptTokens);
         return tokenCost.setScale(6, RoundingMode.HALF_UP);
     }
 
-    private BigDecimal calculateTokenCost(GatewayRouteService.RouteDefinition route, int promptTokens, int completionTokens) {
+    private BigDecimal calculateTokenCost(GatewayRouteService.RouteDefinition route, int promptTokens, int completionTokens, int cachedPromptTokens) {
+        int safePromptTokens = Math.max(0, promptTokens);
+        int safeCachedPromptTokens = Math.min(Math.max(0, cachedPromptTokens), safePromptTokens);
+        int billablePromptTokens = safePromptTokens - safeCachedPromptTokens;
         BigDecimal promptCost = route.promptPrice() == null ? BigDecimal.ZERO :
-                route.promptPrice().multiply(BigDecimal.valueOf(promptTokens)).divide(TOKENS_PER_MILLION, 6, RoundingMode.HALF_UP);
+                route.promptPrice().multiply(BigDecimal.valueOf(billablePromptTokens)).divide(TOKENS_PER_MILLION, 6, RoundingMode.HALF_UP);
+        BigDecimal cachedPromptCost = route.cachedPromptPrice() == null ? BigDecimal.ZERO :
+                route.cachedPromptPrice().multiply(BigDecimal.valueOf(safeCachedPromptTokens)).divide(TOKENS_PER_MILLION, 6, RoundingMode.HALF_UP);
         BigDecimal completionCost = route.completionPrice() == null ? BigDecimal.ZERO :
-                route.completionPrice().multiply(BigDecimal.valueOf(completionTokens)).divide(TOKENS_PER_MILLION, 6, RoundingMode.HALF_UP);
-        return promptCost.add(completionCost).setScale(6, RoundingMode.HALF_UP);
+                route.completionPrice().multiply(BigDecimal.valueOf(Math.max(0, completionTokens))).divide(TOKENS_PER_MILLION, 6, RoundingMode.HALF_UP);
+        return promptCost.add(cachedPromptCost).add(completionCost).setScale(6, RoundingMode.HALF_UP);
     }
 
     private BigDecimal resolveTokenMinimumCharge(GatewayRouteService.RouteDefinition route) {
@@ -4639,8 +4759,12 @@ public class GatewayChatService {
         return route.multiplier();
     }
 
-    private boolean isRequestBilling(GatewayRouteService.RouteDefinition route) {
-        return route != null && "REQUEST".equalsIgnoreCase(route.billingType());
+    private LocalDate currentDate() {
+        return LocalDate.now(APP_ZONE);
+    }
+
+    private LocalDateTime currentDateTime() {
+        return LocalDateTime.now(APP_ZONE);
     }
 
     private boolean isGptFamilyRoute(GatewayRouteService.RouteDefinition route) {

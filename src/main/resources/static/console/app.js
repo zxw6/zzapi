@@ -1,4 +1,4 @@
-﻿const state = {
+const state = {
     token: localStorage.getItem("zxw-console-token") || "",
     me: null,
     overview: null,
@@ -20,8 +20,11 @@
     selectedPackageId: null,
     editingUserId: null,
     userDetailMode: "view",
-    editingModelId: null
+    editingModelId: null,
+    editingModelBindingId: null
 };
+
+let dashboardRefreshTimer = null;
 
 const panelMeta = {
     "overview-panel": {
@@ -143,6 +146,7 @@ const elements = {
     importGroupSelect: document.getElementById("import-group-select"),
     importProviderSelect: document.getElementById("import-provider-select"),
     importPromptPrice: document.getElementById("import-prompt-price"),
+    importCachedPromptPrice: document.getElementById("import-cached-prompt-price"),
     importCompletionPrice: document.getElementById("import-completion-price"),
     importMultiplier: document.getElementById("import-multiplier"),
     importIsPublic: document.getElementById("import-is-public"),
@@ -366,13 +370,6 @@ async function sendAgentDebugRequest() {
 
 function formatMoney(value) {
     const amount = toNumber(value);
-    const abs = Math.abs(amount);
-    if (abs > 0 && abs < 0.0001) {
-        return `$${amount.toFixed(6)}`;
-    }
-    if (abs > 0 && abs < 0.01) {
-        return `$${amount.toFixed(4)}`;
-    }
     return `$${amount.toFixed(2)}`;
 }
 
@@ -405,12 +402,29 @@ function formatTokenBreakdown(promptTokens, completionTokens, totalTokens) {
     return `${prompt} / ${completion} · ${total}`;
 }
 
+function parseServerDate(value) {
+    if (!value) {
+        return null;
+    }
+    if (value instanceof Date) {
+        return Number.isNaN(value.getTime()) ? null : value;
+    }
+    const text = String(value).trim();
+    if (!text) {
+        return null;
+    }
+    const normalized = text.includes("T") ? text : text.replace(" ", "T");
+    const hasTimeZone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(normalized);
+    const date = new Date(hasTimeZone ? normalized : normalized);
+    return Number.isNaN(date.getTime()) ? null : date;
+}
+
 function formatDateTime(value) {
     if (!value) {
         return "-";
     }
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) {
+    const date = parseServerDate(value);
+    if (!date) {
         return escapeHtml(value);
     }
     const pad = (num) => String(num).padStart(2, "0");
@@ -480,6 +494,10 @@ function getPurchasedPackages() {
         .sort((a, b) => toNumber(a.id) - toNumber(b.id));
 }
 
+function sumPurchasedPackageField(field) {
+    return getPurchasedPackages().reduce((sum, item) => sum + toNumber(item?.[field]), 0);
+}
+
 function isPackageUsable(item) {
     if (!item) {
         return false;
@@ -494,8 +512,8 @@ function isPackageUsable(item) {
     if (!item.expiresAt) {
         return status === "ACTIVE";
     }
-    const expiresAt = new Date(item.expiresAt);
-    return !Number.isNaN(expiresAt.getTime()) && expiresAt.getTime() > Date.now();
+    const expiresAt = parseServerDate(item.expiresAt);
+    return !!expiresAt && expiresAt.getTime() > Date.now();
 }
 
 function packageAvailabilityLabel(item) {
@@ -543,6 +561,22 @@ function buildPurchasedPackageLabel(item) {
         return "未购买套餐";
     }
     return `${item.groupName || item.groupCode || "套餐"} #${item.id}`;
+}
+
+function getModelRowKey(model) {
+    return `${model?.bindingId || "model"}:${model?.id || ""}:${model?.groupId || ""}`;
+}
+
+function getModelPreviewGroup() {
+    const filter = String(state.modelProviderFilter || "");
+    if (filter === "ALL_GROUPS" || filter === "ALL") {
+        return null;
+    }
+    if (filter.startsWith("GROUP:")) {
+        const groupId = filter.slice("GROUP:".length);
+        return getAccessGroups().find((item) => String(item.id) === String(groupId)) || null;
+    }
+    return getSelectedPackageGroup();
 }
 
 function getManageableGroups() {
@@ -873,6 +907,7 @@ function renderModelAccessSummary() {
                     <li>${escapeHtml(group.remark || "支持对应分组下的全部模型调用")}</li>
                 </ul>
                 <div class="package-plan-actions">
+                    <button type="button" class="secondary-button wide-button" data-show-package-models="${escapeHtml(group.id)}">查看详情</button>
                     <button
                         type="button"
                         class="primary-button wide-button package-buy-button"
@@ -902,6 +937,10 @@ function renderModelAccessSummary() {
                     <span>今日 ${escapeHtml(formatQuotaText(item.dailyUsed, item.dailyQuota))}</span>
                     <span>本周 ${escapeHtml(formatQuotaText(item.weeklyUsed, item.weeklyQuota))}</span>
                     <span>总额 ${escapeHtml(formatQuotaText(item.totalUsed, getPackageTotalQuota(item)))}</span>
+                </div>
+                <div class="package-plan-actions">
+                    <button class="mini-button" type="button" data-show-package-models="${escapeHtml(item.groupId)}">详情</button>
+                    <button class="mini-button danger-button" type="button" data-delete-package-purchase="${escapeHtml(item.id)}" data-package-name="${escapeHtml(buildPurchasedPackageLabel(item))}">删除套餐</button>
                 </div>
             </article>
         `).join("");
@@ -950,13 +989,15 @@ function renderAllSections() {
 function renderOverviewCards() {
     const overview = state.overview || {};
     const displayName = getCurrentDisplayName();
-    const selectedGroup = getSelectedPackageGroup();
     const detail = state.users.find((item) => item.id === state.me?.userId) || state.users[0] || {};
     const activeKeys = state.keys.filter((item) => String(item.status || "").toUpperCase() === "ACTIVE").length;
-    const todaySpend = selectedGroup ? toNumber(selectedGroup.dailyUsed) : toNumber(overview.consumeAmountToday);
-    const weekSpend = selectedGroup ? toNumber(selectedGroup.weeklyUsed) : getLast7DaysSpend();
+    const todayPackageSpend = sumPurchasedPackageField("dailyUsed");
+    const weekPackageSpend = sumPurchasedPackageField("weeklyUsed");
+    const todaySpend = todayPackageSpend > 0 ? todayPackageSpend : toNumber(overview.consumeAmountToday);
+    const weekSpend = weekPackageSpend > 0 ? weekPackageSpend : getLast7DaysSpend();
     const balance = toNumber(detail.balance ?? overview.walletBalanceTotal);
-    const limitLabel = selectedGroup ? formatMoney(selectedGroup.dailyQuota || 0) : "未开通";
+    const dailyQuotaTotal = sumPurchasedPackageField("dailyQuota");
+    const limitLabel = dailyQuotaTotal > 0 ? formatMoney(dailyQuotaTotal) : "未开通";
 
     if (elements.dashboardGreeting) {
         elements.dashboardGreeting.textContent = isAdmin() ? `你好，${displayName} 管理员` : `你好，${displayName}`;
@@ -987,7 +1028,7 @@ function renderOverviewCards() {
                 icon: "今",
                 value: formatMoney(todaySpend),
                 label: "今日消费",
-                subvalue: `当前日额度 ${limitLabel}`,
+                subvalue: `全部套餐日额度 ${limitLabel}`,
                 action: "查看套餐",
                 panel: "models-panel"
             },
@@ -996,7 +1037,7 @@ function renderOverviewCards() {
                 icon: "周",
                 value: formatMoney(weekSpend),
                 label: "本周消费",
-                subvalue: "按当前选择分组统计",
+                subvalue: "按全部套餐统计",
                 action: "用量详情",
                 panel: "billing-panel"
             },
@@ -1025,7 +1066,7 @@ function renderOverviewCards() {
                 icon: "今",
                 value: formatMoney(todaySpend),
                 label: "今日消费",
-                subvalue: `当前日额度 ${limitLabel}`,
+                subvalue: `全部套餐日额度 ${limitLabel}`,
                 action: "查看套餐",
                 panel: "models-panel"
             },
@@ -1034,7 +1075,7 @@ function renderOverviewCards() {
                 icon: "周",
                 value: formatMoney(weekSpend),
                 label: "本周消费",
-                subvalue: "按当前选择分组统计",
+                subvalue: "按全部套餐统计",
                 action: "用量详情",
                 panel: "billing-panel"
             },
@@ -1361,7 +1402,10 @@ function isTodayValue(value) {
     if (!value) {
         return false;
     }
-    const date = new Date(value);
+    const date = parseServerDate(value);
+    if (!date) {
+        return false;
+    }
     const now = new Date();
     return date.getFullYear() === now.getFullYear()
         && date.getMonth() === now.getMonth()
@@ -1375,8 +1419,8 @@ function getLogsForToday() {
 function getLogsForCurrentMonth() {
     const now = new Date();
     return state.logs.filter((item) => {
-        const date = new Date(item.createdAt || 0);
-        return date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth();
+        const date = parseServerDate(item.createdAt);
+        return !!date && date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth();
     });
 }
 
@@ -1384,7 +1428,11 @@ function relativeTimeFromNow(value) {
     if (!value) {
         return "刚刚";
     }
-    const diff = Date.now() - new Date(value).getTime();
+    const date = parseServerDate(value);
+    if (!date) {
+        return "鍒氬垰";
+    }
+    const diff = Date.now() - date.getTime();
     const minute = 60 * 1000;
     const hour = 60 * minute;
     if (diff < minute) {
@@ -1499,8 +1547,8 @@ function renderBillingTrendChart() {
         labels.push(`${month}/${day}`);
         const total = state.logs
             .filter((item) => {
-                const itemDate = new Date(item.createdAt || 0);
-                return itemDate.getFullYear() === date.getFullYear()
+                const itemDate = parseServerDate(item.createdAt);
+                return !!itemDate && itemDate.getFullYear() === date.getFullYear()
                     && itemDate.getMonth() === date.getMonth()
                     && itemDate.getDate() === date.getDate();
             })
@@ -1702,19 +1750,36 @@ function normalizeModelProviderLabel(item) {
 }
 
 function renderModelProviderFilters() {
-    const groups = new Map();
-    state.models.forEach((item) => {
-        const code = item.providerType || item.providerName || "UNKNOWN";
-        if (!groups.has(code)) {
-            groups.set(code, normalizeModelProviderLabel(item));
-        }
-    });
-    if (state.modelProviderFilter !== "ALL" && !groups.has(state.modelProviderFilter)) {
-        state.modelProviderFilter = "ALL";
+    const groups = getAccessGroups();
+    const validFilters = new Set(["ALL", "ALL_GROUPS", ...groups.map((group) => `GROUP:${group.id}`)]);
+    if (!validFilters.has(state.modelProviderFilter)) {
+        state.modelProviderFilter = state.selectedPackageGroupId ? `GROUP:${state.selectedPackageGroupId}` : "ALL_GROUPS";
     }
-    const filterButtons = ['<button type="button" class="filter-pill' + (state.modelProviderFilter === "ALL" ? ' active' : '') + '" data-provider-filter="ALL">全部</button>']
-        .concat(Array.from(groups.entries()).map(([code, label]) => `<button type="button" class="filter-pill${state.modelProviderFilter === code ? " active" : ""}" data-provider-filter="${escapeHtml(code)}">${escapeHtml(label)}</button>`));
+    const filterButtons = ['<button type="button" class="filter-pill' + (state.modelProviderFilter === "ALL_GROUPS" || state.modelProviderFilter === "ALL" ? ' active' : '') + '" data-provider-filter="ALL_GROUPS">全部</button>']
+        .concat(groups.map((group) => {
+            const code = `GROUP:${group.id}`;
+            return `<button type="button" class="filter-pill${state.modelProviderFilter === code ? " active" : ""}" data-provider-filter="${escapeHtml(code)}">${escapeHtml(group.groupName || group.groupCode)}</button>`;
+        }));
     elements.modelProviderFilters.innerHTML = filterButtons.join("");
+}
+
+function showPackageModelDetails(groupId) {
+    const groups = getAccessGroups();
+    const targetGroup = groups.find((item) => String(item.id) === String(groupId));
+    state.selectedPackageGroupId = groupId;
+    state.modelProviderFilter = `GROUP:${groupId}`;
+
+    const groupModels = state.models.filter((item) => String(item.groupId) === String(groupId));
+    state.selectedModelId = groupModels.length ? getModelRowKey(groupModels[0]) : null;
+
+    renderPackageSelectionViews();
+    renderModelProviderFilters();
+    renderModelCards();
+
+    document.querySelector(".package-model-head")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    showToast(groupModels.length
+        ? `${targetGroup?.groupName || "套餐"} 已展示 ${groupModels.length} 个模型`
+        : `${targetGroup?.groupName || "套餐"} 暂无可展示模型`);
 }
 
 function inferModelBadges(model) {
@@ -1824,13 +1889,19 @@ function renderSelectedModelDetail(model) {
             <strong>$${escapeHtml(formatModelRate(model.promptPrice))} / 1M</strong>
         </div>
         <div class="detail-price-box">
+            <span>缓存读取 Token</span>
+            <strong>$${escapeHtml(formatModelRate(model.cachedPromptPrice))} / 1M</strong>
+        </div>
+        <div class="detail-price-box">
             <span>输出 Token</span>
             <strong>$${escapeHtml(formatModelRate(model.completionPrice))} / 1M</strong>
         </div>
+        ${isAdmin() ? `
         <div class="detail-price-box">
-            <span>单次最低扣费</span>
+            <span>&#21333;&#27425;&#26368;&#20302;&#25187;&#36153;</span>
             <strong>$${escapeHtml(formatModelRate(model.requestPrice || 0.07))}</strong>
         </div>
+        ` : ""}
         <div class="detail-price-box">
             <span>倍率</span>
             <strong>${escapeHtml(formatDecimal(model.multiplier, 2))}x</strong>
@@ -1844,11 +1915,11 @@ function renderSelectedModelDetail(model) {
 }
 
 function renderModelCards() {
-    const selectedGroup = getSelectedPackageGroup();
+    const selectedGroup = getModelPreviewGroup();
+    const showAllGroups = state.modelProviderFilter === "ALL" || state.modelProviderFilter === "ALL_GROUPS";
     const list = state.models.filter((item) => {
-        const matchesProvider = state.modelProviderFilter === "ALL" || (item.providerType || item.providerName || "UNKNOWN") === state.modelProviderFilter;
-        const matchesGroup = !selectedGroup || String(item.groupId) === String(selectedGroup.id);
-        return matchesProvider && matchesGroup;
+        const matchesGroup = showAllGroups || !selectedGroup || String(item.groupId) === String(selectedGroup.id);
+        return matchesGroup;
     });
     elements.modelsEmpty.classList.toggle("hidden", list.length > 0);
     if (!list.length) {
@@ -1859,8 +1930,8 @@ function renderModelCards() {
         }
         return;
     }
-    if (!state.selectedModelId || !list.some((item) => String(item.id) === String(state.selectedModelId))) {
-        state.selectedModelId = list[0].id;
+    if (!state.selectedModelId || !list.some((item) => getModelRowKey(item) === String(state.selectedModelId))) {
+        state.selectedModelId = getModelRowKey(list[0]);
     }
     if (elements.modelsMarketMeta) {
         elements.modelsMarketMeta.textContent = selectedGroup
@@ -1872,9 +1943,10 @@ function renderModelCards() {
         const badges = inferModelBadges(model);
         const routeMode = inferGatewayRouteMode(model);
         const ideCapability = inferIdeCapability(model);
-        const selected = String(model.id) === String(state.selectedModelId);
+        const modelKey = getModelRowKey(model);
+        const selected = modelKey === String(state.selectedModelId);
         return `
-            <article class="model-price-card plaza-model-card ${selected ? "active" : ""}" data-model-select="${model.id}">
+            <article class="model-price-card plaza-model-card ${selected ? "active" : ""}" data-model-select="${escapeHtml(modelKey)}">
                 <div class="model-price-head">
                     <div class="model-brand-icon">${escapeHtml(providerLabel.slice(0, 1).toUpperCase())}</div>
                     <div>
@@ -1890,8 +1962,9 @@ function renderModelCards() {
                 </div>
                 <div class="model-price-grid">
                     <div class="model-price-box"><span>输入</span><strong>$${escapeHtml(formatModelRate(model.promptPrice))}/M</strong></div>
+                    <div class="model-price-box"><span>缓存读取</span><strong>$${escapeHtml(formatModelRate(model.cachedPromptPrice))}/M</strong></div>
                     <div class="model-price-box"><span>输出</span><strong>$${escapeHtml(formatModelRate(model.completionPrice))}/M</strong></div>
-                    <div class="model-price-box"><span>最低扣费</span><strong>$${escapeHtml(formatModelRate(model.requestPrice || 0.07))}</strong></div>
+                    ${isAdmin() ? `<div class="model-price-box"><span>&#26368;&#20302;&#25187;&#36153;</span><strong>$${escapeHtml(formatModelRate(model.requestPrice || 0.07))}</strong></div>` : ""}
                 </div>
                 <div class="model-price-foot">
                     <span>${escapeHtml(model.groupName || "未分组")} · 倍率 ${escapeHtml(formatDecimal(model.multiplier, 2))}x</span>
@@ -1899,14 +1972,14 @@ function renderModelCards() {
                 </div>
                 ${isAdmin() ? `
                     <div class="model-card-actions">
-                        <button class="mini-button" type="button" data-model-edit="${model.id}">编辑</button>
+                        <button class="mini-button" type="button" data-model-edit="${model.id}" data-model-binding="${escapeHtml(model.bindingId || "")}">编辑</button>
                         <button class="mini-button danger-button" type="button" data-model-delete="${model.id}" data-model-code="${escapeHtml(model.modelCode)}">删除</button>
                     </div>
                 ` : ""}
             </article>
         `;
     }).join("");
-    renderSelectedModelDetail(list.find((item) => String(item.id) === String(state.selectedModelId)) || list[0]);
+    renderSelectedModelDetail(list.find((item) => getModelRowKey(item) === String(state.selectedModelId)) || list[0]);
 }
 
 function renderModelsTable() {
@@ -1915,7 +1988,7 @@ function renderModelsTable() {
         return;
     }
     if (!state.models.length) {
-        elements.modelsTable.innerHTML = '<tr><td colspan="12" class="empty-state">暂无模型配置。</td></tr>';
+        elements.modelsTable.innerHTML = '<tr><td colspan="13" class="empty-state">暂无模型配置。</td></tr>';
         return;
     }
     elements.modelsTable.innerHTML = state.models.map((model) => `
@@ -1924,7 +1997,8 @@ function renderModelsTable() {
             <td>${escapeHtml(model.modelCode)}</td>
             <td>${escapeHtml(model.groupName || "-")}</td>
             <td>${escapeHtml(formatModelRate(model.promptPrice))}</td>
-            <td>${escapeHtml(formatModelRate(model.completionPrice))}</td>
+            <td>${escapeHtml(formatModelRate(model.cachedPromptPrice))}</td>
+            <span>&#21333;&#27425;&#26368;&#20302;&#25187;&#36153;</span>
             <td>${escapeHtml(formatModelRate(model.requestPrice || 0.07))}</td>
             <td>${escapeHtml(formatDecimal(model.multiplier, 4))}</td>
             <td>${escapeHtml(model.modelType || "-")}</td>
@@ -1932,7 +2006,7 @@ function renderModelsTable() {
             <td>${escapeHtml(model.upstreamModel || "-")}</td>
             <td>${statusChip(model.status)}</td>
             <td class="action-row">
-                <button class="mini-button" type="button" data-model-edit="${model.id}">编辑价格</button>
+                <button class="mini-button" type="button" data-model-edit="${model.id}" data-model-binding="${escapeHtml(model.bindingId || "")}">编辑价格</button>
                 <button class="mini-button" type="button" data-model-toggle="${model.id}" data-next-status="${model.status === "ACTIVE" ? "DISABLED" : "ACTIVE"}">${model.status === "ACTIVE" ? "禁用" : "启用"}</button>
                 <button class="mini-button danger-button" type="button" data-model-delete="${model.id}" data-model-code="${escapeHtml(model.modelCode)}">删除</button>
             </td>
@@ -1945,7 +2019,7 @@ function renderPackagePurchaseRecords() {
         return;
     }
     if (!state.packagePurchaseRecords.length) {
-        elements.packagePurchasesTable.innerHTML = '<tr><td colspan="7" class="empty-state">暂时还没有套餐购买记录。</td></tr>';
+        elements.packagePurchasesTable.innerHTML = '<tr><td colspan="8" class="empty-state">暂无套餐购买记录。</td></tr>';
         return;
     }
     elements.packagePurchasesTable.innerHTML = state.packagePurchaseRecords.map((item) => `
@@ -1957,6 +2031,10 @@ function renderPackagePurchaseRecords() {
             <td>${escapeHtml(formatDateTime(item.expiresAt))}</td>
             <td>${statusChip(item.status || "-")}</td>
             <td>${escapeHtml(formatDateTime(item.createdAt))}</td>
+            <td class="action-row">
+                <button class="mini-button" type="button" data-show-package-models="${escapeHtml(item.groupId)}">详情</button>
+                <button class="mini-button danger-button" type="button" data-delete-package-purchase="${escapeHtml(item.id)}" data-package-name="${escapeHtml(buildPurchasedPackageLabel(item))}">删除</button>
+            </td>
         </tr>
     `).join("");
 }
@@ -2042,19 +2120,27 @@ async function loadSession() {
 }
 
 async function loadOverview(render = true) {
-    const [overview, trend, modelStats] = await Promise.all([
+    const [overview, trend, modelStats, accessSummary, packagePurchaseRecords] = await Promise.all([
         fetchJson("/admin/dashboard/overview"),
         fetchJson("/admin/dashboard/trend?days=7"),
-        fetchJson("/admin/dashboard/model-stats")
+        fetchJson("/admin/dashboard/model-stats"),
+        fetchJson("/admin/model-access/summary"),
+        fetchJson("/admin/model-access/purchases")
     ]);
     state.overview = overview;
     state.trend = trend || [];
     state.modelStats = modelStats || [];
+    state.accessSummary = accessSummary;
+    state.packagePurchaseRecords = packagePurchaseRecords || [];
+    syncSelectedPackageGroup();
+    syncSelectedPurchasedPackage();
     if (render) {
         renderOverviewCards();
         renderQuotaCard();
         renderTrend();
         renderBillingModelStats();
+        renderModelAccessSummary();
+        renderPackagePurchaseRecords();
     }
 }
 
@@ -2140,13 +2226,21 @@ async function loadWalletTransactions(render = true) {
 }
 
 async function loadLogs(render = true) {
-    state.logs = await fetchJson("/admin/request-logs?limit=50");
+    const [logs] = await Promise.all([
+        fetchJson("/admin/request-logs?limit=50"),
+        loadAccessSummary(false),
+        loadPackagePurchaseRecords(false),
+        loadWalletTransactions(false)
+    ]);
+    state.logs = logs;
     if (render) {
         renderLogsTable();
         renderOverviewCards();
         renderProfileCard();
         renderTrend();
         renderQuotaCard();
+        renderPackagePurchaseRecords();
+        renderWalletTransactions();
     }
 }
 
@@ -2197,9 +2291,34 @@ function resetRuntimeState() {
     state.editingModelId = null;
 }
 
+function stopDashboardAutoRefresh() {
+    if (dashboardRefreshTimer) {
+        window.clearInterval(dashboardRefreshTimer);
+        dashboardRefreshTimer = null;
+    }
+}
+
+function startDashboardAutoRefresh() {
+    stopDashboardAutoRefresh();
+    dashboardRefreshTimer = window.setInterval(handleAction(async () => {
+        if (!state.token || document.hidden) {
+            return;
+        }
+        await Promise.all([loadOverview(false), loadLogs(false)]);
+        renderOverviewCards();
+        renderQuotaCard();
+        renderTrend();
+        renderBillingModelStats();
+        renderLogsTable();
+        renderPackagePurchaseRecords();
+        renderModelAccessSummary();
+    }), 10000);
+}
+
 function logout() {
     localStorage.removeItem("zxw-console-token");
     state.token = "";
+    stopDashboardAutoRefresh();
     resetRuntimeState();
     toggleAuth(false);
     elements.keyCreateBox.classList.add("hidden");
@@ -2234,6 +2353,7 @@ async function onLogin(event) {
     applyRoleView();
     selectPanel("overview-panel");
     await loadAllData();
+    startDashboardAutoRefresh();
     showToast("登录成功");
 }
 
@@ -2482,6 +2602,25 @@ async function deleteModelGroup(groupId) {
     showToast(`${targetGroup.groupName} 已删除`);
 }
 
+async function deletePurchasedPackage(packageId, packageName) {
+    const confirmed = window.confirm(`确认删除已购套餐 ${packageName || packageId} 吗？绑定该套餐的 API Key 会同步禁用。`);
+    if (!confirmed) {
+        return;
+    }
+    await fetchJson(`/admin/model-access/purchases/${packageId}`, {
+        method: "DELETE"
+    });
+    if (String(state.selectedPackageId) === String(packageId)) {
+        state.selectedPackageId = null;
+    }
+    const deletedPackage = getPurchasedPackages().find((item) => String(item.id) === String(packageId));
+    if (deletedPackage && String(state.selectedPackageGroupId) === String(deletedPackage.groupId)) {
+        state.selectedPackageGroupId = null;
+    }
+    await Promise.all([loadAccessSummary(), loadKeys(), loadOverview(), loadPackagePurchaseRecords(), loadWalletTransactions()]);
+    renderPackageSelectionViews();
+    showToast("已删除已购套餐");
+}
 async function onCreateKey(event) {
     event.preventDefault();
     const formData = new FormData(elements.keyForm);
@@ -2592,10 +2731,12 @@ async function onCreateModel(event) {
         modelType: String(formData.get("modelType") || "CHAT").trim(),
         billingType: String(formData.get("billingType") || "TOKEN").trim(),
         promptPrice: toNumber(formData.get("promptPrice")),
+        cachedPromptPrice: toNumber(formData.get("cachedPromptPrice")),
         completionPrice: toNumber(formData.get("completionPrice")),
         requestPrice: toNumber(formData.get("requestPrice")) || 0.07,
         multiplier: toNumber(formData.get("multiplier")) || 1,
         isPublic: String(formData.get("isPublic")) === "true",
+        bindingId: state.editingModelBindingId,
         groupId: toNumber(formData.get("groupId")),
         providerId: toNumber(formData.get("providerId")),
         upstreamModel: String(formData.get("upstreamModel") || "").trim()
@@ -2628,6 +2769,7 @@ async function onCreateModel(event) {
 
 function resetModelForm() {
     state.editingModelId = null;
+    state.editingModelBindingId = null;
     elements.modelForm.reset();
     elements.modelForm.elements.modelCode.value = "";
     elements.modelForm.elements.modelCode.readOnly = false;
@@ -2635,6 +2777,7 @@ function resetModelForm() {
     elements.modelForm.elements.modelType.value = "CHAT";
     elements.modelForm.elements.billingType.value = "TOKEN";
     elements.modelForm.elements.promptPrice.value = "0";
+    elements.modelForm.elements.cachedPromptPrice.value = "0";
     elements.modelForm.elements.completionPrice.value = "0";
     elements.modelForm.elements.requestPrice.value = "0.07";
     elements.modelForm.elements.multiplier.value = "1";
@@ -2648,12 +2791,14 @@ function resetModelForm() {
     elements.modelCancelEditButton.classList.add("hidden");
 }
 
-function startModelEdit(id) {
-    const model = state.models.find((item) => String(item.id) === String(id));
+function startModelEdit(id, bindingId = null) {
+    const model = state.models.find((item) => bindingId && String(item.bindingId) === String(bindingId))
+        || state.models.find((item) => String(item.id) === String(id));
     if (!model) {
         throw new Error("未找到模型配置");
     }
     state.editingModelId = model.id;
+    state.editingModelBindingId = model.bindingId || null;
     elements.modelForm.elements.modelCode.value = model.modelCode || "";
     elements.modelForm.elements.modelCode.readOnly = true;
     elements.modelForm.elements.modelCode.required = false;
@@ -2661,6 +2806,7 @@ function startModelEdit(id) {
     elements.modelForm.elements.modelType.value = model.modelType || "CHAT";
     elements.modelForm.elements.billingType.value = model.billingType || "TOKEN";
     elements.modelForm.elements.promptPrice.value = formatDecimal(model.promptPrice, 6);
+    elements.modelForm.elements.cachedPromptPrice.value = formatDecimal(model.cachedPromptPrice, 6);
     elements.modelForm.elements.completionPrice.value = formatDecimal(model.completionPrice, 6);
     elements.modelForm.elements.requestPrice.value = formatDecimal(model.requestPrice || 0.07, 6);
     elements.modelForm.elements.multiplier.value = formatDecimal(model.multiplier, 4);
@@ -2743,6 +2889,7 @@ async function importUpstreamModels() {
             providerId,
             upstreamModels: selected,
             promptPrice: toNumber(elements.importPromptPrice.value),
+            cachedPromptPrice: toNumber(elements.importCachedPromptPrice.value),
             completionPrice: toNumber(elements.importCompletionPrice.value),
             multiplier: toNumber(elements.importMultiplier.value) || 1,
             isPublic: elements.importIsPublic.value === "true"
@@ -2845,6 +2992,12 @@ function bindEvents() {
     });
 
     elements.packageCardGrid?.addEventListener("click", handleAction(async (event) => {
+        const showButton = event.target.closest("button[data-show-package-models]");
+        if (showButton) {
+            event.stopPropagation();
+            showPackageModelDetails(showButton.dataset.showPackageModels);
+            return;
+        }
         const purchaseButton = event.target.closest("button[data-purchase-group]");
         if (purchaseButton) {
             await purchaseModelGroup(purchaseButton.dataset.purchaseGroup);
@@ -2858,6 +3011,7 @@ function bindEvents() {
         const card = event.target.closest("[data-select-package]");
         if (card) {
             state.selectedPackageGroupId = card.dataset.selectPackage;
+            state.modelProviderFilter = `GROUP:${state.selectedPackageGroupId}`;
             const selectedPackage = getFirstPurchasedPackageByGroup(card.dataset.selectPackage);
             if (selectedPackage) {
                 state.selectedPackageId = selectedPackage.id;
@@ -2942,7 +3096,7 @@ function bindEvents() {
         const button = event.target.closest("button");
         if (button) {
             if (button.dataset.modelEdit) {
-                startModelEdit(button.dataset.modelEdit);
+                startModelEdit(button.dataset.modelEdit, button.dataset.modelBinding);
                 return;
             }
             if (button.dataset.modelDelete) {
@@ -2959,7 +3113,7 @@ function bindEvents() {
         const button = event.target.closest("button");
         if (button) {
             if (button.dataset.modelEdit) {
-                startModelEdit(button.dataset.modelEdit);
+                startModelEdit(button.dataset.modelEdit, button.dataset.modelBinding);
                 return;
             }
             if (button.dataset.modelDelete) {
@@ -2980,11 +3134,24 @@ function bindEvents() {
             return;
         }
         state.modelProviderFilter = button.dataset.providerFilter;
+        if (state.modelProviderFilter.startsWith("GROUP:")) {
+            state.selectedPackageGroupId = state.modelProviderFilter.slice("GROUP:".length);
+        }
         renderModelProviderFilters();
         renderModelCards();
     });
 
     document.addEventListener("click", handleAction(async (event) => {
+        const showPackageButton = event.target.closest("[data-show-package-models]");
+        if (showPackageButton) {
+            showPackageModelDetails(showPackageButton.dataset.showPackageModels);
+            return;
+        }
+        const deletePackageButton = event.target.closest("[data-delete-package-purchase]");
+        if (deletePackageButton) {
+            await deletePurchasedPackage(deletePackageButton.dataset.deletePackagePurchase, deletePackageButton.dataset.packageName);
+            return;
+        }
         const panelButton = event.target.closest("[data-open-panel]");
         if (panelButton) {
             selectPanel(panelButton.dataset.openPanel);
@@ -3038,6 +3205,7 @@ async function bootstrap() {
         await loadSession();
         selectPanel("overview-panel");
         await loadAllData();
+        startDashboardAutoRefresh();
     } catch (error) {
         logout();
         showToast(error instanceof Error ? error.message : "会话已失效，请重新登录", true);
@@ -3045,3 +3213,8 @@ async function bootstrap() {
 }
 
 bootstrap();
+
+
+
+
+

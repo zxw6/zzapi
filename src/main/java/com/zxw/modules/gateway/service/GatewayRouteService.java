@@ -53,13 +53,14 @@ public class GatewayRouteService {
             return listPublicModels();
         }
         return jdbcTemplate.query("""
-                select distinct m.model_code, m.model_name, m.model_type
+                select m.model_code, m.model_name, m.model_type, max(m.id) as sort_id
                 from model_group_models mgm
                 join models m on m.id = mgm.model_id
                 where mgm.group_id = ?
                   and m.deleted = 0
                   and m.status = 'ACTIVE'
-                order by m.id desc
+                group by m.model_code, m.model_name, m.model_type
+                order by sort_id desc
                 """, (rs, rowNum) -> new ModelCard(
                 rs.getString("model_code"),
                 rs.getString("model_name"),
@@ -67,9 +68,46 @@ public class GatewayRouteService {
         ), groupId);
     }
 
+    public RouteDefinition applyGroupPricing(RouteDefinition route, Long groupId) {
+        if (route == null || groupId == null) {
+            return route;
+        }
+        List<RouteDefinition> pricedRoutes = jdbcTemplate.query("""
+                select coalesce(mgm.billing_type, m.billing_type) as billing_type,
+                       coalesce(mgm.prompt_price, m.prompt_price) as prompt_price,
+                       coalesce(mgm.cached_prompt_price, m.cached_prompt_price) as cached_prompt_price,
+                       coalesce(mgm.completion_price, m.completion_price) as completion_price,
+                       coalesce(mgm.request_price, m.request_price) as request_price,
+                       coalesce(mgm.multiplier, m.multiplier) as multiplier
+                from model_group_models mgm
+                join models m on m.id = mgm.model_id
+                where mgm.group_id = ? and mgm.model_id = ?
+                limit 1
+                """, (rs, rowNum) -> new RouteDefinition(
+                route.modelId(),
+                route.modelCode(),
+                route.modelName(),
+                route.providerId(),
+                route.providerTokenId(),
+                route.providerName(),
+                route.baseUrl(),
+                route.providerType(),
+                route.timeoutMs(),
+                route.upstreamModel(),
+                rs.getString("billing_type"),
+                rs.getBigDecimal("prompt_price"),
+                rs.getBigDecimal("cached_prompt_price"),
+                rs.getBigDecimal("completion_price"),
+                rs.getBigDecimal("request_price"),
+                rs.getBigDecimal("multiplier"),
+                route.providerToken()
+        ), groupId, route.modelId());
+        return pricedRoutes.isEmpty() ? route : pricedRoutes.get(0);
+    }
+
     private List<RouteDefinition> findRoutes(String modelCode) {
         return jdbcTemplate.query("""
-                select m.id as model_id, m.model_code, m.model_name, m.billing_type, m.prompt_price, m.completion_price,
+                select m.id as model_id, m.model_code, m.model_name, m.billing_type, m.prompt_price, m.cached_prompt_price, m.completion_price,
                        m.request_price, m.multiplier, p.id as provider_id, p.provider_name, p.base_url, p.provider_type,
                        p.timeout_ms, r.upstream_model, t.id as provider_token_id, t.token_value_encrypted
                 from models m
@@ -92,6 +130,7 @@ public class GatewayRouteService {
                 rs.getString("upstream_model"),
                 rs.getString("billing_type"),
                 rs.getBigDecimal("prompt_price"),
+                rs.getBigDecimal("cached_prompt_price"),
                 rs.getBigDecimal("completion_price"),
                 rs.getBigDecimal("request_price"),
                 rs.getBigDecimal("multiplier"),
@@ -132,6 +171,7 @@ public class GatewayRouteService {
             String upstreamModel,
             String billingType,
             BigDecimal promptPrice,
+            BigDecimal cachedPromptPrice,
             BigDecimal completionPrice,
             BigDecimal requestPrice,
             BigDecimal multiplier,

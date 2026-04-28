@@ -16,6 +16,8 @@ public record ModelBatchImportRequest(
         List<String> upstreamModels,
         @DecimalMin(value = "0.000000", message = "prompt 单价不能小于 0")
         BigDecimal promptPrice,
+        @DecimalMin(value = "0.000000", message = "cached prompt price must be greater than or equal to 0")
+        BigDecimal cachedPromptPrice,
         @DecimalMin(value = "0.000000", message = "completion 单价不能小于 0")
         BigDecimal completionPrice,
         @DecimalMin(value = "0.0000", message = "倍率不能小于 0")

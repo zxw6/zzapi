@@ -7,12 +7,15 @@ import jakarta.validation.constraints.NotNull;
 import java.math.BigDecimal;
 
 public record ModelUpdateRequest(
+        Long bindingId,
         @NotBlank(message = "模型名称不能为空")
         String modelName,
         String modelType,
         String billingType,
         @DecimalMin(value = "0.000000", message = "输入价格不能小于 0")
         BigDecimal promptPrice,
+        @DecimalMin(value = "0.000000", message = "cached prompt price must be greater than or equal to 0")
+        BigDecimal cachedPromptPrice,
         @DecimalMin(value = "0.000000", message = "输出价格不能小于 0")
         BigDecimal completionPrice,
         @DecimalMin(value = "0.000000", message = "单次最低扣费不能小于 0")

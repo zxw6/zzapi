@@ -15,6 +15,8 @@ public record ModelCreateRequest(
         String billingType,
         @DecimalMin(value = "0.000000", message = "prompt 单价不能小于 0")
         BigDecimal promptPrice,
+        @DecimalMin(value = "0.000000", message = "cached prompt price must be greater than or equal to 0")
+        BigDecimal cachedPromptPrice,
         @DecimalMin(value = "0.000000", message = "completion 单价不能小于 0")
         BigDecimal completionPrice,
         @DecimalMin(value = "0.000000", message = "请求单价不能小于 0")

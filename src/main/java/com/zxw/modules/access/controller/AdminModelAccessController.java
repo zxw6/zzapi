@@ -58,4 +58,10 @@ public class AdminModelAccessController {
         userModelAccessService.disableGroup(groupId);
         return new ApiResponse<>(true, "套餐分组已删除", null);
     }
+
+    @DeleteMapping("/purchases/{packageId}")
+    public ApiResponse<Void> deletePurchasedPackage(@PathVariable Long packageId) {
+        userModelAccessService.disablePurchasedPackage(packageId);
+        return ApiResponse.ok("Purchased package deleted", null);
+    }
 }

@@ -5,11 +5,13 @@ import java.time.LocalDateTime;
 
 public record ModelListItemResponse(
         Long id,
+        Long bindingId,
         String modelCode,
         String modelName,
         String modelType,
         String billingType,
         BigDecimal promptPrice,
+        BigDecimal cachedPromptPrice,
         BigDecimal completionPrice,
         BigDecimal requestPrice,
         BigDecimal multiplier,

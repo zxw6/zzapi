@@ -40,6 +40,8 @@ public class UserModelAccessService {
     );
 
     private final JdbcTemplate jdbcTemplate;
+    private final Object defaultInitializationLock = new Object();
+    private volatile boolean defaultsInitialized;
 
     public UserModelAccessService(JdbcTemplate jdbcTemplate) {
         this.jdbcTemplate = jdbcTemplate;
@@ -47,6 +49,19 @@ public class UserModelAccessService {
 
     @Transactional
     public void initializeDefaults() {
+        if (defaultsInitialized) {
+            return;
+        }
+        synchronized (defaultInitializationLock) {
+            if (defaultsInitialized) {
+                return;
+            }
+            initializeDefaultsOnce();
+            defaultsInitialized = true;
+        }
+    }
+
+    private void initializeDefaultsOnce() {
         ensureTableExists("model_groups", """
                 create table if not exists model_groups (
                     id bigint primary key auto_increment,
@@ -106,6 +121,20 @@ public class UserModelAccessService {
                 "alter table request_logs add column user_package_id bigint null after api_key_id");
         ensureColumnExists("request_logs", "cached_prompt_tokens",
                 "alter table request_logs add column cached_prompt_tokens int not null default 0 after total_tokens");
+        ensureColumnExists("models", "cached_prompt_price",
+                "alter table models add column cached_prompt_price decimal(18, 6) not null default 0.000000 after prompt_price");
+        ensureColumnExists("model_group_models", "billing_type",
+                "alter table model_group_models add column billing_type varchar(32) null after model_id");
+        ensureColumnExists("model_group_models", "prompt_price",
+                "alter table model_group_models add column prompt_price decimal(18, 6) null after billing_type");
+        ensureColumnExists("model_group_models", "cached_prompt_price",
+                "alter table model_group_models add column cached_prompt_price decimal(18, 6) null after prompt_price");
+        ensureColumnExists("model_group_models", "completion_price",
+                "alter table model_group_models add column completion_price decimal(18, 6) null after cached_prompt_price");
+        ensureColumnExists("model_group_models", "request_price",
+                "alter table model_group_models add column request_price decimal(18, 6) null after completion_price");
+        ensureColumnExists("model_group_models", "multiplier",
+                "alter table model_group_models add column multiplier decimal(18, 4) null after request_price");
         ensureIndexExists("api_keys", "idx_api_keys_package",
                 "create index idx_api_keys_package on api_keys (user_package_id)");
         ensureIndexExists("api_keys", "idx_api_keys_group",
@@ -115,6 +144,7 @@ public class UserModelAccessService {
 
         expirePackages();
         ensurePresetGroups();
+        backfillModelGroupPrices();
         jdbcTemplate.update("""
                 update users
                 set package_restriction_enabled = case
@@ -153,6 +183,14 @@ public class UserModelAccessService {
         expirePackages();
         UserPackageRow targetPackage = resolveGatewayPackage(auth, route);
         return targetPackage == null ? null : targetPackage.id();
+    }
+
+    public Long resolveGatewayPackageGroupId(ApiKeyAuthService.AuthenticatedApiKey auth,
+                                             GatewayRouteService.RouteDefinition route) {
+        initializeDefaults();
+        expirePackages();
+        UserPackageRow targetPackage = resolveGatewayPackage(auth, route);
+        return targetPackage == null ? auth == null ? null : auth.modelGroupId() : targetPackage.groupId();
     }
 
     public Long resolveApiKeyModelGroupId(Long userId, Long requestedGroupId) {
@@ -270,6 +308,30 @@ public class UserModelAccessService {
         }
     }
 
+    @Transactional
+    public void disablePurchasedPackage(Long packageId) {
+        initializeDefaults();
+        JwtUser currentUser = AdminContext.require();
+        boolean admin = AdminContext.isAdmin();
+        int updated = jdbcTemplate.update("""
+                update user_model_packages
+                set status = 'DELETED', updated_at = now()
+                where id = ?
+                  and (? = 1 or user_id = ?)
+                  and status <> 'DELETED'
+                """, packageId, admin ? 1 : 0, currentUser.userId());
+        if (updated == 0) {
+            throw new BusinessException(404, "Purchased package does not exist");
+        }
+        jdbcTemplate.update("""
+                update api_keys
+                set status = 'DISABLED', updated_at = now()
+                where user_package_id = ?
+                  and (? = 1 or user_id = ?)
+                  and deleted = 0
+                """, packageId, admin ? 1 : 0, currentUser.userId());
+    }
+
     public void validateApiKeyCreationAccess(Long userId, Long modelGroupId) {
         initializeDefaults();
         expirePackages();
@@ -316,6 +378,10 @@ public class UserModelAccessService {
                     resolveTotalQuota(matchedPackage.dailyQuota(), matchedPackage.monthlyQuota(), matchedPackage.packageDays()),
                     calculatePackageTotalUsageAmount(matchedPackage.id()));
             return;
+        }
+        if (auth.userPackageId() != null) {
+            throw new BusinessException(403,
+                    "Model " + route.modelCode() + " is not available in the selected package, or the package is expired/deleted.");
         }
 
         Integer inGroup = jdbcTemplate.queryForObject("""
@@ -365,22 +431,17 @@ public class UserModelAccessService {
             throw new BusinessException(403, "当前 API Key 未绑定套餐，请重新创建");
         }
 
-        Integer inGroup = jdbcTemplate.queryForObject("""
-                select count(*)
-                from model_group_models
-                where group_id = ? and model_id = ?
-                """, Integer.class, auth.modelGroupId(), route.modelId());
-        if (inGroup == null || inGroup == 0) {
-            String groupName = auth.modelGroupName() == null || auth.modelGroupName().isBlank()
-                    ? "当前套餐"
-                    : auth.modelGroupName();
-            throw new BusinessException(400,
-                    "模型错误：当前 API Key 仅支持套餐【" + groupName + "】内的模型，不能使用 " + route.modelCode());
-        }
-
         UserPackageRow targetPackage = resolveGatewayPackage(auth, route);
         if (targetPackage == null) {
-            throw new BusinessException(403, "当前套餐不存在或已失效，请重新选择套餐");
+            String groupName = auth.userPackageName() == null || auth.userPackageName().isBlank()
+                    ? auth.modelGroupName()
+                    : auth.userPackageName();
+            if (groupName == null || groupName.isBlank()) {
+                groupName = "current package";
+            }
+            throw new BusinessException(403,
+                    "Model " + route.modelCode() + " is not available in " + groupName
+                            + ", or the selected package is expired/deleted.");
         }
         if (!targetPackage.active()) {
             throw new BusinessException(403, "套餐已过期");
@@ -405,14 +466,23 @@ public class UserModelAccessService {
         }
         getGroupById(groupId);
         jdbcTemplate.update("delete from model_group_models where model_id = ?", modelId);
-        jdbcTemplate.update("""
-                insert into model_group_models (group_id, model_id)
-                values (?, ?)
-                """, groupId, modelId);
+        addModelGroupBinding(modelId, groupId);
     }
 
     @Transactional
     public void addModelGroupBinding(Long modelId, Long groupId) {
+        addModelGroupBindingWithPrices(modelId, groupId, null, null, null, null, null, null);
+    }
+
+    @Transactional
+    public void addModelGroupBindingWithPrices(Long modelId,
+                                               Long groupId,
+                                               String billingType,
+                                               BigDecimal promptPrice,
+                                               BigDecimal cachedPromptPrice,
+                                               BigDecimal completionPrice,
+                                               BigDecimal requestPrice,
+                                               BigDecimal multiplier) {
         AdminContext.requireAdmin();
         initializeDefaults();
         if (modelId == null) {
@@ -425,12 +495,60 @@ public class UserModelAccessService {
                 where group_id = ? and model_id = ?
                 """, Integer.class, groupId, modelId);
         if (exists != null && exists > 0) {
+            if (billingType == null && promptPrice == null && cachedPromptPrice == null
+                    && completionPrice == null && requestPrice == null && multiplier == null) {
+                return;
+            }
+            updateModelGroupBindingPrice(modelId, groupId, billingType, promptPrice, cachedPromptPrice,
+                    completionPrice, requestPrice, multiplier);
             return;
         }
         jdbcTemplate.update("""
-                insert into model_group_models (group_id, model_id)
-                values (?, ?)
-                """, groupId, modelId);
+                insert into model_group_models (
+                    group_id, model_id, billing_type, prompt_price, cached_prompt_price,
+                    completion_price, request_price, multiplier
+                )
+                select ?, m.id,
+                       coalesce(?, m.billing_type),
+                       coalesce(?, m.prompt_price),
+                       coalesce(?, m.cached_prompt_price),
+                       coalesce(?, m.completion_price),
+                       coalesce(?, m.request_price),
+                       coalesce(?, m.multiplier)
+                from models m
+                where m.id = ?
+                """, groupId, billingType, promptPrice, cachedPromptPrice, completionPrice, requestPrice, multiplier, modelId);
+    }
+
+    @Transactional
+    public void updateModelGroupBindingPrice(Long modelId,
+                                             Long groupId,
+                                             String billingType,
+                                             BigDecimal promptPrice,
+                                             BigDecimal cachedPromptPrice,
+                                             BigDecimal completionPrice,
+                                             BigDecimal requestPrice,
+                                             BigDecimal multiplier) {
+        AdminContext.requireAdmin();
+        initializeDefaults();
+        int updated = jdbcTemplate.update("""
+                update model_group_models
+                set billing_type = ?, prompt_price = ?, cached_prompt_price = ?,
+                    completion_price = ?, request_price = ?, multiplier = ?
+                where model_id = ? and group_id = ?
+                """,
+                billingType,
+                promptPrice,
+                cachedPromptPrice,
+                completionPrice,
+                requestPrice,
+                multiplier,
+                modelId,
+                groupId);
+        if (updated == 0) {
+            addModelGroupBindingWithPrices(modelId, groupId, billingType, promptPrice, cachedPromptPrice,
+                    completionPrice, requestPrice, multiplier);
+        }
     }
 
     @Transactional
@@ -456,7 +574,7 @@ public class UserModelAccessService {
                 from user_model_packages p
                 join users u on u.id = p.user_id and u.deleted = 0
                 join model_groups g on g.id = p.group_id
-                where %s
+                where %s and p.status <> 'DELETED'
                 order by p.id desc
                 limit 100
                 """.formatted(admin ? "1 = 1" : "p.user_id = ?");
@@ -675,7 +793,7 @@ public class UserModelAccessService {
                        g.package_days, g.daily_quota, g.weekly_quota, g.monthly_quota
                 from user_model_packages p
                 join model_groups g on g.id = p.group_id
-                where p.id = ? and p.user_id = ?
+                where p.id = ? and p.user_id = ? and p.status <> 'DELETED'
                 limit 1
                 """, rs -> rs.next() ? new UserPackageRow(
                 rs.getLong("id"),
@@ -721,7 +839,7 @@ public class UserModelAccessService {
                        g.package_days, g.daily_quota, g.weekly_quota, g.monthly_quota
                 from user_model_packages p
                 join model_groups g on g.id = p.group_id
-                where p.user_id = ?
+                where p.user_id = ? and p.status <> 'DELETED'
                 order by p.expires_at desc, p.id desc
                 limit 1
                 """
@@ -730,7 +848,7 @@ public class UserModelAccessService {
                        g.package_days, g.daily_quota, g.weekly_quota, g.monthly_quota
                 from user_model_packages p
                 join model_groups g on g.id = p.group_id
-                where p.user_id = ? and p.group_id = ?
+                where p.user_id = ? and p.group_id = ? and p.status <> 'DELETED'
                 order by p.expires_at desc, p.id desc
                 limit 1
                 """;
@@ -753,10 +871,9 @@ public class UserModelAccessService {
         BigDecimal amount = jdbcTemplate.queryForObject("""
                 select coalesce(sum(l.user_amount), 0)
                 from request_logs l
-                join models m on m.model_code = l.model_code and m.deleted = 0
-                join model_group_models mgm on mgm.model_id = m.id
+                join user_model_packages p on p.id = l.user_package_id
                 where l.user_id = ?
-                  and mgm.group_id = ?
+                  and p.group_id = ?
                   and l.request_date between ? and ?
                 """, BigDecimal.class, userId, groupId, startDate, endDate);
         return amount == null ? BigDecimal.ZERO : amount;
@@ -844,6 +961,7 @@ public class UserModelAccessService {
             if (boundPackage != null && isModelInGroup(boundPackage.groupId(), routeModelId)) {
                 return boundPackage;
             }
+            return null;
         }
         if (auth.modelGroupId() != null && isModelInGroup(auth.modelGroupId(), routeModelId)) {
             UserPackageRow boundGroupPackage = findFirstActivePackage(auth.userId(), auth.modelGroupId());
@@ -851,7 +969,7 @@ public class UserModelAccessService {
                 return boundGroupPackage;
             }
         }
-        return findLatestActivePackageByModel(auth.userId(), routeModelId);
+        return null;
     }
 
     private boolean isModelInGroup(Long groupId, Long modelId) {
@@ -1006,7 +1124,6 @@ public class UserModelAccessService {
                         preset.remark(),
                         existingId
                 );
-                syncPackageSnapshots(existingId, preset.groupName());
                 continue;
             }
 
@@ -1024,25 +1141,26 @@ public class UserModelAccessService {
                     preset.remark()
             );
 
-            Long createdId = findGroupIdByCode(preset.groupCode());
-            syncPackageSnapshots(createdId, preset.groupName());
         }
     }
 
-    private void syncPackageSnapshots(Long groupId, String groupName) {
-        if (groupId == null || groupName == null || groupName.isBlank()) {
-            return;
-        }
+    private void backfillModelGroupPrices() {
         jdbcTemplate.update("""
-                update user_model_packages
-                set package_name = ?, updated_at = now()
-                where group_id = ?
-                  and (package_name is null or package_name <> ?)
-                """,
-                groupName,
-                groupId,
-                groupName
-        );
+                update model_group_models mgm
+                join models m on m.id = mgm.model_id
+                set mgm.billing_type = coalesce(mgm.billing_type, m.billing_type),
+                    mgm.prompt_price = coalesce(mgm.prompt_price, m.prompt_price),
+                    mgm.cached_prompt_price = coalesce(mgm.cached_prompt_price, m.cached_prompt_price),
+                    mgm.completion_price = coalesce(mgm.completion_price, m.completion_price),
+                    mgm.request_price = coalesce(mgm.request_price, m.request_price),
+                    mgm.multiplier = coalesce(mgm.multiplier, m.multiplier)
+                where mgm.billing_type is null
+                   or mgm.prompt_price is null
+                   or mgm.cached_prompt_price is null
+                   or mgm.completion_price is null
+                   or mgm.request_price is null
+                   or mgm.multiplier is null
+                """);
     }
 
     private Long findGroupIdByCode(String groupCode) {

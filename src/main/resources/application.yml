@@ -3,14 +3,18 @@ spring:
     name: ai-gateway
   datasource:
     driver-class-name: com.mysql.cj.jdbc.Driver
-    url: ${DB_URL:jdbc:mysql://mysql:3306/zhongzhuan?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai}
+    url: ${DB_URL:jdbc:mysql://localhost:3306/zxw?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai}
     username: ${DB_USERNAME:root}
-    password: ${DB_PASSWORD:zzapi@Admin}
+    password: ${DB_PASSWORD:123456}
+    hikari:
+      connection-init-sql: "SET time_zone = '+08:00'"
+  jackson:
+    time-zone: Asia/Shanghai
   data:
     redis:
       host: ${REDIS_HOST:redis}
       port: ${REDIS_PORT:6379}
-      password: ${REDIS_PASSWORD:syf33618}
+      password: ${REDIS_PASSWORD:0}
       database: ${REDIS_DATABASE:0}
       timeout: ${REDIS_TIMEOUT:5s}
   sql:
