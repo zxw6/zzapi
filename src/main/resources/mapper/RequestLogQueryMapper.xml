@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.zxw.persistence.mapper.RequestLogQueryMapper">
+
+    <sql id="RequestLogSelect">
+        select l.request_id as requestId,
+               u.username as username,
+               l.model_code as modelCode,
+               l.upstream_model as upstreamModel,
+               coalesce(g.group_name, p.package_name) as packageName,
+               m.multiplier as multiplier,
+               l.status_code as statusCode,
+               l.latency_ms as latencyMs,
+               l.prompt_tokens as promptTokens,
+               l.completion_tokens as completionTokens,
+               l.total_tokens as totalTokens,
+               l.cached_prompt_tokens as cachedPromptTokens,
+               l.user_amount as userAmount,
+               l.cost_amount as costAmount,
+               l.success as success,
+               l.created_at as createdAt
+        from request_logs l
+        left join users u on u.id = l.user_id
+        left join user_model_packages p on p.id = l.user_package_id
+        left join model_groups g on g.id = p.group_id
+        left join models m on m.model_code = l.model_code and m.deleted = 0
+    </sql>
+
+    <select id="countAdmin" resultType="long">
+        select count(*)
+        from request_logs l
+    </select>
+
+    <select id="countUser" resultType="long">
+        select count(*)
+        from request_logs l
+        where l.user_id = #{userId}
+    </select>
+
+    <select id="pageAdmin" resultType="com.zxw.persistence.model.RequestLogListView">
+        <include refid="RequestLogSelect"/>
+        order by l.id desc
+        limit #{offset}, #{pageSize}
+    </select>
+
+    <select id="pageUser" resultType="com.zxw.persistence.model.RequestLogListView">
+        <include refid="RequestLogSelect"/>
+        where l.user_id = #{userId}
+        order by l.id desc
+        limit #{offset}, #{pageSize}
+    </select>
+
+</mapper>

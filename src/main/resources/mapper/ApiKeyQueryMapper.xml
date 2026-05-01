@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.zxw.persistence.mapper.ApiKeyQueryMapper">
+
+    <sql id="ApiKeyListSelect">
+        select k.id,
+               k.user_id as userId,
+               u.username,
+               k.name,
+               k.access_key as accessKey,
+               k.status,
+               p.id as modelPackageId,
+               p.package_name as modelPackageName,
+               g.id as modelGroupId,
+               g.group_name as modelGroupName,
+               k.total_quota as totalQuota,
+               k.used_quota as usedQuota,
+               k.expires_at as expiresAt,
+               k.last_used_at as lastUsedAt,
+               k.created_at as createdAt
+        from api_keys k
+        join users u on u.id = k.user_id
+        left join user_model_packages p on p.id = k.user_package_id
+        left join model_groups g on g.id = k.model_group_id
+    </sql>
+
+    <select id="listAdmin" resultType="com.zxw.persistence.model.ApiKeyListView">
+        <include refid="ApiKeyListSelect"/>
+        where k.deleted = 0
+        order by k.id desc
+    </select>
+
+    <select id="listUser" resultType="com.zxw.persistence.model.ApiKeyListView">
+        <include refid="ApiKeyListSelect"/>
+        where k.deleted = 0 and k.user_id = #{userId}
+        order by k.id desc
+    </select>
+
+</mapper>

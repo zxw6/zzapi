@@ -4,6 +4,8 @@ import com.zxw.common.api.ApiResponse;
 import com.zxw.modules.system.dto.SiteSettingsResponse;
 import com.zxw.modules.system.dto.SiteSettingsUpdateRequest;
 import com.zxw.modules.system.service.AdminSiteSettingsService;
+import io.swagger.annotations.Api;
+import io.swagger.annotations.ApiOperation;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PutMapping;
@@ -17,6 +19,11 @@ import java.util.Map;
 
 @RestController
 @RequestMapping("/admin/system")
+@Api(tags = "系统管理")
+/**
+ * 系统管理控制器。
+ * 提供健康检查、SSE 协议说明和站点设置维护接口。
+ */
 public class AdminSystemController {
 
     private final AdminSiteSettingsService adminSiteSettingsService;
@@ -25,8 +32,13 @@ public class AdminSystemController {
         this.adminSiteSettingsService = adminSiteSettingsService;
     }
 
+    /**
+     * 返回系统健康状态。
+     */
     @GetMapping("/health")
+    @ApiOperation("健康检查")
     public ApiResponse<Map<String, Object>> health() {
+        // 返回服务运行状态
         return ApiResponse.ok(Map.of(
                 "status", "UP",
                 "service", "ai-gateway",
@@ -34,8 +46,13 @@ public class AdminSystemController {
         ));
     }
 
+    /**
+     * 说明前端如何消费 SSE 协议事件。
+     */
     @GetMapping("/sse-protocol")
+    @ApiOperation("查看SSE协议说明")
     public ApiResponse<Map<String, Object>> sseProtocol() {
+        // 返回SSE事件流格式说明
         return ApiResponse.ok(Map.of(
                 "version", "1.0",
                 "transport", "text/event-stream (SSE)",
@@ -89,13 +106,23 @@ public class AdminSystemController {
         ));
     }
 
+    /**
+     * 查询站点基础设置。
+     */
     @GetMapping("/site-settings")
+    @ApiOperation("获取站点设置")
     public ApiResponse<SiteSettingsResponse> getSiteSettings() {
+        // 查询站点基础配置
         return ApiResponse.ok(adminSiteSettingsService.getSiteSettings());
     }
 
+    /**
+     * 保存站点设置。
+     */
     @PutMapping("/site-settings")
+    @ApiOperation("更新站点设置")
     public ApiResponse<Void> updateSiteSettings(@Valid @RequestBody SiteSettingsUpdateRequest request) {
+        // 更新站点名称、邮箱和主题等配置
         adminSiteSettingsService.updateSiteSettings(request);
         return ApiResponse.ok("站点信息保存成功", null);
     }

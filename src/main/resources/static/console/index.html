@@ -62,9 +62,19 @@
                 <span>密码</span>
                 <input type="password" name="password" placeholder="请输入密码" required>
             </label>
+            <input type="hidden" name="captchaId">
+            <label>
+                <span>图形验证码</span>
+                <input type="text" name="captchaCode" placeholder="请输入图形验证码" maxlength="4" autocomplete="off" required>
+            </label>
+            <div class="register-code-actions">
+                <img id="login-captcha-image" class="login-captcha-image" alt="图形验证码">
+                <button id="refresh-login-captcha-button" type="button" class="secondary-button">刷新验证码</button>
+            </div>
+            <div id="login-captcha-hint" class="card-caption">点击图片或按钮可刷新图形验证码。</div>
 
             <div class="auth-actions">
-                <button type="submit" class="primary-button">登录</button>
+                <button id="login-submit-button" type="submit" class="primary-button">登录</button>
                 <button id="open-register-button" type="button" class="secondary-button">注册</button>
             </div>
 
@@ -810,7 +820,7 @@ sandbox = "elevated"</pre>
                         <div class="package-center-head">
                             <div>
                                 <div class="package-center-title">套餐中心</div>
-                                <div class="card-caption">钱包余额用于购买套餐，购买成功后分组会获得每日 $60 可用额度，请求金额将从该分组额度中累计扣减。</div>
+                                <div class="card-caption">钱包余额用于购买套餐。上方套餐卡片和已购摘要只显示当前账号自己的套餐；管理员如需查看全站谁购买了什么套餐，请看下方购买记录表。</div>
                             </div>
                         </div>
                         <div id="package-card-grid" class="package-card-grid"></div>
@@ -819,14 +829,10 @@ sandbox = "elevated"</pre>
 
                     <div class="section-head package-model-head">
                         <div>
-                            <h3>分组模型预览</h3>
-                            <div class="card-caption">下面展示当前系统已公开的模型，你可以先买套餐，再为对应分组创建 Key。</div>
+                            <h3>模型价格预览</h3>
+                            <div class="card-caption">下面展示当前系统模型与价格。这里不再按分组展示，管理员仍可继续新增模型。</div>
                         </div>
                         <span id="models-market-meta" class="card-caption">0 个模型可用</span>
-                    </div>
-
-                    <div class="model-filter-row">
-                        <div id="model-provider-filters" class="filter-pills"></div>
                     </div>
 
                     <div class="models-market-layout">
@@ -870,16 +876,12 @@ sandbox = "elevated"</pre>
                             <button id="import-upstream-models-button" type="button" class="primary-button">批量导入</button>
                         </div>
                     </div>
-                    <p class="import-helper">先选择套餐，再选择渠道并读取上游模型，勾选允许该套餐使用的模型后批量导入。</p>
-                    <div class="form-grid four-col">
+                    <p class="import-helper">先选择套餐，再选择渠道并读取上游模型，勾选允许该套餐使用的模型后批量导入。导入时会自动使用该模型已定义好的价格。</p>
+                    <div class="form-grid three-col">
                         <label><span>套餐分组</span><select id="import-group-select"></select></label>
                         <label><span>渠道</span><select id="import-provider-select"></select></label>
-                        <label><span>输入价格</span><input id="import-prompt-price" type="number" step="0.000001" value="0"></label>
-                        <label><span>缓存读取价格</span><input id="import-cached-prompt-price" type="number" step="0.000001" value="0"></label>
-                        <label><span>输出价格</span><input id="import-completion-price" type="number" step="0.000001" value="0"></label>
                     </div>
-                    <div class="form-grid three-col compact-gap">
-                        <label><span>倍率</span><input id="import-multiplier" type="number" step="0.0001" value="1"></label>
+                    <div class="form-grid two-col compact-gap">
                         <label><span>是否公开</span><select id="import-is-public"><option value="true">公开</option><option value="false">不公开</option></select></label>
                     </div>
                     <div id="upstream-models-box" class="upstream-models-box"></div>
@@ -890,7 +892,7 @@ sandbox = "elevated"</pre>
                     <div class="section-head">
                         <div>
                             <h3 id="model-form-title">手动创建模型</h3>
-                            <div id="model-form-caption" class="card-caption">普通用户不能创建模型，只能使用管理员已创建的公开模型。</div>
+                            <div id="model-form-caption" class="card-caption">管理员可以在这里新增模型并统一维护价格，普通用户只能使用已公开模型。</div>
                         </div>
                     </div>
 
@@ -962,20 +964,22 @@ sandbox = "elevated"</pre>
                     <div class="section-head">
                         <div>
                             <h3>套餐购买记录</h3>
-                            <div class="card-caption">显示最近购买的套餐、价格和有效期。</div>
+                            <div class="card-caption">普通用户只显示自己的购买记录；管理员会在这里看到全站购买记录，并明确显示用户 ID、用户名和套餐归属。</div>
                         </div>
                     </div>
                     <div class="table-wrap">
                         <table>
                             <thead>
                             <tr>
-                                <th>用户</th>
+                                <th>用户 ID</th>
+                                <th>用户名</th>
                                 <th>套餐</th>
                                 <th>价格</th>
                                 <th>开始时间</th>
                                 <th>到期时间</th>
-                                <th>状态</th>
+                                <th>使用状态</th>
                                 <th>创建时间</th>
+                                <th>操作</th>
                             </tr>
                             </thead>
                             <tbody id="package-purchases-table"></tbody>
@@ -1036,6 +1040,11 @@ sandbox = "elevated"</pre>
                             </thead>
                             <tbody id="logs-table"></tbody>
                         </table>
+                    </div>
+                    <div class="table-pagination">
+                        <button id="logs-prev-page-button" class="secondary-button" type="button">上一页</button>
+                        <span id="logs-pagination-meta" class="card-caption">第 1 页</span>
+                        <button id="logs-next-page-button" class="secondary-button" type="button">下一页</button>
                     </div>
                 </div>
             </div>

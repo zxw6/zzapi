@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.zxw.persistence.mapper.UserQueryMapper">
+
+    <sql id="UserListColumns">
+        select u.id,
+               u.username,
+               u.nickname,
+               u.role_code as roleCode,
+               u.status,
+               u.email,
+               u.phone,
+               u.last_login_at as lastLoginAt,
+               u.created_at as createdAt,
+               coalesce(w.balance, 0) as balance
+        from users u
+        left join wallets w on w.user_id = u.id
+    </sql>
+
+    <select id="selectUsers" resultType="com.zxw.persistence.model.UserListView">
+        <include refid="UserListColumns"/>
+        where u.deleted = 0
+        order by u.id desc
+    </select>
+
+    <select id="selectUserById" resultType="com.zxw.persistence.model.UserListView">
+        <include refid="UserListColumns"/>
+        where u.deleted = 0 and u.id = #{userId}
+        limit 1
+    </select>
+
+</mapper>

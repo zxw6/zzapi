@@ -3,7 +3,7 @@ package com.zxw.modules.apikey.service;
 import com.zxw.common.exception.BusinessException;
 import com.zxw.common.security.PasswordService;
 import com.zxw.modules.access.service.UserModelAccessService;
-import org.springframework.jdbc.core.JdbcTemplate;
+import com.zxw.persistence.mapper.ApiKeyMapper;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
@@ -11,76 +11,85 @@ import java.time.LocalDateTime;
 import java.util.List;
 
 @Service
+/**
+ * API Key 鉴权服务。
+ * 负责根据 Bearer Token 识别调用方身份，并更新最后使用时间。
+ */
 public class ApiKeyAuthService {
 
-    private final JdbcTemplate jdbcTemplate;
+    private final ApiKeyMapper apiKeyMapper;
     private final PasswordService passwordService;
     private final UserModelAccessService userModelAccessService;
 
-    public ApiKeyAuthService(JdbcTemplate jdbcTemplate,
+    public ApiKeyAuthService(ApiKeyMapper apiKeyMapper,
                              PasswordService passwordService,
                              UserModelAccessService userModelAccessService) {
-        this.jdbcTemplate = jdbcTemplate;
+        this.apiKeyMapper = apiKeyMapper;
         this.passwordService = passwordService;
         this.userModelAccessService = userModelAccessService;
     }
 
+    /**
+     * 校验 Bearer Token 并解析成已认证的 API Key 信息。
+     */
     public AuthenticatedApiKey authenticate(String bearerToken) {
+        // 保证套餐限制相关默认数据已初始化
         userModelAccessService.initializeDefaults();
 
+        // 先做最基础的 Bearer Token 格式校验
         if (bearerToken == null || bearerToken.isBlank() || bearerToken.length() < AdminApiKeyService.ACCESS_KEY_PREFIX_LENGTH) {
-            throw new BusinessException(401, "API Key 无效");
+            throw new BusinessException(401, "Invalid API key");
         }
+
+        // 通过访问前缀快速缩小候选集合，再逐个比对哈希
         String accessKey = bearerToken.substring(0, AdminApiKeyService.ACCESS_KEY_PREFIX_LENGTH);
-        List<AuthenticatedApiKey> items = jdbcTemplate.query("""
-                select k.id, k.user_id, k.secret_hash, k.status, k.total_quota, k.used_quota, k.expires_at,
-                       k.user_package_id, p.package_name,
-                       k.model_group_id, g.group_code, g.group_name,
-                       u.username, u.role_code, u.package_restriction_enabled,
-                       coalesce(w.balance, 0) as balance
-                from api_keys k
-                join users u on u.id = k.user_id and u.deleted = 0
-                left join wallets w on w.user_id = u.id
-                left join user_model_packages p on p.id = k.user_package_id
-                left join model_groups g on g.id = k.model_group_id
-                where k.access_key = ? and k.deleted = 0
-                """, (rs, rowNum) -> new AuthenticatedApiKey(
-                rs.getLong("id"),
-                rs.getLong("user_id"),
-                rs.getString("username"),
-                rs.getString("role_code"),
-                rs.getString("secret_hash"),
-                rs.getString("status"),
-                rs.getObject("user_package_id") == null ? null : rs.getLong("user_package_id"),
-                rs.getString("package_name"),
-                rs.getObject("model_group_id") == null ? null : rs.getLong("model_group_id"),
-                rs.getString("group_code"),
-                rs.getString("group_name"),
-                rs.getBigDecimal("total_quota"),
-                rs.getBigDecimal("used_quota"),
-                rs.getTimestamp("expires_at") == null ? null : rs.getTimestamp("expires_at").toLocalDateTime(),
-                rs.getBigDecimal("balance"),
-                rs.getInt("package_restriction_enabled") == 1
-        ), accessKey);
+        List<AuthenticatedApiKey> items = apiKeyMapper.selectAuthenticatedByAccessKey(accessKey).stream()
+                .map(item -> new AuthenticatedApiKey(
+                        item.getId(),
+                        item.getUserId(),
+                        item.getUsername(),
+                        item.getRoleCode(),
+                        item.getSecretHash(),
+                        item.getStatus(),
+                        item.getUserPackageId(),
+                        item.getPackageName(),
+                        item.getModelGroupId(),
+                        item.getGroupCode(),
+                        item.getGroupName(),
+                        item.getTotalQuota(),
+                        item.getUsedQuota(),
+                        item.getExpiresAt(),
+                        item.getBalance(),
+                        item.getPackageRestrictionEnabled() != null && item.getPackageRestrictionEnabled() == 1
+                ))
+                .toList();
 
         for (AuthenticatedApiKey item : items) {
             if (passwordService.matches(bearerToken, item.secretHash())) {
+                // 命中后继续校验状态与过期时间
                 if (!"ACTIVE".equals(item.status())) {
-                    throw new BusinessException(403, "API Key 已被禁用");
+                    throw new BusinessException(403, "API key is disabled");
                 }
                 if (item.expiresAt() != null && item.expiresAt().isBefore(LocalDateTime.now())) {
-                    throw new BusinessException(403, "API Key 已过期");
+                    throw new BusinessException(403, "API key has expired");
                 }
                 return item;
             }
         }
-        throw new BusinessException(401, "API Key 无效");
+        throw new BusinessException(401, "Invalid API key");
     }
 
+    /**
+     * 更新 API Key 最近使用时间。
+     */
     public void markUsed(Long apiKeyId) {
-        jdbcTemplate.update("update api_keys set last_used_at = now(), updated_at = now() where id = ?", apiKeyId);
+        // 更新 API Key 最近一次使用时间
+        apiKeyMapper.updateLastUsedAt(apiKeyId, LocalDateTime.now());
     }
 
+    /**
+     * 已认证 API Key 视图对象。
+     */
     public record AuthenticatedApiKey(
             Long id,
             Long userId,

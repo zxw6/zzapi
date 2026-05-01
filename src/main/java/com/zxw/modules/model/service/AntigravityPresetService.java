@@ -1,7 +1,14 @@
 package com.zxw.modules.model.service;
 
-import com.zxw.modules.access.service.UserModelAccessService;
-import org.springframework.jdbc.core.JdbcTemplate;
+import com.zxw.persistence.entity.ModelEntity;
+import com.zxw.persistence.entity.ModelGroupEntity;
+import com.zxw.persistence.entity.ModelRouteEntity;
+import com.zxw.persistence.mapper.AntigravityQueryMapper;
+import com.zxw.persistence.mapper.ModelGroupMapper;
+import com.zxw.persistence.mapper.ModelGroupModelMapper;
+import com.zxw.persistence.mapper.ModelMapper;
+import com.zxw.persistence.mapper.ModelRouteMapper;
+import com.zxw.persistence.model.ExistingRouteModelView;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -10,6 +17,10 @@ import java.util.List;
 import java.util.Locale;
 
 @Service
+/**
+ * Antigravity 预置模型同步服务。
+ * 当检测到 Antigravity 供应商后，自动补齐预置套餐分组、模型与路由关系。
+ */
 public class AntigravityPresetService {
 
     private static final String GROUP_CODE = "antigravity";
@@ -33,32 +44,37 @@ public class AntigravityPresetService {
             new AntigravityModelPreset("antigravity-gemini-3-1-flash-image", "gemini-3.1-flash-image", "gemini-3.1-flash-image", "IMAGE")
     );
 
-    private final JdbcTemplate jdbcTemplate;
-    private final UserModelAccessService userModelAccessService;
+    private final AntigravityQueryMapper antigravityQueryMapper;
+    private final ModelGroupMapper modelGroupMapper;
+    private final ModelMapper modelMapper;
+    private final ModelRouteMapper modelRouteMapper;
+    private final ModelGroupModelMapper modelGroupModelMapper;
 
-    public AntigravityPresetService(JdbcTemplate jdbcTemplate,
-                                    UserModelAccessService userModelAccessService) {
-        this.jdbcTemplate = jdbcTemplate;
-        this.userModelAccessService = userModelAccessService;
+    public AntigravityPresetService(AntigravityQueryMapper antigravityQueryMapper,
+                                    ModelGroupMapper modelGroupMapper,
+                                    ModelMapper modelMapper,
+                                    ModelRouteMapper modelRouteMapper,
+                                    ModelGroupModelMapper modelGroupModelMapper) {
+        this.antigravityQueryMapper = antigravityQueryMapper;
+        this.modelGroupMapper = modelGroupMapper;
+        this.modelMapper = modelMapper;
+        this.modelRouteMapper = modelRouteMapper;
+        this.modelGroupModelMapper = modelGroupModelMapper;
     }
 
+    /**
+     * 为已存在的 Antigravity 供应商批量同步预置模型。
+     */
     @Transactional
     public void syncForExistingProviders() {
-        List<Long> providerIds = jdbcTemplate.query("""
-                select id
-                from providers
-                where deleted = 0
-                  and (
-                        lower(coalesce(provider_code, '')) like '%antigravity%'
-                     or lower(coalesce(provider_name, '')) like '%antigravity%'
-                  )
-                order by id asc
-                """, (rs, rowNum) -> rs.getLong("id"));
-        for (Long providerId : providerIds) {
+        for (Long providerId : antigravityQueryMapper.selectAntigravityProviderIds()) {
             syncForProvider(providerId);
         }
     }
 
+    /**
+     * 为指定供应商同步 Antigravity 预置模型和路由。
+     */
     @Transactional
     public void syncForProvider(Long providerId) {
         if (providerId == null || !isAntigravityProvider(providerId)) {
@@ -73,144 +89,107 @@ public class AntigravityPresetService {
             }
 
             if (modelId == null) {
-                jdbcTemplate.update("""
-                        insert into models (
-                            model_code, model_name, model_type, billing_type,
-                            prompt_price, completion_price, request_price, image_price,
-                            multiplier, is_public, status, remark
-                        )
-                        values (?, ?, ?, 'REQUEST', 0, 0, ?, 0, 1, 1, 'ACTIVE', ?)
-                        """,
-                        preset.modelCode(),
-                        preset.modelName(),
-                        preset.modelType(),
-                        REQUEST_PRICE,
-                        "Antigravity preset model"
-                );
-                modelId = findModelIdByCode(preset.modelCode());
+                // 模型不存在时直接创建一套标准预置配置。
+                ModelEntity model = new ModelEntity();
+                model.setModelCode(preset.modelCode());
+                model.setModelName(preset.modelName());
+                model.setModelType(preset.modelType());
+                model.setBillingType("REQUEST");
+                model.setPromptPrice(BigDecimal.ZERO);
+                model.setCachedPromptPrice(BigDecimal.ZERO);
+                model.setCompletionPrice(BigDecimal.ZERO);
+                model.setRequestPrice(REQUEST_PRICE);
+                model.setImagePrice(BigDecimal.ZERO);
+                model.setMultiplier(BigDecimal.ONE);
+                model.setIsPublic(1);
+                model.setStatus("ACTIVE");
+                model.setRemark("Antigravity preset model");
+                modelMapper.insert(model);
+                modelId = model.getId();
             } else {
-                jdbcTemplate.update("""
-                        update models
-                        set model_code = ?, model_name = ?, model_type = ?, billing_type = 'REQUEST',
-                            prompt_price = 0, completion_price = 0, request_price = ?, image_price = 0,
-                            multiplier = 1, is_public = 1, status = 'ACTIVE',
-                            remark = ?, updated_at = now()
-                        where id = ?
-                        """,
-                        preset.modelCode(),
-                        preset.modelName(),
-                        preset.modelType(),
-                        REQUEST_PRICE,
-                        "Antigravity preset model",
-                        modelId
-                );
+                // 模型已存在时，按预置规则覆盖成标准配置。
+                ModelEntity updateModel = new ModelEntity();
+                updateModel.setModelCode(preset.modelCode());
+                updateModel.setModelName(preset.modelName());
+                updateModel.setModelType(preset.modelType());
+                updateModel.setBillingType("REQUEST");
+                updateModel.setPromptPrice(BigDecimal.ZERO);
+                updateModel.setCachedPromptPrice(BigDecimal.ZERO);
+                updateModel.setCompletionPrice(BigDecimal.ZERO);
+                updateModel.setRequestPrice(REQUEST_PRICE);
+                updateModel.setImagePrice(BigDecimal.ZERO);
+                updateModel.setMultiplier(BigDecimal.ONE);
+                updateModel.setIsPublic(1);
+                updateModel.setStatus("ACTIVE");
+                updateModel.setRemark("Antigravity preset model");
+                modelMapper.updateByIdValue(modelId, updateModel);
             }
 
-            jdbcTemplate.update("""
-                    delete from model_routes
-                    where model_id = ? and provider_id = ?
-                    """, modelId, providerId);
+            modelRouteMapper.deleteByModelIdAndProviderId(modelId, providerId);
 
-            jdbcTemplate.update("""
-                    insert into model_routes (model_id, provider_id, provider_token_id, upstream_model, route_type, priority_no, status)
-                    values (?, ?, null, ?, 'PRIMARY', 100, 'ACTIVE')
-                    """,
-                    modelId,
-                    providerId,
-                    preset.upstreamModel()
-            );
+            // 每次同步都会重建当前供应商的主路由，保证上游模型映射最新。
+            ModelRouteEntity route = new ModelRouteEntity();
+            route.setModelId(modelId);
+            route.setProviderId(providerId);
+            route.setProviderTokenId(null);
+            route.setUpstreamModel(preset.upstreamModel());
+            route.setRouteType("PRIMARY");
+            route.setPriorityNo(100);
+            route.setStatus("ACTIVE");
+            modelRouteMapper.insert(route);
 
-            jdbcTemplate.update("""
-                    insert ignore into model_group_models (group_id, model_id)
-                    values (?, ?)
-                    """, groupId, modelId);
+            modelGroupModelMapper.insertIgnoreBinding(groupId, modelId);
         }
     }
 
+    /**
+     * 确保 Antigravity 套餐分组存在且配置正确。
+     */
     private Long ensureAntigravityGroup() {
-        Long groupId = jdbcTemplate.query("""
-                select id
-                from model_groups
-                where group_code = ?
-                limit 1
-                """, rs -> rs.next() ? rs.getLong("id") : null, GROUP_CODE);
-        if (groupId == null) {
-            jdbcTemplate.update("""
-                    insert into model_groups (
-                        group_code, group_name, sale_price, package_days,
-                        daily_quota, weekly_quota, monthly_quota, status, remark
-                    )
-                    values (?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?)
-                    """,
-                    GROUP_CODE,
-                    GROUP_NAME,
-                    GROUP_SALE_PRICE,
-                    PACKAGE_DAYS,
-                    DAILY_QUOTA,
-                    WEEKLY_QUOTA,
-                    MONTHLY_QUOTA,
-                    "Antigravity preset group"
-            );
-            groupId = jdbcTemplate.query("""
-                    select id
-                    from model_groups
-                    where group_code = ?
-                    limit 1
-                    """, rs -> rs.next() ? rs.getLong("id") : null, GROUP_CODE);
-        } else {
-            jdbcTemplate.update("""
-                    update model_groups
-                    set group_name = ?, sale_price = ?, package_days = ?,
-                        daily_quota = ?, weekly_quota = ?, monthly_quota = ?,
-                        status = 'ACTIVE', remark = ?, updated_at = now()
-                    where id = ?
-                    """,
-                    GROUP_NAME,
-                    GROUP_SALE_PRICE,
-                    PACKAGE_DAYS,
-                    DAILY_QUOTA,
-                    WEEKLY_QUOTA,
-                    MONTHLY_QUOTA,
-                    "Antigravity preset group",
-                    groupId
-            );
+        ModelGroupEntity group = modelGroupMapper.selectByGroupCode(GROUP_CODE);
+        if (group == null) {
+            group = new ModelGroupEntity();
+            group.setGroupCode(GROUP_CODE);
+            group.setGroupName(GROUP_NAME);
+            group.setSalePrice(GROUP_SALE_PRICE);
+            group.setPackageDays(PACKAGE_DAYS);
+            group.setDailyQuota(DAILY_QUOTA);
+            group.setWeeklyQuota(WEEKLY_QUOTA);
+            group.setMonthlyQuota(MONTHLY_QUOTA);
+            group.setStatus("ACTIVE");
+            group.setRemark("Antigravity preset group");
+            modelGroupMapper.insert(group);
+            return group.getId();
         }
-        return groupId;
+
+        ModelGroupEntity updateGroup = new ModelGroupEntity();
+        updateGroup.setGroupName(GROUP_NAME);
+        updateGroup.setSalePrice(GROUP_SALE_PRICE);
+        updateGroup.setPackageDays(PACKAGE_DAYS);
+        updateGroup.setDailyQuota(DAILY_QUOTA);
+        updateGroup.setWeeklyQuota(WEEKLY_QUOTA);
+        updateGroup.setMonthlyQuota(MONTHLY_QUOTA);
+        updateGroup.setStatus("ACTIVE");
+        updateGroup.setRemark("Antigravity preset group");
+        modelGroupMapper.updateByIdValue(group.getId(), updateGroup);
+        return group.getId();
     }
 
     private boolean isAntigravityProvider(Long providerId) {
-        Integer count = jdbcTemplate.queryForObject("""
-                select count(*)
-                from providers
-                where id = ?
-                  and deleted = 0
-                  and (
-                        lower(coalesce(provider_code, '')) like '%antigravity%'
-                     or lower(coalesce(provider_name, '')) like '%antigravity%'
-                  )
-                """, Integer.class, providerId);
+        Integer count = antigravityQueryMapper.countAntigravityProviders(providerId);
         return count != null && count > 0;
     }
 
     private Long findModelIdByProviderRoute(Long providerId, String upstreamModel) {
-        return jdbcTemplate.query("""
-                select m.id
-                from model_routes r
-                join models m on m.id = r.model_id
-                where r.provider_id = ?
-                  and lower(r.upstream_model) = ?
-                order by m.id asc
-                limit 1
-                """, rs -> rs.next() ? rs.getLong("id") : null, providerId, upstreamModel.toLowerCase(Locale.ROOT));
+        ExistingRouteModelView model = antigravityQueryMapper.selectModelByProviderRoute(
+                providerId,
+                upstreamModel.toLowerCase(Locale.ROOT)
+        );
+        return model == null ? null : model.getModelId();
     }
 
     private Long findModelIdByCode(String modelCode) {
-        return jdbcTemplate.query("""
-                select id
-                from models
-                where model_code = ?
-                limit 1
-                """, rs -> rs.next() ? rs.getLong("id") : null, modelCode);
+        return modelMapper.selectIdByCode(modelCode);
     }
 
     private record AntigravityModelPreset(

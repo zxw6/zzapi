@@ -6,6 +6,8 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.zxw.common.exception.BusinessException;
 import com.zxw.modules.gateway.service.GatewayChatService;
+import io.swagger.annotations.Api;
+import io.swagger.annotations.ApiOperation;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
@@ -20,6 +22,11 @@ import org.springframework.web.bind.annotation.RestController;
 import java.util.Locale;
 
 @RestController
+@Api(tags = "Gemini兼容接口")
+/**
+ * Gemini 协议兼容控制器。
+ * 把 Gemini 风格请求转换为内部 OpenAI 风格协议，再交给统一网关处理。
+ */
 public class GatewayGeminiController {
 
     private final GatewayChatService gatewayChatService;
@@ -31,12 +38,17 @@ public class GatewayGeminiController {
     }
 
     @PostMapping({"/v1beta/models/{model}:generateContent", "/v1/models/{model}:generateContent"})
+    @ApiOperation("Gemini generateContent")
+    /**
+     * 处理 Gemini 非流式生成请求。
+     */
     public ResponseEntity<String> generateContent(@PathVariable String model,
                                                   @RequestHeader(value = "Authorization", required = false) String authorization,
                                                   @RequestHeader(value = "x-goog-api-key", required = false) String xGoogApiKey,
                                                   @RequestParam(value = "key", required = false) String key,
                                                   @RequestBody String body,
                                                   HttpServletRequest request) throws Exception {
+        // 将 Gemini 请求转换为内部 OpenAI 协议后转发
         String resolvedAuthorization = resolveAuthorization(authorization, xGoogApiKey, key);
         String openAiRequest = buildChatCompletionsRequest(model, body, false);
         ResponseEntity<?> response = gatewayChatService.chatCompletions(resolvedAuthorization, openAiRequest, request);
@@ -44,6 +56,10 @@ public class GatewayGeminiController {
     }
 
     @PostMapping({"/v1beta/models/{model}:streamGenerateContent", "/v1/models/{model}:streamGenerateContent"})
+    @ApiOperation("Gemini streamGenerateContent")
+    /**
+     * 处理 Gemini 流式生成请求。
+     */
     public ResponseEntity<String> streamGenerateContent(@PathVariable String model,
                                                         @RequestHeader(value = "Authorization", required = false) String authorization,
                                                         @RequestHeader(value = "x-goog-api-key", required = false) String xGoogApiKey,
@@ -51,6 +67,7 @@ public class GatewayGeminiController {
                                                         @RequestParam(value = "alt", required = false) String alt,
                                                         @RequestBody String body,
                                                         HttpServletRequest request) throws Exception {
+        // 将 Gemini 流式请求转换为内部 SSE 响应
         String resolvedAuthorization = resolveAuthorization(authorization, xGoogApiKey, key);
         String openAiRequest = buildChatCompletionsRequest(model, body, true);
         ResponseEntity<?> response = gatewayChatService.chatCompletions(resolvedAuthorization, openAiRequest, request);
@@ -66,6 +83,9 @@ public class GatewayGeminiController {
                 .body(geminiEventStream);
     }
 
+    /**
+     * 把内部响应转换成 Gemini 普通响应结构。
+     */
     private ResponseEntity<String> convertGenerateContentResponse(ResponseEntity<?> response, String model) throws Exception {
         String body = bodyAsString(response.getBody());
         if (!response.getStatusCode().is2xxSuccessful()) {
@@ -80,6 +100,9 @@ public class GatewayGeminiController {
                 .body(objectMapper.writeValueAsString(payload));
     }
 
+    /**
+     * 构造 Gemini `generateContent` 返回体。
+     */
     private ObjectNode buildGeminiGenerateContentPayload(JsonNode openAi, String model, boolean deltaOnly) {
         ObjectNode payload = objectMapper.createObjectNode();
         ArrayNode candidates = payload.putArray("candidates");
@@ -116,6 +139,9 @@ public class GatewayGeminiController {
         return payload;
     }
 
+    /**
+     * 把 OpenAI 风格 SSE 流转换成 Gemini SSE 流。
+     */
     private String convertChatCompletionsSseToGemini(String eventStream, String model) throws Exception {
         StringBuilder builder = new StringBuilder();
         for (String rawLine : eventStream.split("(?<=\\n)")) {
@@ -143,6 +169,9 @@ public class GatewayGeminiController {
         return builder.toString();
     }
 
+    /**
+     * 把 Gemini 请求体改写为 chat completions 请求体。
+     */
     private String buildChatCompletionsRequest(String model, String body, boolean stream) throws Exception {
         JsonNode gemini = objectMapper.readTree(body);
         ObjectNode openAi = objectMapper.createObjectNode();

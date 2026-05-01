@@ -188,6 +188,25 @@ button {
     display: none !important;
 }
 
+.table-pagination {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 12px;
+    margin-top: 16px;
+    flex-wrap: wrap;
+}
+
+.login-captcha-image {
+    width: 132px;
+    height: 44px;
+    border-radius: 12px;
+    border: 1px solid var(--line-strong);
+    background: var(--surface-strong);
+    object-fit: cover;
+    cursor: pointer;
+}
+
 [readonly] {
     background: #f7f1ea;
     color: var(--text-soft);

@@ -6,108 +6,127 @@ import com.zxw.common.security.AesCryptoService;
 import com.zxw.modules.model.service.AntigravityPresetService;
 import com.zxw.modules.provider.dto.ProviderCreateRequest;
 import com.zxw.modules.provider.dto.ProviderListItemResponse;
-import org.springframework.jdbc.core.JdbcTemplate;
+import com.zxw.persistence.entity.ProviderEntity;
+import com.zxw.persistence.entity.ProviderTokenEntity;
+import com.zxw.persistence.mapper.ProviderMapper;
+import com.zxw.persistence.mapper.ProviderTokenMapper;
+import com.zxw.persistence.model.ProviderListView;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
+import java.time.LocalDateTime;
 import java.util.List;
 
 @Service
+/**
+ * 渠道管理服务。
+ * 负责渠道创建、状态维护以及默认令牌初始化。
+ */
 public class AdminProviderService {
 
-    private final JdbcTemplate jdbcTemplate;
+    private final ProviderMapper providerMapper;
+    private final ProviderTokenMapper providerTokenMapper;
     private final AesCryptoService aesCryptoService;
     private final AntigravityPresetService antigravityPresetService;
 
-    public AdminProviderService(JdbcTemplate jdbcTemplate,
+    public AdminProviderService(ProviderMapper providerMapper,
+                                ProviderTokenMapper providerTokenMapper,
                                 AesCryptoService aesCryptoService,
                                 AntigravityPresetService antigravityPresetService) {
-        this.jdbcTemplate = jdbcTemplate;
+        this.providerMapper = providerMapper;
+        this.providerTokenMapper = providerTokenMapper;
         this.aesCryptoService = aesCryptoService;
         this.antigravityPresetService = antigravityPresetService;
     }
 
+    /**
+     * 查询渠道列表。
+     */
     public List<ProviderListItemResponse> listProviders() {
         AdminContext.requireAdmin();
-        return jdbcTemplate.query("""
-                select p.id, p.provider_code, p.provider_name, p.base_url, p.provider_type,
-                       p.status, p.priority_no, p.timeout_ms, p.created_at,
-                       (select count(*) from provider_tokens t where t.provider_id = p.id and t.deleted = 0) as token_count
-                from providers p
-                where p.deleted = 0
-                order by p.priority_no asc, p.id desc
-                """, (rs, rowNum) -> new ProviderListItemResponse(
-                rs.getLong("id"),
-                rs.getString("provider_code"),
-                rs.getString("provider_name"),
-                rs.getString("base_url"),
-                rs.getString("provider_type"),
-                rs.getString("status"),
-                rs.getInt("priority_no"),
-                rs.getInt("timeout_ms"),
-                rs.getInt("token_count"),
-                rs.getTimestamp("created_at").toLocalDateTime()
-        ));
+        // 查询渠道列表并转换成前端展示结构
+        return providerMapper.selectProviderList().stream()
+                .map(item -> new ProviderListItemResponse(
+                        item.getId(),
+                        item.getProviderCode(),
+                        item.getProviderName(),
+                        item.getBaseUrl(),
+                        item.getProviderType(),
+                        item.getStatus(),
+                        item.getPriorityNo(),
+                        item.getTimeoutMs(),
+                        item.getTokenCount(),
+                        item.getCreatedAt()
+                ))
+                .toList();
     }
 
     @Transactional
+    /**
+     * 创建渠道并按需初始化默认令牌。
+     */
     public void create(ProviderCreateRequest request) {
         AdminContext.requireAdmin();
-        Integer exists = jdbcTemplate.queryForObject("select count(*) from providers where provider_code = ? and deleted = 0",
-                Integer.class, request.providerCode());
-        if (exists != null && exists > 0) {
-            throw new BusinessException("渠道编码已存在");
+        // 渠道编码必须唯一
+        if (providerMapper.existsActiveByCode(request.providerCode())) {
+            throw new BusinessException("Provider code already exists");
         }
 
-        jdbcTemplate.update("""
-                insert into providers (provider_code, provider_name, base_url, provider_type, status, priority_no, timeout_ms, remark)
-                values (?, ?, ?, ?, 'ACTIVE', ?, ?, ?)
-                """,
-                request.providerCode(),
-                request.providerName(),
-                trimEndSlash(request.baseUrl()),
-                blankToDefault(request.providerType(), "OPENAI_COMPATIBLE"),
-                request.priorityNo() == null ? 100 : request.priorityNo(),
-                request.timeoutMs() == null ? 60000 : request.timeoutMs(),
-                request.remark()
-        );
+        // 先创建渠道主记录
+        ProviderEntity provider = new ProviderEntity();
+        provider.setProviderCode(request.providerCode());
+        provider.setProviderName(request.providerName());
+        provider.setBaseUrl(trimEndSlash(request.baseUrl()));
+        provider.setProviderType(blankToDefault(request.providerType(), "OPENAI_COMPATIBLE"));
+        provider.setStatus("ACTIVE");
+        provider.setPriorityNo(request.priorityNo() == null ? 100 : request.priorityNo());
+        provider.setTimeoutMs(request.timeoutMs() == null ? 60000 : request.timeoutMs());
+        provider.setRemark(request.remark());
+        providerMapper.insert(provider);
 
         if (request.tokenValue() != null && !request.tokenValue().isBlank()) {
-            Long providerId = jdbcTemplate.queryForObject("select id from providers where provider_code = ?", Long.class, request.providerCode());
-            jdbcTemplate.update("""
-                    insert into provider_tokens (provider_id, token_name, token_value_encrypted, status, weight_no, rpm_limit, tpm_limit, current_balance)
-                    values (?, ?, ?, 'ACTIVE', ?, ?, ?, 0)
-                    """,
-                    providerId,
-                    blankToDefault(request.tokenName(), request.providerName() + " 默认 Token"),
-                    aesCryptoService.encrypt(request.tokenValue()),
-                    request.weightNo() == null ? 100 : request.weightNo(),
-                    request.rpmLimit() == null ? 0 : request.rpmLimit(),
-                    request.tpmLimit() == null ? 0 : request.tpmLimit()
-            );
+            // 如果传入了默认令牌，则一并创建令牌记录
+            ProviderTokenEntity token = new ProviderTokenEntity();
+            token.setProviderId(provider.getId());
+            token.setTokenName(blankToDefault(request.tokenName(), request.providerName() + " Default Token"));
+            token.setTokenValueEncrypted(aesCryptoService.encrypt(request.tokenValue()));
+            token.setStatus("ACTIVE");
+            token.setWeightNo(request.weightNo() == null ? 100 : request.weightNo());
+            token.setRpmLimit(request.rpmLimit() == null ? 0 : request.rpmLimit());
+            token.setTpmLimit(request.tpmLimit() == null ? 0 : request.tpmLimit());
+            token.setCurrentBalance(BigDecimal.ZERO);
+            providerTokenMapper.insert(token);
         }
 
-        Long providerId = jdbcTemplate.queryForObject("select id from providers where provider_code = ?", Long.class, request.providerCode());
-        antigravityPresetService.syncForProvider(providerId);
+        // Antigravity 渠道创建后需要同步预置模型
+        antigravityPresetService.syncForProvider(provider.getId());
     }
 
+    /**
+     * 更新渠道启用状态。
+     */
     public void updateStatus(Long id, String status) {
         AdminContext.requireAdmin();
-        int updated = jdbcTemplate.update("""
-                update providers
-                set status = ?, updated_at = now()
-                where id = ? and deleted = 0
-                """, status, id);
+        // 更新渠道启用禁用状态
+        int updated = providerMapper.updateStatus(id, status, LocalDateTime.now());
         if (updated == 0) {
-            throw new BusinessException("渠道不存在");
+            throw new BusinessException("Provider not found");
         }
     }
 
+    /**
+     * 空白值回退到默认值。
+     */
     private String blankToDefault(String value, String defaultValue) {
         return value == null || value.isBlank() ? defaultValue : value;
     }
 
+    /**
+     * 去掉地址末尾的斜杠，避免后续路径拼接重复。
+     */
     private String trimEndSlash(String value) {
+        // 统一去掉结尾斜杠，避免地址拼接重复
         if (value == null) {
             return null;
         }

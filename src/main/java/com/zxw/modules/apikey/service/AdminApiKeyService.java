@@ -8,219 +8,186 @@ import com.zxw.modules.access.service.UserModelAccessService;
 import com.zxw.modules.apikey.dto.ApiKeyCreateRequest;
 import com.zxw.modules.apikey.dto.ApiKeyCreateResponse;
 import com.zxw.modules.apikey.dto.ApiKeyListItemResponse;
-import org.springframework.jdbc.core.JdbcTemplate;
+import com.zxw.persistence.entity.ApiKeyEntity;
+import com.zxw.persistence.mapper.ApiKeyMapper;
+import com.zxw.persistence.mapper.ApiKeyQueryMapper;
+import com.zxw.persistence.mapper.UserMapper;
+import com.zxw.persistence.model.ApiKeyListView;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.security.SecureRandom;
-import java.sql.Timestamp;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.HexFormat;
 import java.util.List;
 
 @Service
+/**
+ * API Key 管理服务。
+ * 负责 API Key 的查询、创建、状态维护与删除。
+ */
 public class AdminApiKeyService {
 
     public static final int ACCESS_KEY_PREFIX_LENGTH = 20;
 
-    private final JdbcTemplate jdbcTemplate;
+    private final ApiKeyMapper apiKeyMapper;
+    private final ApiKeyQueryMapper apiKeyQueryMapper;
+    private final UserMapper userMapper;
     private final PasswordService passwordService;
     private final UserModelAccessService userModelAccessService;
     private final SecureRandom secureRandom = new SecureRandom();
 
-    public AdminApiKeyService(JdbcTemplate jdbcTemplate,
+    public AdminApiKeyService(ApiKeyMapper apiKeyMapper,
+                              ApiKeyQueryMapper apiKeyQueryMapper,
+                              UserMapper userMapper,
                               PasswordService passwordService,
                               UserModelAccessService userModelAccessService) {
-        this.jdbcTemplate = jdbcTemplate;
+        this.apiKeyMapper = apiKeyMapper;
+        this.apiKeyQueryMapper = apiKeyQueryMapper;
+        this.userMapper = userMapper;
         this.passwordService = passwordService;
         this.userModelAccessService = userModelAccessService;
     }
 
+    /**
+     * 查询当前可见的 API Key 列表。
+     */
     public List<ApiKeyListItemResponse> listApiKeys() {
+        // 确保套餐默认数据已经就绪
         userModelAccessService.initializeDefaults();
 
+        // 管理员查全部，普通用户只查自己的 API Key
         JwtUser currentUser = AdminContext.require();
-        boolean groupSchemaReady = hasColumn("api_keys", "model_group_id") && hasTable("model_groups");
-        boolean packageSchemaReady = hasColumn("api_keys", "user_package_id") && hasTable("user_model_packages");
-        String groupSelect = groupSchemaReady
-                ? "g.id as model_group_id, g.group_name as model_group_name,"
-                : "null as model_group_id, null as model_group_name,";
-        String groupJoin = groupSchemaReady
-                ? "left join model_groups g on g.id = k.model_group_id"
-                : "";
-        String packageSelect = packageSchemaReady
-                ? "p.id as model_package_id, p.package_name as model_package_name,"
-                : "null as model_package_id, null as model_package_name,";
-        String packageJoin = packageSchemaReady
-                ? "left join user_model_packages p on p.id = k.user_package_id"
-                : "";
-        if (!AdminContext.isAdmin()) {
-            return jdbcTemplate.query("""
-                    select k.id, k.user_id, u.username, k.name, k.access_key, k.status,
-                           %s
-                           %s
-                           k.total_quota, k.used_quota, k.expires_at, k.last_used_at, k.created_at
-                    from api_keys k
-                    join users u on u.id = k.user_id
-                    %s
-                    %s
-                    where k.deleted = 0 and k.user_id = ?
-                    order by k.id desc
-                    """.formatted(packageSelect, groupSelect, packageJoin, groupJoin), (rs, rowNum) -> new ApiKeyListItemResponse(
-                    rs.getLong("id"),
-                    rs.getLong("user_id"),
-                    rs.getString("username"),
-                    rs.getString("name"),
-                    rs.getString("access_key"),
-                    rs.getString("status"),
-                    rs.getObject("model_package_id") == null ? null : rs.getLong("model_package_id"),
-                    rs.getString("model_package_name"),
-                    rs.getObject("model_group_id") == null ? null : rs.getLong("model_group_id"),
-                    rs.getString("model_group_name"),
-                    rs.getBigDecimal("total_quota"),
-                    rs.getBigDecimal("used_quota"),
-                    toLocalDateTime(rs.getTimestamp("expires_at")),
-                    toLocalDateTime(rs.getTimestamp("last_used_at")),
-                    rs.getTimestamp("created_at").toLocalDateTime()
-            ), currentUser.userId());
-        }
+        List<ApiKeyListView> rows = AdminContext.isAdmin()
+                ? apiKeyQueryMapper.listAdmin()
+                : apiKeyQueryMapper.listUser(currentUser.userId());
 
-        return jdbcTemplate.query("""
-                select k.id, k.user_id, u.username, k.name, k.access_key, k.status,
-                       %s
-                       %s
-                       k.total_quota, k.used_quota, k.expires_at, k.last_used_at, k.created_at
-                from api_keys k
-                join users u on u.id = k.user_id
-                %s
-                %s
-                where k.deleted = 0
-                order by k.id desc
-                """.formatted(packageSelect, groupSelect, packageJoin, groupJoin), (rs, rowNum) -> new ApiKeyListItemResponse(
-                rs.getLong("id"),
-                rs.getLong("user_id"),
-                rs.getString("username"),
-                rs.getString("name"),
-                rs.getString("access_key"),
-                rs.getString("status"),
-                rs.getObject("model_package_id") == null ? null : rs.getLong("model_package_id"),
-                rs.getString("model_package_name"),
-                rs.getObject("model_group_id") == null ? null : rs.getLong("model_group_id"),
-                rs.getString("model_group_name"),
-                rs.getBigDecimal("total_quota"),
-                rs.getBigDecimal("used_quota"),
-                toLocalDateTime(rs.getTimestamp("expires_at")),
-                toLocalDateTime(rs.getTimestamp("last_used_at")),
-                rs.getTimestamp("created_at").toLocalDateTime()
-        ));
+        return rows.stream()
+                .map(item -> new ApiKeyListItemResponse(
+                        item.getId(),
+                        item.getUserId(),
+                        item.getUsername(),
+                        item.getName(),
+                        item.getAccessKey(),
+                        item.getStatus(),
+                        item.getModelPackageId(),
+                        item.getModelPackageName(),
+                        item.getModelGroupId(),
+                        item.getModelGroupName(),
+                        defaultBigDecimal(item.getTotalQuota()),
+                        defaultBigDecimal(item.getUsedQuota()),
+                        item.getExpiresAt(),
+                        item.getLastUsedAt(),
+                        item.getCreatedAt()
+                ))
+                .toList();
     }
 
     @Transactional
+    /**
+     * 创建新的 API Key。
+     */
     public ApiKeyCreateResponse create(ApiKeyCreateRequest request) {
+        // 创建前先保证默认套餐配置已完成初始化
         userModelAccessService.initializeDefaults();
 
+        // 无论当前账号是否为管理员，创建出的 API Key 都只能绑定当前登录账号自己的套餐。
         JwtUser currentUser = AdminContext.require();
-        Long targetUserId = AdminContext.isAdmin() ? request.userId() : currentUser.userId();
+        Long targetUserId = currentUser.userId();
 
-        Integer userExists = jdbcTemplate.queryForObject(
-                "select count(*) from users where id = ? and deleted = 0",
-                Integer.class,
-                targetUserId
-        );
-        if (userExists == null || userExists == 0) {
-            throw new BusinessException("用户不存在");
+        if (!userMapper.existsActiveById(targetUserId)) {
+            throw new BusinessException("User not found");
         }
+
+        // 解析本次 API Key 应该绑定的套餐和模型分组
         UserModelAccessService.ApiKeyPackageBinding packageBinding = userModelAccessService.resolveApiKeyPackageBinding(
                 targetUserId,
                 request.modelPackageId(),
                 request.modelGroupId()
         );
 
+        // 生成明文密钥，只保存前缀和哈希值
         String plainTextKey = generatePlainTextKey();
         String accessKey = plainTextKey.substring(0, ACCESS_KEY_PREFIX_LENGTH);
         LocalDateTime expiresAt = parseDateTime(request.expiresAt());
 
-        jdbcTemplate.update("""
-                insert into api_keys (user_id, name, access_key, secret_hash, status, expires_at, user_package_id, model_group_id, total_quota, used_quota, remark)
-                values (?, ?, ?, ?, 'ACTIVE', ?, ?, ?, ?, 0, ?)
-                """,
-                targetUserId,
-                request.name(),
-                accessKey,
-                passwordService.encode(plainTextKey),
-                expiresAt,
-                packageBinding.packageId(),
-                packageBinding.modelGroupId(),
-                BigDecimal.ZERO,
-                request.remark()
-        );
+        // 插入 API Key 主记录
+        ApiKeyEntity entity = new ApiKeyEntity();
+        entity.setUserId(targetUserId);
+        entity.setName(request.name());
+        entity.setAccessKey(accessKey);
+        entity.setSecretHash(passwordService.encode(plainTextKey));
+        entity.setStatus("ACTIVE");
+        entity.setExpiresAt(expiresAt);
+        entity.setUserPackageId(packageBinding.packageId());
+        entity.setModelGroupId(packageBinding.modelGroupId());
+        entity.setTotalQuota(BigDecimal.ZERO);
+        entity.setUsedQuota(BigDecimal.ZERO);
+        entity.setRemark(request.remark());
+        apiKeyMapper.insert(entity);
 
-        Long id = jdbcTemplate.queryForObject("""
-                select id from api_keys
-                where user_id = ? and access_key = ? and deleted = 0
-                order by id desc
-                limit 1
-                """, Long.class, targetUserId, accessKey);
-        return new ApiKeyCreateResponse(id, plainTextKey);
+        return new ApiKeyCreateResponse(entity.getId(), plainTextKey);
     }
 
+    /**
+     * 更新 API Key 状态。
+     */
     public void updateStatus(Long id, String status) {
+        // 普通用户只能操作自己的 API Key
         JwtUser currentUser = AdminContext.require();
-        int updated;
-        if (AdminContext.isAdmin()) {
-            updated = jdbcTemplate.update("""
-                    update api_keys
-                    set status = ?, updated_at = now()
-                    where id = ? and deleted = 0
-                    """, status, id);
-        } else {
-            updated = jdbcTemplate.update("""
-                    update api_keys
-                    set status = ?, updated_at = now()
-                    where id = ? and user_id = ? and deleted = 0
-                    """, status, id, currentUser.userId());
-        }
+        int updated = apiKeyMapper.updateStatus(
+                id,
+                AdminContext.isAdmin() ? null : currentUser.userId(),
+                status,
+                LocalDateTime.now()
+        );
         if (updated == 0) {
-            throw new BusinessException("API Key 不存在");
+            throw new BusinessException("API key not found");
         }
     }
 
+    /**
+     * 逻辑删除 API Key。
+     */
     public void delete(Long id) {
+        // 逻辑删除 API Key，保留历史数据
         JwtUser currentUser = AdminContext.require();
-        int updated;
-        if (AdminContext.isAdmin()) {
-            updated = jdbcTemplate.update("""
-                    update api_keys
-                    set deleted = 1, updated_at = now()
-                    where id = ? and deleted = 0
-                    """, id);
-        } else {
-            updated = jdbcTemplate.update("""
-                    update api_keys
-                    set deleted = 1, updated_at = now()
-                    where id = ? and user_id = ? and deleted = 0
-                    """, id, currentUser.userId());
-        }
+        int updated = apiKeyMapper.softDelete(
+                id,
+                AdminContext.isAdmin() ? null : currentUser.userId(),
+                LocalDateTime.now()
+        );
         if (updated == 0) {
-            throw new BusinessException("API Key ");
+            throw new BusinessException("API key not found");
         }
     }
 
+    /**
+     * 对展示用的 Key 做脱敏处理。
+     */
     public String maskKey(String accessKey) {
+        // 对外展示时仅保留前后部分字符
         if (accessKey == null || accessKey.length() <= 8) {
             return accessKey;
         }
         return accessKey.substring(0, 6) + "******" + accessKey.substring(accessKey.length() - 4);
     }
 
+    /**
+     * 生成明文 API Key。
+     */
     private String generatePlainTextKey() {
+        // 使用随机字节生成不可预测的密钥
         byte[] bytes = new byte[24];
         secureRandom.nextBytes(bytes);
         return "sk-live-" + HexFormat.of().formatHex(bytes);
     }
 
+    /**
+     * 解析过期时间字符串。
+     */
     private LocalDateTime parseDateTime(String value) {
         if (value == null || value.isBlank()) {
             return null;
@@ -228,28 +195,11 @@ public class AdminApiKeyService {
         return LocalDateTime.parse(value, DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
     }
 
-    private LocalDateTime toLocalDateTime(Timestamp timestamp) {
-        return timestamp == null ? null : timestamp.toLocalDateTime();
+    /**
+     * 空金额兜底成 0。
+     */
+    private BigDecimal defaultBigDecimal(BigDecimal value) {
+        return value == null ? BigDecimal.ZERO : value;
     }
 
-    private boolean hasTable(String tableName) {
-        Integer count = jdbcTemplate.queryForObject("""
-                select count(*)
-                from information_schema.tables
-                where table_schema = database()
-                  and table_name = ?
-                """, Integer.class, tableName);
-        return count != null && count > 0;
-    }
-
-    private boolean hasColumn(String tableName, String columnName) {
-        Integer count = jdbcTemplate.queryForObject("""
-                select count(*)
-                from information_schema.columns
-                where table_schema = database()
-                  and table_name = ?
-                  and column_name = ?
-                """, Integer.class, tableName, columnName);
-        return count != null && count > 0;
-    }
 }

@@ -1,0 +1,100 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.zxw.persistence.mapper.DashboardQueryMapper">
+
+    <select id="selectUserOverview" resultType="com.zxw.persistence.model.DashboardOverviewView">
+        select
+            1 as userCount,
+            (select count(*) from api_keys where deleted = 0 and user_id = #{userId}) as apiKeyCount,
+            0 as providerCount,
+            (select count(*) from models where deleted = 0 and status = 'ACTIVE' and is_public = 1) as modelCount,
+            (select count(*) from request_logs where request_date = curdate() and user_id = #{userId}) as requestCountToday,
+            coalesce((select sum(total_tokens) from request_logs where request_date = curdate() and user_id = #{userId}), 0) as totalTokensToday,
+            coalesce((select sum(total_tokens) from request_logs where user_id = #{userId} and request_date &gt;= curdate() - interval 6 day), 0) as totalTokens7d,
+            coalesce((select sum(case when direction = 'IN' then amount else 0 end)
+                      from transactions
+                      where transaction_date = curdate() and user_id = #{userId}), 0) as rechargeAmountToday,
+            coalesce((select sum(user_amount)
+                      from request_logs
+                      where request_date = curdate() and user_id = #{userId}), 0) as consumeAmountToday,
+            coalesce((select balance from wallets where user_id = #{userId}), 0) as walletBalanceTotal
+    </select>
+
+    <select id="selectAdminOverview" resultType="com.zxw.persistence.model.DashboardOverviewView">
+        select
+            (select count(*) from users) as userCount,
+            (select count(*) from api_keys where deleted = 0) as apiKeyCount,
+            (select count(*) from providers where deleted = 0) as providerCount,
+            (select count(*) from models where deleted = 0) as modelCount,
+            (select count(*) from request_logs where request_date = curdate()) as requestCountToday,
+            coalesce((select sum(total_tokens) from request_logs where request_date = curdate()), 0) as totalTokensToday,
+            coalesce((select sum(total_tokens) from request_logs where request_date &gt;= curdate() - interval 6 day), 0) as totalTokens7d,
+            coalesce((select sum(case when direction = 'IN' then amount else 0 end)
+                      from transactions
+                      where transaction_date = curdate()), 0) as rechargeAmountToday,
+            coalesce((select sum(user_amount)
+                      from request_logs
+                      where request_date = curdate()), 0) as consumeAmountToday,
+            coalesce((select sum(balance) from wallets), 0) as walletBalanceTotal
+    </select>
+
+    <select id="selectUserTrend" resultType="com.zxw.persistence.model.DashboardTrendView">
+        select request_date as statDate,
+               count(*) as requestCount,
+               sum(case when success = 1 then 1 else 0 end) as successCount,
+               coalesce(sum(total_tokens), 0) as totalTokens,
+               coalesce(sum(user_amount), 0) as userAmount,
+               coalesce(sum(cost_amount), 0) as costAmount
+        from request_logs
+        where user_id = #{userId} and request_date &gt;= curdate() - interval #{daysBack} day
+        group by request_date
+        order by request_date asc
+    </select>
+
+    <select id="selectAdminTrend" resultType="com.zxw.persistence.model.DashboardTrendView">
+        select request_date as statDate,
+               count(*) as requestCount,
+               sum(case when success = 1 then 1 else 0 end) as successCount,
+               coalesce(sum(total_tokens), 0) as totalTokens,
+               coalesce(sum(user_amount), 0) as userAmount,
+               coalesce(sum(cost_amount), 0) as costAmount
+        from request_logs
+        where request_date &gt;= curdate() - interval #{daysBack} day
+        group by request_date
+        order by request_date asc
+    </select>
+
+    <select id="selectUserModelStats" resultType="com.zxw.persistence.model.DashboardModelStatView">
+        select model_code as modelCode,
+               coalesce(group_concat(distinct upstream_model order by upstream_model separator ', '), '') as upstreamModels,
+               count(*) as requestCount,
+               coalesce(sum(total_tokens), 0) as totalTokens,
+               coalesce(avg(latency_ms), 0) as avgLatencyMs,
+               coalesce(sum(latency_ms), 0) as totalLatencyMs,
+               coalesce(sum(case when success = 1 then 1 else 0 end) * 100.0 / count(*), 0) as successRate,
+               coalesce(sum(user_amount), 0) as userAmount
+        from request_logs
+        where user_id = #{userId}
+          and request_date &gt;= date_format(curdate(), '%Y-%m-01')
+        group by model_code
+        order by requestCount desc, totalTokens desc, model_code asc
+    </select>
+
+    <select id="selectAdminModelStats" resultType="com.zxw.persistence.model.DashboardModelStatView">
+        select model_code as modelCode,
+               coalesce(group_concat(distinct upstream_model order by upstream_model separator ', '), '') as upstreamModels,
+               count(*) as requestCount,
+               coalesce(sum(total_tokens), 0) as totalTokens,
+               coalesce(avg(latency_ms), 0) as avgLatencyMs,
+               coalesce(sum(latency_ms), 0) as totalLatencyMs,
+               coalesce(sum(case when success = 1 then 1 else 0 end) * 100.0 / count(*), 0) as successRate,
+               coalesce(sum(user_amount), 0) as userAmount
+        from request_logs
+        where request_date &gt;= date_format(curdate(), '%Y-%m-01')
+        group by model_code
+        order by requestCount desc, totalTokens desc, model_code asc
+    </select>
+
+</mapper>

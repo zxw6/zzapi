@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.zxw.persistence.mapper.AntigravityQueryMapper">
+
+    <select id="selectAntigravityProviderIds" resultType="java.lang.Long">
+        select id
+        from providers
+        where deleted = 0
+          and (
+                lower(coalesce(provider_code, '')) like '%antigravity%'
+             or lower(coalesce(provider_name, '')) like '%antigravity%'
+          )
+        order by id asc
+    </select>
+
+    <select id="countAntigravityProviders" resultType="java.lang.Integer">
+        select count(*)
+        from providers
+        where id = #{providerId}
+          and deleted = 0
+          and (
+                lower(coalesce(provider_code, '')) like '%antigravity%'
+             or lower(coalesce(provider_name, '')) like '%antigravity%'
+          )
+    </select>
+
+    <select id="selectModelByProviderRoute" resultType="com.zxw.persistence.model.ExistingRouteModelView">
+        select m.id as modelId, m.model_code as modelCode
+        from model_routes r
+        join models m on m.id = r.model_id
+        where r.provider_id = #{providerId}
+          and lower(r.upstream_model) = #{upstreamModel}
+        order by m.id asc
+        limit 1
+    </select>
+
+</mapper>

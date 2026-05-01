@@ -8,138 +8,144 @@ import com.zxw.modules.user.dto.UserCreateRequest;
 import com.zxw.modules.user.dto.UserListItemResponse;
 import com.zxw.modules.user.dto.UserUpdateRequest;
 import com.zxw.modules.user.dto.WalletRechargeRequest;
-import org.springframework.jdbc.core.JdbcTemplate;
+import com.zxw.persistence.entity.TransactionEntity;
+import com.zxw.persistence.entity.UserEntity;
+import com.zxw.persistence.entity.WalletEntity;
+import com.zxw.persistence.mapper.TransactionMapper;
+import com.zxw.persistence.mapper.ApiKeyMapper;
+import com.zxw.persistence.mapper.UserCleanupMapper;
+import com.zxw.persistence.mapper.UserMapper;
+import com.zxw.persistence.mapper.UserQueryMapper;
+import com.zxw.persistence.mapper.WalletMapper;
+import com.zxw.persistence.model.UserListView;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.UUID;
 
 @Service
+/**
+ * 用户管理服务。
+ * 负责用户资料维护、删除以及钱包充值等后台操作。
+ */
 public class AdminUserService {
 
-    private final JdbcTemplate jdbcTemplate;
+    private final UserMapper userMapper;
+    private final UserQueryMapper userQueryMapper;
+    private final WalletMapper walletMapper;
+    private final TransactionMapper transactionMapper;
+    private final ApiKeyMapper apiKeyMapper;
+    private final UserCleanupMapper userCleanupMapper;
     private final PasswordService passwordService;
 
-    public AdminUserService(JdbcTemplate jdbcTemplate, PasswordService passwordService) {
-        this.jdbcTemplate = jdbcTemplate;
+    public AdminUserService(UserMapper userMapper,
+                            UserQueryMapper userQueryMapper,
+                            WalletMapper walletMapper,
+                            TransactionMapper transactionMapper,
+                            ApiKeyMapper apiKeyMapper,
+                            UserCleanupMapper userCleanupMapper,
+                            PasswordService passwordService) {
+        this.userMapper = userMapper;
+        this.userQueryMapper = userQueryMapper;
+        this.walletMapper = walletMapper;
+        this.transactionMapper = transactionMapper;
+        this.apiKeyMapper = apiKeyMapper;
+        this.userCleanupMapper = userCleanupMapper;
         this.passwordService = passwordService;
     }
 
+    /**
+     * 查询用户列表。
+     */
     public List<UserListItemResponse> listUsers() {
+        // 普通用户只能查看自己，管理员可以查看全部用户
         JwtUser currentUser = AdminContext.require();
         if (!AdminContext.isAdmin()) {
             return List.of(getUser(currentUser.userId()));
         }
 
-        return jdbcTemplate.query("""
-                select u.id, u.username, u.nickname, u.role_code, u.status, u.email, u.phone,
-                       u.last_login_at, u.created_at, coalesce(w.balance, 0) as balance
-                from users u
-                left join wallets w on w.user_id = u.id
-                where u.deleted = 0
-                order by u.id desc
-                """, (rs, rowNum) -> new UserListItemResponse(
-                rs.getLong("id"),
-                rs.getString("username"),
-                rs.getString("nickname"),
-                rs.getString("role_code"),
-                rs.getString("status"),
-                rs.getString("email"),
-                rs.getString("phone"),
-                rs.getBigDecimal("balance"),
-                rs.getTimestamp("last_login_at") == null ? null : rs.getTimestamp("last_login_at").toLocalDateTime(),
-                rs.getTimestamp("created_at").toLocalDateTime()
-        ));
+        return userQueryMapper.selectUsers().stream()
+                .map(this::toUserListItemResponse)
+                .toList();
     }
 
+    /**
+     * 查询单个用户详情。
+     */
     public UserListItemResponse getUser(Long userId) {
+        // 非管理员场景下忽略传入 userId，统一查询当前登录用户
         JwtUser currentUser = AdminContext.require();
         Long targetUserId = AdminContext.isAdmin() ? userId : currentUser.userId();
 
-        List<UserListItemResponse> users = jdbcTemplate.query("""
-                select u.id, u.username, u.nickname, u.role_code, u.status, u.email, u.phone,
-                       u.last_login_at, u.created_at, coalesce(w.balance, 0) as balance
-                from users u
-                left join wallets w on w.user_id = u.id
-                where u.deleted = 0 and u.id = ?
-                limit 1
-                """, (rs, rowNum) -> new UserListItemResponse(
-                rs.getLong("id"),
-                rs.getString("username"),
-                rs.getString("nickname"),
-                rs.getString("role_code"),
-                rs.getString("status"),
-                rs.getString("email"),
-                rs.getString("phone"),
-                rs.getBigDecimal("balance"),
-                rs.getTimestamp("last_login_at") == null ? null : rs.getTimestamp("last_login_at").toLocalDateTime(),
-                rs.getTimestamp("created_at").toLocalDateTime()
-        ), targetUserId);
-
-        if (users.isEmpty()) {
+        UserListView user = userQueryMapper.selectUserById(targetUserId);
+        if (user == null) {
             throw new BusinessException("User does not exist");
         }
-        return users.get(0);
+        return toUserListItemResponse(user);
     }
 
     @Transactional
+    /**
+     * 创建新用户并初始化钱包。
+     */
     public void createUser(UserCreateRequest request) {
         AdminContext.requireAdmin();
-        Integer count = jdbcTemplate.queryForObject(
-                "select count(*) from users where username = ? and deleted = 0",
-                Integer.class,
-                request.username()
-        );
-        if (count != null && count > 0) {
+        // 创建前先检查用户名是否重复
+        if (userMapper.existsActiveByUsername(request.username())) {
             throw new BusinessException("Username already exists");
         }
 
+        // 先创建用户主记录
         String roleCode = request.roleCode() == null || request.roleCode().isBlank() ? "USER" : request.roleCode();
-        jdbcTemplate.update("""
-                insert into users (username, password_hash, nickname, email, phone, role_code, status, package_restriction_enabled)
-                values (?, ?, ?, ?, ?, ?, 'ACTIVE', ?)
-                """,
-                request.username(),
-                passwordService.encode(request.password()),
-                blankToNull(request.nickname()),
-                blankToNull(request.email()),
-                blankToNull(request.phone()),
-                roleCode,
-                "ADMIN".equalsIgnoreCase(roleCode) ? 0 : 1
-        );
+        UserEntity user = new UserEntity();
+        user.setUsername(request.username());
+        user.setPasswordHash(passwordService.encode(request.password()));
+        user.setNickname(blankToNull(request.nickname()));
+        user.setEmail(blankToNull(request.email()));
+        user.setPhone(blankToNull(request.phone()));
+        user.setRoleCode(roleCode);
+        user.setStatus("ACTIVE");
+        user.setPackageRestrictionEnabled("ADMIN".equalsIgnoreCase(roleCode) ? 0 : 1);
+        userMapper.insert(user);
 
-        Long userId = jdbcTemplate.queryForObject(
-                "select id from users where username = ? and deleted = 0",
-                Long.class,
-                request.username()
-        );
+        // 再初始化钱包
         BigDecimal initialBalance = request.initialBalance() == null ? BigDecimal.ZERO : request.initialBalance();
-        jdbcTemplate.update("""
-                insert into wallets (user_id, balance, frozen_balance, total_recharge, total_consume)
-                values (?, ?, 0, ?, 0)
-                """, userId, initialBalance, initialBalance);
+        WalletEntity wallet = new WalletEntity();
+        wallet.setUserId(user.getId());
+        wallet.setBalance(initialBalance);
+        wallet.setFrozenBalance(BigDecimal.ZERO);
+        wallet.setTotalRecharge(initialBalance);
+        wallet.setTotalConsume(BigDecimal.ZERO);
+        walletMapper.insert(wallet);
 
         if (initialBalance.compareTo(BigDecimal.ZERO) > 0) {
-            jdbcTemplate.update("""
-                    insert into transactions (user_id, wallet_id, order_no, transaction_type, direction, amount,
-                                              balance_before, balance_after, status, description_text, transaction_date)
-                    select ?, w.id, ?, 'RECHARGE', 'IN', ?, 0, ?, 'SUCCESS', ?, curdate()
-                    from wallets w where w.user_id = ?
-                    """,
-                    userId,
-                    buildOrderNo("R"),
-                    initialBalance,
-                    initialBalance,
-                    "Initial balance on user creation",
-                    userId
-            );
+            // 如果配置了初始余额，则补一条充值流水
+            TransactionEntity transaction = new TransactionEntity();
+            transaction.setUserId(user.getId());
+            transaction.setWalletId(wallet.getId());
+            transaction.setOrderNo(buildOrderNo("R"));
+            transaction.setTransactionType("RECHARGE");
+            transaction.setDirection("IN");
+            transaction.setAmount(initialBalance);
+            transaction.setBalanceBefore(BigDecimal.ZERO);
+            transaction.setBalanceAfter(initialBalance);
+            transaction.setStatus("SUCCESS");
+            transaction.setDescriptionText("Initial balance on user creation");
+            transaction.setTransactionDate(LocalDate.now());
+            transactionMapper.insert(transaction);
         }
     }
 
     @Transactional
+    /**
+     * 更新用户基础资料。
+     */
     public void updateUser(Long userId, UserUpdateRequest request) {
+        // 管理员可以更新任意用户，普通用户只能更新自己
         JwtUser currentUser = AdminContext.require();
         boolean admin = AdminContext.isAdmin();
         Long targetUserId = admin ? userId : currentUser.userId();
@@ -151,17 +157,13 @@ public class AdminUserService {
         String nextEmail = fallbackBlank(request.email(), targetUser.email());
         String nextPhone = fallbackBlank(request.phone(), targetUser.phone());
 
-        if (nextEmail != null && !nextEmail.isBlank()) {
-            Integer emailExists = jdbcTemplate.queryForObject("""
-                    select count(*)
-                    from users
-                    where email = ? and id <> ? and deleted = 0
-                    """, Integer.class, nextEmail, targetUserId);
-            if (emailExists != null && emailExists > 0) {
-                throw new BusinessException("Email is already used by another user");
-            }
+        // 邮箱变更时要检查是否和其他用户冲突
+        if (nextEmail != null && !nextEmail.isBlank()
+                && userMapper.existsActiveByEmailExcludingId(nextEmail, targetUserId)) {
+            throw new BusinessException("Email is already used by another user");
         }
 
+        // 普通用户不允许修改角色和状态
         if (!admin && request.roleCode() != null && !request.roleCode().isBlank()) {
             throw new BusinessException("Normal users cannot change role");
         }
@@ -169,149 +171,144 @@ public class AdminUserService {
             throw new BusinessException("Normal users cannot change status");
         }
 
-        String passwordHash = null;
+        // 按最终计算后的字段更新用户资料
+        UserEntity updateUser = new UserEntity();
+        updateUser.setNickname(blankToNull(nextNickname));
+        updateUser.setEmail(blankToNull(nextEmail));
+        updateUser.setPhone(blankToNull(nextPhone));
+        updateUser.setRoleCode(nextRoleCode);
+        updateUser.setStatus(nextStatus);
+        updateUser.setUpdatedAt(LocalDateTime.now());
         if (request.password() != null && !request.password().isBlank()) {
-            passwordHash = passwordService.encode(request.password());
+            updateUser.setPasswordHash(passwordService.encode(request.password()));
         }
 
-        jdbcTemplate.update("""
-                update users
-                set nickname = ?, email = ?, phone = ?, role_code = ?, status = ?,
-                    password_hash = coalesce(?, password_hash),
-                    updated_at = now()
-                where id = ? and deleted = 0
-                """,
-                blankToNull(nextNickname),
-                blankToNull(nextEmail),
-                blankToNull(nextPhone),
-                nextRoleCode,
-                nextStatus,
-                passwordHash,
-                targetUserId
-        );
+        userMapper.updateActiveUser(targetUserId, updateUser);
     }
 
+    /**
+     * 单独更新用户状态。
+     */
     public void updateStatus(Long userId, String status) {
         AdminContext.requireAdmin();
-        int updated = jdbcTemplate.update("""
-                update users
-                set status = ?, updated_at = now()
-                where id = ? and deleted = 0
-                """, status, userId);
+        // 单独更新用户启用状态
+        int updated = userMapper.updateActiveUserStatus(userId, status, LocalDateTime.now());
         if (updated == 0) {
             throw new BusinessException("User does not exist");
         }
     }
 
     @Transactional
+    /**
+     * 删除用户及其关联数据。
+     */
     public void deleteUser(Long userId) {
         AdminContext.requireAdmin();
+        // 禁止删除当前登录管理员，避免把自己踢掉
         JwtUser currentUser = AdminContext.require();
         if (currentUser.userId().equals(userId)) {
             throw new BusinessException("Cannot delete the current admin user");
         }
 
-        Integer exists = jdbcTemplate.queryForObject(
-                "select count(*) from users where id = ? and deleted = 0",
-                Integer.class,
-                userId
-        );
-        if (exists == null || exists == 0) {
+        if (!userMapper.existsActiveById(userId)) {
             throw new BusinessException("User does not exist");
         }
 
-        jdbcTemplate.update("""
-                delete from agent_tool_logs
-                where session_id in (select id from agent_sessions where user_id = ?)
-                """, userId);
-        jdbcTemplate.update("""
-                delete from agent_messages
-                where session_id in (select id from agent_sessions where user_id = ?)
-                """, userId);
-        jdbcTemplate.update("""
-                delete from agent_sessions
-                where user_id = ?
-                """, userId);
-        jdbcTemplate.update("""
-                delete from request_logs
-                where user_id = ?
-                """, userId);
-        jdbcTemplate.update("""
-                delete from usage_daily
-                where user_id = ?
-                """, userId);
-        jdbcTemplate.update("""
-                delete from transactions
-                where user_id = ?
-                """, userId);
-        jdbcTemplate.update("""
-                delete from user_model_packages
-                where user_id = ?
-                """, userId);
-        jdbcTemplate.update("""
-                delete from wallets
-                where user_id = ?
-                """, userId);
-        jdbcTemplate.update("""
-                delete from api_keys
-                where user_id = ?
-                """, userId);
-        jdbcTemplate.update("""
-                delete from users
-                where id = ?
-                """, userId);
+        // 先清理关联数据，再删除用户主记录
+        userCleanupMapper.deleteAgentToolLogsByUserId(userId);
+        userCleanupMapper.deleteAgentMessagesByUserId(userId);
+        userCleanupMapper.deleteAgentSessionsByUserId(userId);
+        userCleanupMapper.deleteRequestLogsByUserId(userId);
+        userCleanupMapper.deleteUsageDailyByUserId(userId);
+        transactionMapper.deleteByUserId(userId);
+        userCleanupMapper.deleteUserModelPackagesByUserId(userId);
+        walletMapper.deleteByUserId(userId);
+        apiKeyMapper.deleteByUserId(userId);
+        userMapper.deleteById(userId);
     }
 
     @Transactional
+    /**
+     * 给用户钱包充值。
+     */
     public void recharge(WalletRechargeRequest request) {
         AdminContext.requireAdmin();
-        List<BigDecimal> balances = jdbcTemplate.query("""
-                select balance
-                from wallets
-                where user_id = ?
-                """, (rs, rowNum) -> rs.getBigDecimal("balance"), request.userId());
-        if (balances.isEmpty()) {
+        // 查询目标用户钱包并计算充值后的余额
+        WalletEntity wallet = walletMapper.selectByUserId(request.userId());
+        if (wallet == null) {
             throw new BusinessException("Wallet does not exist");
         }
-        BigDecimal balanceBefore = balances.get(0);
+
+        BigDecimal balanceBefore = wallet.getBalance();
         BigDecimal balanceAfter = balanceBefore.add(request.amount());
 
-        jdbcTemplate.update("""
-                update wallets
-                set balance = ?, total_recharge = total_recharge + ?, updated_at = now()
-                where user_id = ?
-                """, balanceAfter, request.amount(), request.userId());
+        // 更新钱包余额与累计充值金额
+        WalletEntity updateWallet = new WalletEntity();
+        updateWallet.setBalance(balanceAfter);
+        updateWallet.setTotalRecharge(wallet.getTotalRecharge().add(request.amount()));
+        updateWallet.setUpdatedAt(LocalDateTime.now());
+        walletMapper.updateByUserId(request.userId(), updateWallet);
 
-        Long walletId = jdbcTemplate.queryForObject("select id from wallets where user_id = ?", Long.class, request.userId());
-        jdbcTemplate.update("""
-                insert into transactions (user_id, wallet_id, order_no, transaction_type, direction, amount,
-                                          balance_before, balance_after, status, description_text, transaction_date)
-                values (?, ?, ?, 'RECHARGE', 'IN', ?, ?, ?, 'SUCCESS', ?, curdate())
-                """,
-                request.userId(),
-                walletId,
-                buildOrderNo("R"),
-                request.amount(),
-                balanceBefore,
-                balanceAfter,
-                request.remark() == null || request.remark().isBlank() ? "Admin recharge" : request.remark()
+        // 追加一条充值流水，方便后续审计
+        TransactionEntity transaction = new TransactionEntity();
+        transaction.setUserId(request.userId());
+        transaction.setWalletId(wallet.getId());
+        transaction.setOrderNo(buildOrderNo("R"));
+        transaction.setTransactionType("RECHARGE");
+        transaction.setDirection("IN");
+        transaction.setAmount(request.amount());
+        transaction.setBalanceBefore(balanceBefore);
+        transaction.setBalanceAfter(balanceAfter);
+        transaction.setStatus("SUCCESS");
+        transaction.setDescriptionText(request.remark() == null || request.remark().isBlank() ? "Admin recharge" : request.remark());
+        transaction.setTransactionDate(LocalDate.now());
+        transactionMapper.insert(transaction);
+    }
+
+    /**
+     * 把查询结果转换成接口返回对象。
+     */
+    private UserListItemResponse toUserListItemResponse(UserListView user) {
+        return new UserListItemResponse(
+                user.getId(),
+                user.getUsername(),
+                user.getNickname(),
+                user.getRoleCode(),
+                user.getStatus(),
+                user.getEmail(),
+                user.getPhone(),
+                user.getBalance(),
+                user.getLastLoginAt(),
+                user.getCreatedAt()
         );
     }
 
+    /**
+     * 生成交易订单号。
+     */
     private String buildOrderNo(String prefix) {
+        // 使用时间戳 + 随机串生成业务订单号
         return prefix + System.currentTimeMillis() + UUID.randomUUID().toString().replace("-", "").substring(0, 8).toUpperCase();
     }
 
+    /**
+     * 空白字符串转成 null。
+     */
     private String blankToNull(String value) {
         return value == null || value.isBlank() ? null : value;
     }
 
+    /**
+     * 当值为空白时回退到默认值。
+     */
     private String defaultIfBlank(String value, String fallback) {
         return value == null || value.isBlank() ? fallback : value;
     }
 
+    /**
+     * 字段未传时保留原值。
+     */
     private String fallbackBlank(String candidate, String fallback) {
         return candidate == null ? fallback : candidate;
     }
 }
-

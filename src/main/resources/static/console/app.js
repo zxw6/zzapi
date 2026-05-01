@@ -1,5 +1,6 @@
-const state = {
+﻿const state = {
     token: localStorage.getItem("zxw-console-token") || "",
+    loginCaptchaId: "",
     me: null,
     overview: null,
     accessSummary: null,
@@ -9,6 +10,14 @@ const state = {
     providers: [],
     models: [],
     logs: [],
+    logsPage: {
+        page: 1,
+        pageSize: 20,
+        total: 0,
+        totalPages: 0,
+        hasPrevious: false,
+        hasNext: false
+    },
     modelStats: [],
     packagePurchaseRecords: [],
     walletTransactions: [],
@@ -28,36 +37,36 @@ let dashboardRefreshTimer = null;
 
 const panelMeta = {
     "overview-panel": {
-        title: "仪表盘",
-        subtitle: "查看账户概览、余额和请求趋势。"
+        title: "浠〃鐩?,
+        subtitle: "鏌ョ湅璐︽埛姒傝銆佷綑棰濆拰璇锋眰瓒嬪娍銆?
     },
     "docs-panel": {
-        title: "使用教程",
-        subtitle: "查看 Codex 的安装、配置、启动方式和常见问题。"
+        title: "浣跨敤鏁欑▼",
+        subtitle: "鏌ョ湅 Codex 鐨勫畨瑁呫€侀厤缃€佸惎鍔ㄦ柟寮忓拰甯歌闂銆?
     },
     "billing-panel": {
-        title: "用量账单",
-        subtitle: "查看用量统计、费用趋势和模型分布。"
+        title: "鐢ㄩ噺璐﹀崟",
+        subtitle: "鏌ョ湅鐢ㄩ噺缁熻銆佽垂鐢ㄨ秼鍔垮拰妯″瀷鍒嗗竷銆?
     },
     "users-panel": {
-        title: "用户管理",
-        subtitle: "查看、编辑和管理用户资料与余额。"
+        title: "鐢ㄦ埛绠＄悊",
+        subtitle: "鏌ョ湅銆佺紪杈戝拰绠＄悊鐢ㄦ埛璧勬枡涓庝綑棰濄€?
     },
     "keys-panel": {
-        title: "API 密钥",
-        subtitle: "创建并管理当前账户的 API 密钥。"
+        title: "API 瀵嗛挜",
+        subtitle: "鍒涘缓骞剁鐞嗗綋鍓嶈处鎴风殑 API 瀵嗛挜銆?
     },
     "providers-panel": {
-        title: "渠道管理",
-        subtitle: "配置 OpenAI、Claude 及兼容上游渠道。"
+        title: "娓犻亾绠＄悊",
+        subtitle: "閰嶇疆 OpenAI銆丆laude 鍙婂吋瀹逛笂娓告笭閬撱€?
     },
     "models-panel": {
-        title: "套餐中心",
-        subtitle: "购买分组套餐，并查看各分组对应的模型能力。"
+        title: "濂楅涓績",
+        subtitle: "璐拱鍒嗙粍濂楅锛屽苟鏌ョ湅鍚勫垎缁勫搴旂殑妯″瀷鑳藉姏銆?
     },
     "logs-panel": {
-        title: "请求日志",
-        subtitle: "查看最近请求、Token 消耗与计费记录。"
+        title: "璇锋眰鏃ュ織",
+        subtitle: "鏌ョ湅鏈€杩戣姹傘€乀oken 娑堣€椾笌璁¤垂璁板綍銆?
     }
 };
 
@@ -65,6 +74,10 @@ const elements = {
     loginPanel: document.getElementById("login-panel"),
     appPanel: document.getElementById("app-panel"),
     loginForm: document.getElementById("login-form"),
+    loginSubmitButton: document.getElementById("login-submit-button"),
+    loginCaptchaImage: document.getElementById("login-captcha-image"),
+    refreshLoginCaptchaButton: document.getElementById("refresh-login-captcha-button"),
+    loginCaptchaHint: document.getElementById("login-captcha-hint"),
     registerModal: document.getElementById("register-modal"),
     openRegisterButton: document.getElementById("open-register-button"),
     closeRegisterButton: document.getElementById("close-register-button"),
@@ -145,10 +158,6 @@ const elements = {
     fetchUpstreamModelsButton: document.getElementById("fetch-upstream-models-button"),
     importGroupSelect: document.getElementById("import-group-select"),
     importProviderSelect: document.getElementById("import-provider-select"),
-    importPromptPrice: document.getElementById("import-prompt-price"),
-    importCachedPromptPrice: document.getElementById("import-cached-prompt-price"),
-    importCompletionPrice: document.getElementById("import-completion-price"),
-    importMultiplier: document.getElementById("import-multiplier"),
     importIsPublic: document.getElementById("import-is-public"),
     toggleAllUpstreamModelsButton: document.getElementById("toggle-all-upstream-models-button"),
     importUpstreamModelsButton: document.getElementById("import-upstream-models-button"),
@@ -163,6 +172,9 @@ const elements = {
     packagePurchasesTable: document.getElementById("package-purchases-table"),
     walletTransactionsTable: document.getElementById("wallet-transactions-table"),
     logsTable: document.getElementById("logs-table"),
+    logsPaginationMeta: document.getElementById("logs-pagination-meta"),
+    logsPrevPageButton: document.getElementById("logs-prev-page-button"),
+    logsNextPageButton: document.getElementById("logs-next-page-button"),
     agentDebugModel: document.getElementById("agent-debug-model"),
     agentDebugWorkspace: document.getElementById("agent-debug-workspace"),
     agentDebugPrompt: document.getElementById("agent-debug-prompt"),
@@ -244,7 +256,7 @@ function hydrateApiKeys(keys) {
         plainTextKey: store[key.accessKey] || ""
     }));
 }/*
-            showToast("API Key 已复制");
+            showToast("API Key 宸插鍒?);
         }
     }));
 }
@@ -256,9 +268,9 @@ function getUsableApiKey(keys) {
         return activeKey.plainTextKey;
     }
     if ((keys || []).some((key) => key.status === "ACTIVE")) {
-        throw new Error("当前浏览器没有可用的完整 API Key。请复制创建时返回的完整密钥，或重新创建一个新的 Key 后再试。");
+        throw new Error("褰撳墠娴忚鍣ㄦ病鏈夊彲鐢ㄧ殑瀹屾暣 API Key銆傝澶嶅埗鍒涘缓鏃惰繑鍥炵殑瀹屾暣瀵嗛挜锛屾垨閲嶆柊鍒涘缓涓€涓柊鐨?Key 鍚庡啀璇曘€?);
     }
-    throw new Error("当前账号还没有可用的 API Key，请先创建一个。");
+    throw new Error("褰撳墠璐﹀彿杩樻病鏈夊彲鐢ㄧ殑 API Key锛岃鍏堝垱寤轰竴涓€?);
 }
 
 function getGatewayBaseUrl() {
@@ -274,10 +286,10 @@ function buildAgentDebugPayload() {
     const workspaceRoot = String(elements.agentDebugWorkspace?.value || "").trim();
     const prompt = String(elements.agentDebugPrompt?.value || "").trim();
     if (!workspaceRoot) {
-        throw new Error("请先填写工作区根目录。");
+        throw new Error("璇峰厛濉啓宸ヤ綔鍖烘牴鐩綍銆?);
     }
     if (!prompt) {
-        throw new Error("请先填写任务指令。");
+        throw new Error("璇峰厛濉啓浠诲姟鎸囦护銆?);
     }
     return {
         model,
@@ -316,7 +328,7 @@ function renderAgentDebugPreview() {
         const payload = buildAgentDebugPayload();
         elements.agentDebugPayload.textContent = JSON.stringify(payload, null, 2);
     } catch (error) {
-        elements.agentDebugPayload.textContent = error instanceof Error ? error.message : "请补全调试参数。";
+        elements.agentDebugPayload.textContent = error instanceof Error ? error.message : "璇疯ˉ鍏ㄨ皟璇曞弬鏁般€?;
     }
 }
 
@@ -324,7 +336,7 @@ async function copyAgentDebugPayload() {
     const payload = buildAgentDebugPayload();
     await navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
     renderAgentDebugPreview();
-    showToast("Payload 已复制");
+    showToast("Payload 宸插鍒?);
 }
 
 async function copyAgentDebugCurl() {
@@ -332,7 +344,7 @@ async function copyAgentDebugCurl() {
     const apiKey = getUsableApiKey(state.keys);
     await navigator.clipboard.writeText(buildAgentDebugCurl(payload, apiKey));
     renderAgentDebugPreview();
-    showToast("Curl 已复制");
+    showToast("Curl 宸插鍒?);
 }
 
 async function sendAgentDebugRequest() {
@@ -340,7 +352,7 @@ async function sendAgentDebugRequest() {
     const apiKey = getUsableApiKey(state.keys);
     const endpoint = `${getGatewayBaseUrl()}/responses`;
     if (elements.agentDebugResponse) {
-        elements.agentDebugResponse.textContent = "请求已发出，正在等待网关响应...";
+        elements.agentDebugResponse.textContent = "璇锋眰宸插彂鍑猴紝姝ｅ湪绛夊緟缃戝叧鍝嶅簲...";
     }
     renderAgentDebugPreview();
 
@@ -363,9 +375,9 @@ async function sendAgentDebugRequest() {
         elements.agentDebugResponse.textContent = formatted || "(empty response)";
     }
     if (!response.ok) {
-        throw new Error(`请求失败: HTTP ${response.status}`);
+        throw new Error(`璇锋眰澶辫触: HTTP ${response.status}`);
     }
-    showToast("服务端 Agent 测试成功");
+    showToast("鏈嶅姟绔?Agent 娴嬭瘯鎴愬姛");
 }
 
 function formatMoney(value) {
@@ -399,7 +411,7 @@ function formatTokenBreakdown(promptTokens, completionTokens, totalTokens) {
     const prompt = formatTokens(promptTokens || 0);
     const completion = formatTokens(completionTokens || 0);
     const total = formatTokens(totalTokens || 0);
-    return `${prompt} / ${completion} · ${total}`;
+    return `${prompt} / ${completion} 路 ${total}`;
 }
 
 function parseServerDate(value) {
@@ -432,12 +444,36 @@ function formatDateTime(value) {
 }
 
 function formatQuotaText(used, quota) {
-    return toNumber(quota) > 0 ? `${formatMoney(used)} / ${formatMoney(quota)}` : `${formatMoney(used)} / 未设置`;
+    return toNumber(quota) > 0 ? `${formatMoney(used)} / ${formatMoney(quota)}` : `${formatMoney(used)} / 鏈缃甡;
 }
 
 function getAccessGroups() {
     const summary = state.accessSummary || {};
     return Array.isArray(summary.groups) ? summary.groups : [];
+}
+
+function getGroupActiveModelCount(groupId) {
+    if (!groupId || !state.models.length) {
+        return 0;
+    }
+    const keys = new Set();
+    state.models.forEach((item) => {
+        if (String(item.groupId) !== String(groupId)) {
+            return;
+        }
+        if (String(item.status || "").toUpperCase() !== "ACTIVE") {
+            return;
+        }
+        keys.add(`${item.groupId}:${item.id}`);
+    });
+    return keys.size;
+}
+
+function resolveGroupModelCount(group) {
+    if (!group) {
+        return 0;
+    }
+    return state.models.length ? getGroupActiveModelCount(group.id) : toNumber(group.modelCount);
 }
 
 function getActiveAccessGroup() {
@@ -469,15 +505,26 @@ function getPurchasedGroups() {
     return getAccessGroups().filter((item) => item.purchased);
 }
 
+function getCurrentUserPackageRecords() {
+    const records = Array.isArray(state.packagePurchaseRecords) ? state.packagePurchaseRecords : [];
+    const currentUserId = state.me?.userId;
+    // 当前用户信息尚未加载完成时，不回退到全量记录，避免把他人的套餐误展示成自己的套餐。
+    if (currentUserId === undefined || currentUserId === null || currentUserId === "") {
+        return [];
+    }
+    return records.filter((item) => String(item.userId) === String(currentUserId));
+}
+
 function getPurchasedPackages() {
     const groups = getAccessGroups();
-    return (state.packagePurchaseRecords || [])
+    return getCurrentUserPackageRecords()
         .map((item) => {
             const group = groups.find((groupItem) => String(groupItem.id) === String(item.groupId)) || {};
+            const fallbackModelCount = item.modelCount ?? group.modelCount ?? 0;
             return {
                 ...group,
                 ...item,
-                modelCount: item.modelCount ?? group.modelCount ?? 0,
+                modelCount: state.models.length ? getGroupActiveModelCount(item.groupId) : fallbackModelCount,
                 packageDays: item.packageDays ?? group.packageDays ?? 30,
                 remark: item.remark ?? group.remark ?? ""
             };
@@ -508,7 +555,7 @@ function isPackageUsable(item) {
 }
 
 function packageAvailabilityLabel(item) {
-    return isPackageUsable(item) ? "可用" : "不可用";
+    return isPackageUsable(item) ? "鍙敤" : "涓嶅彲鐢?;
 }
 
 function getSelectedPurchasedPackage() {
@@ -551,23 +598,25 @@ function getLatestPurchasedPackageByGroup(groupId) {
         .sort((a, b) => toNumber(b.id) - toNumber(a.id))[0] || null;
 }
 
+function getVisiblePackagePurchaseRecords() {
+    // 套餐购买记录表保留“记录视角”：管理员看全站，普通用户只看自己。
+    return isAdmin()
+        ? (Array.isArray(state.packagePurchaseRecords) ? state.packagePurchaseRecords : [])
+        : getCurrentUserPackageRecords();
+}
+
 function buildPurchasedPackageLabel(item) {
     if (!item) {
-        return "未购买套餐";
+        return "鏈喘涔板椁?;
     }
-    return `${item.groupName || item.groupCode || "套餐"} #${item.id}`;
+    return `${item.groupName || item.groupCode || "濂楅"} #${item.id}`;
 }
 
 function getModelRowKey(model) {
-    return `${model?.bindingId || "model"}:${model?.id || ""}:${model?.groupId || ""}`;
+    return `${model?.id || ""}`;
 }
 
 function getModelPreviewGroup() {
-    const filter = String(state.modelProviderFilter || "");
-    if (filter.startsWith("GROUP:")) {
-        const groupId = filter.slice("GROUP:".length);
-        return getAccessGroups().find((item) => String(item.id) === String(groupId)) || null;
-    }
     return null;
 }
 
@@ -579,11 +628,11 @@ function populatePackageGroupSelects() {
     const groups = getManageableGroups();
     const options = groups.length
         ? groups.map((group) => `<option value="${escapeHtml(group.id)}">${escapeHtml(group.groupName)} (${escapeHtml(group.groupCode)})</option>`).join("")
-        : '<option value="">暂无套餐</option>';
+        : '<option value="">鏆傛棤濂楅</option>';
 
     if (elements.importGroupSelect) {
         elements.importGroupSelect.innerHTML = groups.length
-            ? `<option value="">请选择套餐</option>${options}`
+            ? `<option value="">璇烽€夋嫨濂楅</option>${options}`
             : options;
         if (state.selectedPackageGroupId && groups.some((item) => String(item.id) === String(state.selectedPackageGroupId))) {
             elements.importGroupSelect.value = String(state.selectedPackageGroupId);
@@ -593,7 +642,7 @@ function populatePackageGroupSelects() {
     const modelGroupSelect = elements.modelForm?.elements?.groupId;
     if (modelGroupSelect) {
         modelGroupSelect.innerHTML = groups.length
-            ? `<option value="">请选择套餐</option>${options}`
+            ? `<option value="">璇烽€夋嫨濂楅</option>${options}`
             : options;
         if (!state.editingModelId && state.selectedPackageGroupId && groups.some((item) => String(item.id) === String(state.selectedPackageGroupId))) {
             modelGroupSelect.value = String(state.selectedPackageGroupId);
@@ -632,19 +681,19 @@ function percentage(part, total) {
 }
 
 function roleLabel(roleCode) {
-    return String(roleCode || "").toUpperCase() === "ADMIN" ? "管理员" : "普通用户";
+    return String(roleCode || "").toUpperCase() === "ADMIN" ? "绠＄悊鍛? : "鏅€氱敤鎴?;
 }
 
 function statusLabel(status) {
     const normalized = String(status || "").toUpperCase();
     if (normalized === "ACTIVE") {
-        return "启用";
+        return "鍚敤";
     }
     if (normalized === "DISABLED") {
-        return "禁用";
+        return "绂佺敤";
     }
     if (normalized === "SUCCESS") {
-        return "成功";
+        return "鎴愬姛";
     }
     return normalized || "-";
 }
@@ -658,36 +707,36 @@ function statusChip(status) {
 function accessStatusBadge(status) {
     const normalized = String(status || "").toUpperCase();
     if (normalized === "ACTIVE") {
-        return '<span class="status-chip active">使用中</span>';
+        return '<span class="status-chip active">浣跨敤涓?/span>';
     }
     if (normalized === "EXPIRED") {
-        return '<span class="status-chip disabled">已过期</span>';
+        return '<span class="status-chip disabled">宸茶繃鏈?/span>';
     }
     if (normalized === "NOT_PURCHASED") {
-        return '<span class="soft-badge">未购买</span>';
+        return '<span class="soft-badge">鏈喘涔?/span>';
     }
-    return '<span class="soft-badge">待处理</span>';
+    return '<span class="soft-badge">寰呭鐞?/span>';
 }
 
 async function copyApiKey(id) {
     const key = state.keys.find((item) => String(item.id) === String(id));
     if (!key) {
-        throw new Error("未找到对应的 API Key");
+        throw new Error("鏈壘鍒板搴旂殑 API Key");
     }
     if (!key.plainTextKey) {
-        throw new Error("当前浏览器没有保存这个 Key 的完整明文，请使用创建成功时返回的密钥，或重新创建一个新的 Key。");
+        throw new Error("褰撳墠娴忚鍣ㄦ病鏈変繚瀛樿繖涓?Key 鐨勫畬鏁存槑鏂囷紝璇蜂娇鐢ㄥ垱寤烘垚鍔熸椂杩斿洖鐨勫瘑閽ワ紝鎴栭噸鏂板垱寤轰竴涓柊鐨?Key銆?);
     }
     await navigator.clipboard.writeText(key.plainTextKey);
-    showToast("完整 API Key 已复制");
+    showToast("瀹屾暣 API Key 宸插鍒?);
 }
 
 let toastTimer = null;
 let registerCodeCooldownTimer = null;
 let registerCodeSentToEmail = "";
-const REGISTER_CODE_HINT_DEFAULT = "验证码将发送到你的 QQ 邮箱，5 分钟内有效。";
+const REGISTER_CODE_HINT_DEFAULT = "楠岃瘉鐮佸皢鍙戦€佸埌浣犵殑 QQ 閭锛? 鍒嗛挓鍐呮湁鏁堛€?;
 
 function showToast(message, isError = false) {
-    elements.toast.textContent = message || (isError ? "操作失败" : "操作成功");
+    elements.toast.textContent = message || (isError ? "鎿嶄綔澶辫触" : "鎿嶄綔鎴愬姛");
     elements.toast.style.background = isError ? "rgba(140, 42, 27, 0.94)" : "rgba(51, 31, 18, 0.92)";
     elements.toast.classList.remove("hidden");
     window.clearTimeout(toastTimer);
@@ -709,9 +758,73 @@ async function fetchJson(url, options = {}) {
     });
     const data = await response.json().catch(() => null);
     if (!response.ok || !data?.success) {
-        throw new Error(data?.message || `请求失败: HTTP ${response.status}`);
+        throw new Error(data?.message || `璇锋眰澶辫触: HTTP ${response.status}`);
     }
     return data.data;
+}
+
+async function loadLoginCaptcha() {
+    const data = await fetchJson("/admin/auth/login/captcha");
+    state.loginCaptchaId = String(data?.captchaId || "").trim();
+    if (elements.loginForm?.elements?.captchaId) {
+        elements.loginForm.elements.captchaId.value = state.loginCaptchaId;
+    }
+    if (elements.loginCaptchaImage) {
+        elements.loginCaptchaImage.src = data?.imageBase64 || "";
+    }
+    if (elements.loginCaptchaHint) {
+        elements.loginCaptchaHint.textContent = `点击图片或按钮可刷新图形验证码，${data?.expireSeconds || 120} 秒内有效。`;
+    }
+}
+
+const actionRunningMap = new Map();
+const actionLastRunMap = new Map();
+
+function setButtonBusy(button, busy, busyText = "处理中...") {
+    if (!button) {
+        return;
+    }
+    if (busy) {
+        if (!button.dataset.originalText) {
+            button.dataset.originalText = button.textContent || "";
+        }
+        button.disabled = true;
+        if (busyText) {
+            button.textContent = busyText;
+        }
+        return;
+    }
+    button.disabled = false;
+    if (button.dataset.originalText) {
+        button.textContent = button.dataset.originalText;
+        delete button.dataset.originalText;
+    }
+}
+
+function withDebounceGuard(actionKey, action, options = {}) {
+    const cooldownMs = options.cooldownMs ?? 1200;
+    const resolveButton = typeof options.getButton === "function" ? options.getButton : () => null;
+    const busyText = options.busyText || "处理中...";
+    return async function guardedAction(...args) {
+        const now = Date.now();
+        if (actionRunningMap.get(actionKey)) {
+            return;
+        }
+        const lastRunAt = actionLastRunMap.get(actionKey) || 0;
+        if (now - lastRunAt < cooldownMs) {
+            return;
+        }
+        actionRunningMap.set(actionKey, true);
+        actionLastRunMap.set(actionKey, now);
+        const button = resolveButton();
+        setButtonBusy(button, true, busyText);
+        try {
+            return await action(...args);
+        } finally {
+            actionRunningMap.delete(actionKey);
+            setButtonBusy(button, false);
+        }
+    };
 }
 
 function updateRegisterCodeUi(secondsLeft = 0) {
@@ -721,8 +834,8 @@ function updateRegisterCodeUi(secondsLeft = 0) {
     const coolingDown = secondsLeft > 0;
     elements.sendRegisterCodeButton.disabled = coolingDown;
     elements.sendRegisterCodeButton.textContent = coolingDown
-        ? `重新发送 (${secondsLeft}s)`
-        : "发送验证码";
+        ? `閲嶆柊鍙戦€?(${secondsLeft}s)`
+        : "鍙戦€侀獙璇佺爜";
 }
 
 function resetRegisterCodeState({ resetForm = false } = {}) {
@@ -756,7 +869,7 @@ function startRegisterCodeCooldown(durationSeconds = 60) {
 }
 
 function setMenuLabel() {
-    const userText = isAdmin() ? "用户管理" : "个人中心";
+    const userText = isAdmin() ? "鐢ㄦ埛绠＄悊" : "涓汉涓績";
     elements.usersMenuItem.lastElementChild.textContent = userText;
     elements.usersPanelTitle.textContent = userText;
 }
@@ -770,9 +883,9 @@ function applyRoleView() {
     const admin = isAdmin();
     elements.adminOnlyBlocks.forEach((node) => node.classList.toggle("hidden", !admin));
     elements.adminOnlyUserDetail.forEach((node) => node.classList.toggle("hidden", !admin));
-    elements.keysPanelTitle.textContent = admin ? "API 密钥管理" : "我的 API 密钥";
-    elements.modelsPanelTitle.textContent = "套餐中心";
-    elements.modelsMenuLabel.textContent = "套餐中心";
+    elements.keysPanelTitle.textContent = admin ? "API 瀵嗛挜绠＄悊" : "鎴戠殑 API 瀵嗛挜";
+    elements.modelsPanelTitle.textContent = "濂楅涓績";
+    elements.modelsMenuLabel.textContent = "濂楅涓績";
     elements.keyUserIdRow.classList.toggle("hidden", !admin);
     const userIdInput = elements.keyForm.elements.userId;
     if (admin) {
@@ -798,7 +911,7 @@ function updateAccountHeader() {
     const displayName = detail.nickname || user.nickname || user.username || "zxw";
     elements.currentUser.textContent = displayName;
     elements.currentUserEmail.textContent = detail.email || roleLabel(user.roleCode || "USER");
-    elements.currentBalance.textContent = `余额: ${formatMoney(detail.balance ?? user.balance)}`;
+    elements.currentBalance.textContent = `浣欓: ${formatMoney(detail.balance ?? user.balance)}`;
     elements.accountAvatar.textContent = (displayName || "Z").slice(0, 1).toUpperCase();
 }
 
@@ -815,11 +928,11 @@ function populateKeyGroupOptions() {
     }
 
     if (!selectableGroups.length) {
-        elements.keyGroupHint.textContent = "当前账号还没有已购买且生效中的套餐，请先到套餐中心购买。";
+        elements.keyGroupHint.textContent = "褰撳墠璐﹀彿杩樻病鏈夊凡璐拱涓旂敓鏁堜腑鐨勫椁愶紝璇峰厛鍒板椁愪腑蹇冭喘涔般€?;
         elements.keyGroupOptions.innerHTML = `
             <div class="key-group-empty">
-                <div class="empty-state">暂无可用分组，购买套餐后才可以创建 API Key。</div>
-                <button type="button" class="secondary-button" data-open-panel="models-panel">前往套餐中心</button>
+                <div class="empty-state">鏆傛棤鍙敤鍒嗙粍锛岃喘涔板椁愬悗鎵嶅彲浠ュ垱寤?API Key銆?/div>
+                <button type="button" class="secondary-button" data-open-panel="models-panel">鍓嶅線濂楅涓績</button>
             </div>
         `;
         return;
@@ -846,7 +959,7 @@ function populateKeyGroupOptions() {
         selectedValue = latestActivePackage?.id ? String(latestActivePackage.id) : "";
     }
 
-    elements.keyGroupHint.textContent = "请选择一个已购买且未过期的具体套餐来创建 Key。";
+    elements.keyGroupHint.textContent = "璇烽€夋嫨涓€涓凡璐拱涓旀湭杩囨湡鐨勫叿浣撳椁愭潵鍒涘缓 Key銆?;
     state.selectedPackageId = selectedValue || null;
 
     const options = selectableGroups.map((group) => `
@@ -855,7 +968,7 @@ function populateKeyGroupOptions() {
             <span class="key-group-card-check"></span>
             <span class="key-group-card-main">
                 <strong>${escapeHtml(buildPurchasedPackageLabel(group))}</strong>
-                <small>${escapeHtml(group.remark || `${group.modelCount || 0} 个模型 · ${group.packageDays || 30} 天有效期`)}</small>
+                <small>${escapeHtml(group.remark || `${group.modelCount || 0} 涓ā鍨?路 ${group.packageDays || 30} 澶╂湁鏁堟湡`)}</small>
             </span>
             <span class="key-group-card-pill">${escapeHtml(formatMoney(group.purchasePrice || 0))}</span>
         </label>
@@ -877,42 +990,51 @@ function renderModelAccessSummary() {
     }
 
     if (elements.packageBalancePill) {
-        elements.packageBalancePill.textContent = `当前余额: ${formatMoney(detail.balance ?? state.me?.balance ?? 0)}`;
+        elements.packageBalancePill.textContent = `褰撳墠浣欓: ${formatMoney(detail.balance ?? state.me?.balance ?? 0)}`;
     }
 
     elements.packageCardGrid.innerHTML = groups.length
         ? groups.map((group, index) => {
             const isSelected = String(selectedPackage?.groupId || selectedGroup?.id) === String(group.id);
+            const modelCount = resolveGroupModelCount(group);
             return `
             <article class="package-plan-card ${group.active ? "active" : ""} ${isSelected ? "selected" : ""}" data-select-package="${escapeHtml(group.id)}">
                 <div class="package-plan-badge-row">
-                    <span class="package-plan-badge">${index === 0 ? "推荐" : index === 1 ? "热门" : "分组"}</span>
-                    ${group.active ? '<span class="status-chip active">使用中</span>' : group.purchased ? '<span class="status-chip disabled">已购买</span>' : '<span class="soft-badge">未购买</span>'}
+                    <span class="package-plan-badge">${index === 0 ? "鎺ㄨ崘" : index === 1 ? "鐑棬" : "鍒嗙粍"}</span>
+                    ${group.active ? '<span class="status-chip active">浣跨敤涓?/span>' : group.purchased ? '<span class="status-chip disabled">宸茶喘涔?/span>' : '<span class="soft-badge">鏈喘涔?/span>'}
                 </div>
                 <div class="package-plan-name">${escapeHtml(group.groupName)}</div>
-                <div class="package-plan-price">${escapeHtml(formatMoney(group.salePrice || 0))}<small> / ${escapeHtml(group.packageDays || 30)}天</small></div>
+                <div class="package-plan-price">${escapeHtml(formatMoney(group.salePrice || 0))}<small> / ${escapeHtml(group.packageDays || 30)}澶?/small></div>
                 <ul class="package-plan-features">
-                    <li>每日额度 ${escapeHtml(formatMoney(group.dailyQuota || 0))}</li>
-                    <li>有效期 ${escapeHtml(group.packageDays || 30)} 天</li>
-                    <li>${escapeHtml(group.modelCount || 0)} 个模型可用</li>
-                    <li>${escapeHtml(group.packageStatusText || (group.purchased ? "已购买" : "未购买"))}</li>
-                    <li>${escapeHtml(group.remark || "支持对应分组下的全部模型调用")}</li>
+                    <li>姣忔棩棰濆害 ${escapeHtml(formatMoney(group.dailyQuota || 0))}</li>
+                    <li>鏈夋晥鏈?${escapeHtml(group.packageDays || 30)} 澶?/li>
+                    <li>${escapeHtml(group.modelCount || 0)} 涓ā鍨嬪彲鐢?/li>
+                    <li>${escapeHtml(group.packageStatusText || (group.purchased ? "宸茶喘涔? : "鏈喘涔?))}</li>
+                    <li>${escapeHtml(group.remark || "鏀寔瀵瑰簲鍒嗙粍涓嬬殑鍏ㄩ儴妯″瀷璋冪敤")}</li>
                 </ul>
                 <div class="package-plan-actions">
-                    <button type="button" class="secondary-button wide-button" data-show-package-models="${escapeHtml(group.id)}">查看详情</button>
+                    <button type="button" class="secondary-button wide-button" data-show-package-models="${escapeHtml(group.id)}">鏌ョ湅璇︽儏</button>
                     <button
                         type="button"
                         class="primary-button wide-button package-buy-button"
                         data-purchase-group="${escapeHtml(group.id)}"
                     >
-                        ${group.purchased ? "再次购买" : "立即购买"}
+                        ${group.purchased ? "鍐嶆璐拱" : "绔嬪嵆璐拱"}
                     </button>
-                    ${isAdmin() ? `<button type="button" class="mini-button danger-button package-delete-button" data-delete-group="${escapeHtml(group.id)}">删除套餐</button>` : ""}
+                    ${isAdmin() ? `<button type="button" class="mini-button danger-button package-delete-button" data-delete-group="${escapeHtml(group.id)}">鍒犻櫎濂楅</button>` : ""}
                 </div>
             </article>
         `;
         }).join("")
-        : '<div class="empty-state">当前还没有可购买的套餐分组。</div>';
+        : '<div class="empty-state">褰撳墠杩樻病鏈夊彲璐拱鐨勫椁愬垎缁勩€?/div>';
+
+    elements.packageCardGrid.querySelectorAll(".package-plan-card").forEach((card, index) => {
+        const featureItems = card.querySelectorAll(".package-plan-features li");
+        if (featureItems.length >= 3) {
+            featureItems[2].textContent = `${resolveGroupModelCount(groups[index])} models available`;
+        }
+    });
+
 
     if (purchasedPackages.length) {
         elements.modelPackageSummary.innerHTML = purchasedPackages.map((item) => `
@@ -920,19 +1042,19 @@ function renderModelAccessSummary() {
                 <div class="package-summary-top">
                     <div>
                         <div class="package-summary-name">${escapeHtml(buildPurchasedPackageLabel(item))}</div>
-                        <div class="card-caption">${escapeHtml(item.active ? "可用中" : (item.status || "已购买"))}</div>
+                        <div class="card-caption">${escapeHtml(item.active ? "鍙敤涓? : (item.status || "宸茶喘涔?))}</div>
                     </div>
                     ${accessStatusBadge(item.active ? "ACTIVE" : (item.status || "EXPIRED"))}
                 </div>
                 <div class="package-summary-meta">
-                    <span>到期 ${escapeHtml(formatDateTime(item.expiresAt))}</span>
-                    <span>今日 ${escapeHtml(formatQuotaText(item.dailyUsed, item.dailyQuota))}</span>
-                    <span>本周 ${escapeHtml(formatQuotaText(item.weeklyUsed, item.weeklyQuota))}</span>
-                    <span>总额 ${escapeHtml(formatQuotaText(item.totalUsed, getPackageTotalQuota(item)))}</span>
+                    <span>鍒版湡 ${escapeHtml(formatDateTime(item.expiresAt))}</span>
+                    <span>浠婃棩 ${escapeHtml(formatQuotaText(item.dailyUsed, item.dailyQuota))}</span>
+                    <span>鏈懆 ${escapeHtml(formatQuotaText(item.weeklyUsed, item.weeklyQuota))}</span>
+                    <span>鎬婚 ${escapeHtml(formatQuotaText(item.totalUsed, getPackageTotalQuota(item)))}</span>
                 </div>
                 <div class="package-plan-actions">
-                    <button class="mini-button" type="button" data-show-package-models="${escapeHtml(item.groupId)}">详情</button>
-                    <button class="mini-button danger-button" type="button" data-delete-package-purchase="${escapeHtml(item.id)}" data-package-name="${escapeHtml(buildPurchasedPackageLabel(item))}">删除套餐</button>
+                    <button class="mini-button" type="button" data-show-package-models="${escapeHtml(item.groupId)}">璇︽儏</button>
+                    <button class="mini-button danger-button" type="button" data-delete-package-purchase="${escapeHtml(item.id)}" data-package-name="${escapeHtml(buildPurchasedPackageLabel(item))}">鍒犻櫎濂楅</button>
                 </div>
             </article>
         `).join("");
@@ -941,8 +1063,8 @@ function renderModelAccessSummary() {
             <article class="package-summary-card">
                 <div class="package-summary-top">
                     <div>
-                        <div class="package-summary-name">还没有已购套餐</div>
-                        <div class="card-caption">购买一个分组套餐后，你才能在对应分组下创建 API Key。</div>
+                        <div class="package-summary-name">杩樻病鏈夊凡璐椁?/div>
+                        <div class="card-caption">璐拱涓€涓垎缁勫椁愬悗锛屼綘鎵嶈兘鍦ㄥ搴斿垎缁勪笅鍒涘缓 API Key銆?/div>
                     </div>
                     ${accessStatusBadge(summary.packageStatus)}
                 </div>
@@ -989,15 +1111,15 @@ function renderOverviewCards() {
     const weekSpend = weekPackageSpend > 0 ? weekPackageSpend : getLast7DaysSpend();
     const balance = toNumber(detail.balance ?? overview.walletBalanceTotal);
     const dailyQuotaTotal = sumPurchasedPackageField("dailyQuota");
-    const limitLabel = dailyQuotaTotal > 0 ? formatMoney(dailyQuotaTotal) : "未开通";
+    const limitLabel = dailyQuotaTotal > 0 ? formatMoney(dailyQuotaTotal) : "鏈紑閫?;
 
     if (elements.dashboardGreeting) {
-        elements.dashboardGreeting.textContent = isAdmin() ? `你好，${displayName} 管理员` : `你好，${displayName}`;
+        elements.dashboardGreeting.textContent = isAdmin() ? `浣犲ソ锛?{displayName} 绠＄悊鍛榒 : `浣犲ソ锛?{displayName}`;
     }
     if (elements.dashboardGreetingCopy) {
         elements.dashboardGreetingCopy.textContent = isAdmin()
-            ? "欢迎回来，以下是平台今天的 API 运行概况。"
-            : "欢迎回来，以下是您今日的 API 使用概况。";
+            ? "娆㈣繋鍥炴潵锛屼互涓嬫槸骞冲彴浠婂ぉ鐨?API 杩愯姒傚喌銆?
+            : "娆㈣繋鍥炴潵锛屼互涓嬫槸鎮ㄤ粖鏃ョ殑 API 浣跨敤姒傚喌銆?;
     }
 
     if (!elements.overviewCards) {
@@ -1008,76 +1130,76 @@ function renderOverviewCards() {
         ? [
             {
                 tone: "blue soft",
-                icon: "余",
+                icon: "浣?,
                 value: formatMoney(balance),
-                label: "平台余额",
-                subvalue: "用户钱包余额汇总",
-                action: "查看账户",
+                label: "骞冲彴浣欓",
+                subvalue: "鐢ㄦ埛閽卞寘浣欓姹囨€?,
+                action: "鏌ョ湅璐︽埛",
                 panel: "users-panel"
             },
             {
                 tone: "orange warm",
-                icon: "今",
+                icon: "浠?,
                 value: formatMoney(todaySpend),
-                label: "今日消费",
-                subvalue: `全部套餐日额度 ${limitLabel}`,
-                action: "查看套餐",
+                label: "浠婃棩娑堣垂",
+                subvalue: `鍏ㄩ儴濂楅鏃ラ搴?${limitLabel}`,
+                action: "鏌ョ湅濂楅",
                 panel: "models-panel"
             },
             {
                 tone: "orange warm",
-                icon: "周",
+                icon: "鍛?,
                 value: formatMoney(weekSpend),
-                label: "本周消费",
-                subvalue: "按全部套餐统计",
-                action: "用量详情",
+                label: "鏈懆娑堣垂",
+                subvalue: "鎸夊叏閮ㄥ椁愮粺璁?,
+                action: "鐢ㄩ噺璇︽儏",
                 panel: "billing-panel"
             },
             {
                 tone: "cream",
-                icon: "钥",
+                icon: "閽?,
                 value: `${activeKeys}/${state.keys.length || 0}`,
                 label: "API Keys",
-                subvalue: "当前账号已创建的密钥数量",
-                action: "管理 Key",
+                subvalue: "褰撳墠璐﹀彿宸插垱寤虹殑瀵嗛挜鏁伴噺",
+                action: "绠＄悊 Key",
                 panel: "keys-panel"
             }
         ]
         : [
             {
                 tone: "blue soft",
-                icon: "余",
+                icon: "浣?,
                 value: formatMoney(balance),
-                label: "账户余额",
-                subvalue: "余额用于购买套餐，不参与套餐内调用扣费",
-                action: "去买套餐",
+                label: "璐︽埛浣欓",
+                subvalue: "浣欓鐢ㄤ簬璐拱濂楅锛屼笉鍙備笌濂楅鍐呰皟鐢ㄦ墸璐?,
+                action: "鍘讳拱濂楅",
                 panel: "models-panel"
             },
             {
                 tone: "orange warm",
-                icon: "今",
+                icon: "浠?,
                 value: formatMoney(todaySpend),
-                label: "今日消费",
-                subvalue: `全部套餐日额度 ${limitLabel}`,
-                action: "查看套餐",
+                label: "浠婃棩娑堣垂",
+                subvalue: `鍏ㄩ儴濂楅鏃ラ搴?${limitLabel}`,
+                action: "鏌ョ湅濂楅",
                 panel: "models-panel"
             },
             {
                 tone: "orange warm",
-                icon: "周",
+                icon: "鍛?,
                 value: formatMoney(weekSpend),
-                label: "本周消费",
-                subvalue: "按全部套餐统计",
-                action: "用量详情",
+                label: "鏈懆娑堣垂",
+                subvalue: "鎸夊叏閮ㄥ椁愮粺璁?,
+                action: "鐢ㄩ噺璇︽儏",
                 panel: "billing-panel"
             },
             {
                 tone: "cream",
-                icon: "钥",
+                icon: "閽?,
                 value: `${activeKeys}/${state.keys.length || 0}`,
                 label: "API Keys",
-                subvalue: "创建前请先购买套餐并选择对应分组",
-                action: "管理 Key",
+                subvalue: "鍒涘缓鍓嶈鍏堣喘涔板椁愬苟閫夋嫨瀵瑰簲鍒嗙粍",
+                action: "绠＄悊 Key",
                 panel: "keys-panel"
             }
         ];
@@ -1101,11 +1223,11 @@ function renderProfileCard() {
     }
     const detail = state.users.find((item) => item.id === state.me?.userId) || state.users[0] || {};
     const selectedPackage = getSelectedPurchasedPackage();
-    const displayName = detail.nickname || detail.username || state.me?.nickname || state.me?.username || "开发者";
-    const email = detail.email || "未设置邮箱";
-    const lastLogin = detail.lastLoginAt ? relativeTimeFromNow(detail.lastLoginAt) : "尚未登录";
+    const displayName = detail.nickname || detail.username || state.me?.nickname || state.me?.username || "寮€鍙戣€?;
+    const email = detail.email || "鏈缃偖绠?;
+    const lastLogin = detail.lastLoginAt ? relativeTimeFromNow(detail.lastLoginAt) : "灏氭湭鐧诲綍";
     const createdAt = detail.createdAt ? formatDateTime(detail.createdAt) : "-";
-    const packageLabel = selectedPackage ? buildPurchasedPackageLabel(selectedPackage) : "未购买套餐";
+    const packageLabel = selectedPackage ? buildPurchasedPackageLabel(selectedPackage) : "鏈喘涔板椁?;
 
     elements.profileCardBody.innerHTML = `
         <div class="dashboard-user-top">
@@ -1121,27 +1243,27 @@ function renderProfileCard() {
         </div>
         <div class="dashboard-user-grid">
             <div class="meta-block">
-                <span>计费优先级</span>
-                <strong>套餐扣费</strong>
+                <span>璁¤垂浼樺厛绾?/span>
+                <strong>濂楅鎵ｈ垂</strong>
             </div>
             <div class="meta-block">
-                <span>当前套餐</span>
+                <span>褰撳墠濂楅</span>
                 <strong>${escapeHtml(packageLabel)}</strong>
             </div>
             <div class="meta-block">
-                <span>注册时间</span>
+                <span>娉ㄥ唽鏃堕棿</span>
                 <strong>${escapeHtml(createdAt)}</strong>
             </div>
             <div class="meta-block">
-                <span>最后登录</span>
+                <span>鏈€鍚庣櫥褰?/span>
                 <strong>${escapeHtml(lastLogin)}</strong>
             </div>
             <div class="meta-block">
-                <span>钱包余额</span>
+                <span>閽卞寘浣欓</span>
                 <strong>${escapeHtml(formatMoney(detail.balance ?? state.me?.balance ?? 0))}</strong>
             </div>
             <div class="meta-block">
-                <span>接入地址</span>
+                <span>鎺ュ叆鍦板潃</span>
                 <strong>${escapeHtml(`${window.location.origin}/v1`)}</strong>
             </div>
         </div>
@@ -1156,24 +1278,24 @@ function renderQuotaCard() {
         return;
     }
 
-    elements.quotaCardTitle.textContent = selectedPackage ? buildPurchasedPackageLabel(selectedPackage) : "套餐额度";
+    elements.quotaCardTitle.textContent = selectedPackage ? buildPurchasedPackageLabel(selectedPackage) : "濂楅棰濆害";
     elements.quotaStatusBadge.innerHTML = accessStatusBadge(
         selectedPackage ? (isPackageUsable(selectedPackage) ? "ACTIVE" : "EXPIRED") : summary.packageStatus
     );
     elements.dashboardPackageSelect.innerHTML = purchasedPackages.length
         ? purchasedPackages.map((item) => `
             <option value="${escapeHtml(item.id)}" ${String(item.id) === String(selectedPackage?.id) ? "selected" : ""}>
-                ${escapeHtml(buildPurchasedPackageLabel(item))}${item.active ? "（可用）" : ""}
+                ${escapeHtml(buildPurchasedPackageLabel(item))}${item.active ? "锛堝彲鐢級" : ""}
             </option>
         `).join("")
-        : '<option value="">未购买套餐</option>';
+        : '<option value="">鏈喘涔板椁?/option>';
 
     if (!purchasedPackages.length) {
         elements.quotaCardBody.innerHTML = `
             <div class="dashboard-package-empty">
-                <div class="quota-plan">还没有已购套餐</div>
-                <div class="quota-plan-subtitle">先去套餐中心购买一个分组套餐，之后才能在对应分组下创建 API Key。</div>
-                <button type="button" class="primary-button" data-open-panel="models-panel">前往套餐中心</button>
+                <div class="quota-plan">杩樻病鏈夊凡璐椁?/div>
+                <div class="quota-plan-subtitle">鍏堝幓濂楅涓績璐拱涓€涓垎缁勫椁愶紝涔嬪悗鎵嶈兘鍦ㄥ搴斿垎缁勪笅鍒涘缓 API Key銆?/div>
+                <button type="button" class="primary-button" data-open-panel="models-panel">鍓嶅線濂楅涓績</button>
             </div>
         `;
         return;
@@ -1191,43 +1313,43 @@ function renderQuotaCard() {
     elements.quotaCardBody.innerHTML = `
         <div class="quota-headline">
             <div>
-                <div class="quota-plan">${escapeHtml(selectedPackage ? buildPurchasedPackageLabel(selectedPackage) : "套餐")}</div>
+                <div class="quota-plan">${escapeHtml(selectedPackage ? buildPurchasedPackageLabel(selectedPackage) : "濂楅")}</div>
                 <div class="quota-plan-subtitle">
-                    ${escapeHtml(selectedPackage?.active ? "可用中" : (selectedPackage?.status || summary.packageStatusText || "未购买套餐"))}
-                    ${selectedPackage?.remainingDays != null ? ` · 剩余 ${escapeHtml(selectedPackage.remainingDays)} 天` : ""}
+                    ${escapeHtml(selectedPackage?.active ? "鍙敤涓? : (selectedPackage?.status || summary.packageStatusText || "鏈喘涔板椁?))}
+                    ${selectedPackage?.remainingDays != null ? ` 路 鍓╀綑 ${escapeHtml(selectedPackage.remainingDays)} 澶ー : ""}
                 </div>
             </div>
             <div class="quota-meta">
-                <span>到期时间</span>
+                <span>鍒版湡鏃堕棿</span>
                 <strong>${escapeHtml(formatDateTime(selectedPackage?.expiresAt))}</strong>
             </div>
         </div>
         <div class="quota-bars">
             <div>
-                <div class="bar-label"><span>今日额度</span><strong>${escapeHtml(formatQuotaText(dailyUsed, dailyQuota))}</strong></div>
+                <div class="bar-label"><span>浠婃棩棰濆害</span><strong>${escapeHtml(formatQuotaText(dailyUsed, dailyQuota))}</strong></div>
                 <div class="progress-track"><div class="progress-fill" style="width:${percentage(dailyUsed, dailyQuota)}%"></div></div>
             </div>
             <div>
-                <div class="bar-label"><span>每周额度</span><strong>${escapeHtml(formatQuotaText(weeklyUsed, weeklyQuota))}</strong></div>
+                <div class="bar-label"><span>姣忓懆棰濆害</span><strong>${escapeHtml(formatQuotaText(weeklyUsed, weeklyQuota))}</strong></div>
                 <div class="progress-track"><div class="progress-fill" style="width:${percentage(weeklyUsed, weeklyQuota)}%"></div></div>
             </div>
             <div>
-                <div class="bar-label"><span>每月额度</span><strong>${escapeHtml(formatQuotaText(monthlyUsed, monthlyQuota))}</strong></div>
+                <div class="bar-label"><span>姣忔湀棰濆害</span><strong>${escapeHtml(formatQuotaText(monthlyUsed, monthlyQuota))}</strong></div>
                 <div class="progress-track"><div class="progress-fill" style="width:${percentage(monthlyUsed, monthlyQuota)}%"></div></div>
             </div>
             <div>
-                <div class="bar-label"><span>总额度</span><strong>${escapeHtml(formatQuotaText(totalUsed, totalQuota))}</strong></div>
+                <div class="bar-label"><span>鎬婚搴?/span><strong>${escapeHtml(formatQuotaText(totalUsed, totalQuota))}</strong></div>
                 <div class="progress-track"><div class="progress-fill" style="width:${percentage(totalUsed, totalQuota)}%"></div></div>
             </div>
         </div>
         <div class="quota-footer">
             <div class="quota-meta">
-                <span>购买价格</span>
+                <span>璐拱浠锋牸</span>
                 <strong>${escapeHtml(formatMoney(selectedPackage?.purchasePrice || 0))}</strong>
             </div>
             <div class="quota-meta">
-                <span>分组模型</span>
-                <strong>${escapeHtml(selectedPackage?.modelCount || 0)} 个</strong>
+                <span>鍒嗙粍妯″瀷</span>
+                <strong>${escapeHtml(selectedPackage?.modelCount || 0)} 涓?/strong>
             </div>
         </div>
     `;
@@ -1251,10 +1373,10 @@ function refreshPackageAvailabilityUi() {
     elements.dashboardPackageSelect.innerHTML = purchasedPackages.length
         ? purchasedPackages.map((item) => `
             <option value="${escapeHtml(item.id)}" ${String(item.id) === String(selectedPackage?.id) ? "selected" : ""}>
-                ${escapeHtml(`${item.groupName || item.groupCode || "套餐"} #${item.id}（${packageAvailabilityLabel(item)}）`)}
+                ${escapeHtml(`${item.groupName || item.groupCode || "濂楅"} #${item.id}锛?{packageAvailabilityLabel(item)}锛塦)}
             </option>
         `).join("")
-        : '<option value="">未购买套餐</option>';
+        : '<option value="">鏈喘涔板椁?/option>';
 
     if (elements.quotaStatusBadge) {
         elements.quotaStatusBadge.innerHTML = accessStatusBadge(
@@ -1284,7 +1406,7 @@ function renderBillingModelStats() {
         return;
     }
     if (!state.modelStats.length) {
-        elements.billingModelStatsTable.innerHTML = '<tr><td colspan="6" class="empty-state">本月还没有可统计的模型调用数据。</td></tr>';
+        elements.billingModelStatsTable.innerHTML = '<tr><td colspan="6" class="empty-state">鏈湀杩樻病鏈夊彲缁熻鐨勬ā鍨嬭皟鐢ㄦ暟鎹€?/td></tr>';
         return;
     }
     elements.billingModelStatsTable.innerHTML = state.modelStats.map((item) => {
@@ -1293,7 +1415,7 @@ function renderBillingModelStats() {
             ? `<span class="billing-model-name">${escapeHtml(meta.modelName)}</span>`
             : "";
         const upstreamLine = meta.upstreamModels
-            ? `<span class="billing-model-upstream">上游: ${escapeHtml(meta.upstreamModels)}</span>`
+            ? `<span class="billing-model-upstream">涓婃父: ${escapeHtml(meta.upstreamModels)}</span>`
             : "";
         return `
             <tr>
@@ -1336,7 +1458,7 @@ function formatLatency(value) {
 function getCurrentDisplayName() {
     const user = state.me || {};
     const detail = state.users.find((item) => item.id === user.userId) || state.users[0] || {};
-    return detail.nickname || user.nickname || user.username || "开发者";
+    return detail.nickname || user.nickname || user.username || "寮€鍙戣€?;
 }
 
 function getSuccessRate(logs) {
@@ -1374,7 +1496,7 @@ function getAverageDailyTokens() {
 
 function getPercentDeltaText(current, baseline) {
     if (!baseline) {
-        return "稳定";
+        return "绋冲畾";
     }
     const delta = ((toNumber(current) - toNumber(baseline)) / Math.max(Math.abs(toNumber(baseline)), 1)) * 100;
     const sign = delta >= 0 ? "+" : "";
@@ -1383,7 +1505,7 @@ function getPercentDeltaText(current, baseline) {
 
 function getRequestDeltaText(current, baseline) {
     if (!baseline) {
-        return "稳定";
+        return "绋冲畾";
     }
     const delta = ((toNumber(current) - toNumber(baseline)) / Math.max(Math.abs(toNumber(baseline)), 1)) * 100;
     const sign = delta >= 0 ? "+" : "";
@@ -1418,22 +1540,22 @@ function getLogsForCurrentMonth() {
 
 function relativeTimeFromNow(value) {
     if (!value) {
-        return "刚刚";
+        return "鍒氬垰";
     }
     const date = parseServerDate(value);
     if (!date) {
-        return "鍒氬垰";
+        return "閸掓艾鍨?;
     }
     const diff = Date.now() - date.getTime();
     const minute = 60 * 1000;
     const hour = 60 * minute;
     if (diff < minute) {
-        return "刚刚";
+        return "鍒氬垰";
     }
     if (diff < hour) {
-        return `${Math.max(1, Math.floor(diff / minute))}分钟前`;
+        return `${Math.max(1, Math.floor(diff / minute))}鍒嗛挓鍓峘;
     }
-    return `${Math.max(1, Math.floor(diff / hour))}小时前`;
+    return `${Math.max(1, Math.floor(diff / hour))}灏忔椂鍓峘;
 }
 
 function createSmoothPath(points) {
@@ -1452,7 +1574,7 @@ function createSmoothPath(points) {
 
 function renderLineChart(series, labels, options = {}) {
     if (!series.length || !labels.length) {
-        return '<div class="empty-state">暂无趋势数据。</div>';
+        return '<div class="empty-state">鏆傛棤瓒嬪娍鏁版嵁銆?/div>';
     }
     const width = options.width || 860;
     const height = options.height || 280;
@@ -1507,14 +1629,14 @@ function renderOverviewTrendChart() {
         return;
     }
     if (!state.trend.length) {
-        elements.trendSummary.textContent = "暂无数据";
-        elements.trendChart.innerHTML = '<div class="empty-state">最近 7 天还没有统计数据。</div>';
+        elements.trendSummary.textContent = "鏆傛棤鏁版嵁";
+        elements.trendChart.innerHTML = '<div class="empty-state">鏈€杩?7 澶╄繕娌℃湁缁熻鏁版嵁銆?/div>';
         return;
     }
     const labels = state.trend.map((item) => String(item.statDate || "").slice(5) || "-");
     const requestValues = state.trend.map((item) => toNumber(item.requestCount));
     const totalRequests = requestValues.reduce((sum, item) => sum + item, 0);
-    elements.trendSummary.textContent = `近 7 天共 ${formatCompactNumber(totalRequests)} 次请求`;
+    elements.trendSummary.textContent = `杩?7 澶╁叡 ${formatCompactNumber(totalRequests)} 娆¤姹俙;
     elements.trendChart.innerHTML = renderLineChart([
         {
             values: requestValues,
@@ -1548,10 +1670,10 @@ function renderBillingTrendChart() {
         values.push(total);
     }
     const totalAmount = values.reduce((sum, item) => sum + item, 0);
-    elements.billingTrendSummary.textContent = `近 7 天消耗 ${formatMoney(totalAmount)}`;
+    elements.billingTrendSummary.textContent = `杩?7 澶╂秷鑰?${formatMoney(totalAmount)}`;
     elements.billingTrendChart.innerHTML = totalAmount > 0
         ? renderLineChart([{ values, color: "#5b63f6", fill: "rgba(91, 99, 246, 0.12)" }], labels)
-        : '<div class="empty-state">最近 7 天还没有费用数据。</div>';
+        : '<div class="empty-state">鏈€杩?7 澶╄繕娌℃湁璐圭敤鏁版嵁銆?/div>';
 }
 
 function renderBillingModelUsage() {
@@ -1560,7 +1682,7 @@ function renderBillingModelUsage() {
     }
     const groups = new Map();
     getLogsForCurrentMonth().forEach((item) => {
-        const key = item.modelCode || "未命名模型";
+        const key = item.modelCode || "鏈懡鍚嶆ā鍨?;
         const current = groups.get(key) || { model: key, amount: 0, tokens: 0, requests: 0 };
         current.amount += toNumber(item.userAmount);
         current.tokens += toNumber(item.totalTokens);
@@ -1570,7 +1692,7 @@ function renderBillingModelUsage() {
     const list = Array.from(groups.values()).sort((a, b) => b.amount - a.amount).slice(0, 6);
     const totalAmount = list.reduce((sum, item) => sum + item.amount, 0);
     if (!list.length) {
-        elements.billingModelUsage.innerHTML = '<div class="empty-state">暂时没有可统计的模型消费数据。</div>';
+        elements.billingModelUsage.innerHTML = '<div class="empty-state">鏆傛椂娌℃湁鍙粺璁＄殑妯″瀷娑堣垂鏁版嵁銆?/div>';
         return;
     }
     elements.billingModelUsage.innerHTML = list.map((item) => {
@@ -1582,7 +1704,7 @@ function renderBillingModelUsage() {
                     <span>${escapeHtml(formatMoney(item.amount))}</span>
                 </div>
                 <div class="model-usage-bar"><div class="model-usage-fill" style="width:${percent}%"></div></div>
-                <div class="model-usage-meta">${escapeHtml(formatCompactNumber(item.tokens))} tokens · ${escapeHtml(formatCompactNumber(item.requests))} 次请求</div>
+                <div class="model-usage-meta">${escapeHtml(formatCompactNumber(item.tokens))} tokens 路 ${escapeHtml(formatCompactNumber(item.requests))} 娆¤姹?/div>
             </div>
         `;
     }).join("");
@@ -1590,18 +1712,18 @@ function renderBillingModelUsage() {
 
 function renderUsersTable() {
     if (!state.users.length) {
-        elements.usersTable.innerHTML = '<tr><td colspan="7" class="empty-state">暂无用户数据。</td></tr>';
+        elements.usersTable.innerHTML = '<tr><td colspan="7" class="empty-state">鏆傛棤鐢ㄦ埛鏁版嵁銆?/td></tr>';
         return;
     }
     elements.usersTable.innerHTML = state.users.map((user) => {
         const actions = [
-            `<button class="mini-button" type="button" data-user-view="${user.id}">查看</button>`,
-            `<button class="mini-button" type="button" data-user-edit="${user.id}">编辑</button>`
+            `<button class="mini-button" type="button" data-user-view="${user.id}">鏌ョ湅</button>`,
+            `<button class="mini-button" type="button" data-user-edit="${user.id}">缂栬緫</button>`
         ];
         if (isAdmin()) {
             const nextStatus = user.status === "ACTIVE" ? "DISABLED" : "ACTIVE";
-            actions.push(`<button class="mini-button" type="button" data-user-toggle="${user.id}" data-next-status="${nextStatus}">${user.status === "ACTIVE" ? "禁用" : "启用"}</button>`);
-            actions.push(`<button class="mini-button danger-button" type="button" data-user-delete="${user.id}" data-username="${escapeHtml(user.username)}">删除</button>`);
+            actions.push(`<button class="mini-button" type="button" data-user-toggle="${user.id}" data-next-status="${nextStatus}">${user.status === "ACTIVE" ? "绂佺敤" : "鍚敤"}</button>`);
+            actions.push(`<button class="mini-button danger-button" type="button" data-user-delete="${user.id}" data-username="${escapeHtml(user.username)}">鍒犻櫎</button>`);
         }
         return `
             <tr>
@@ -1645,10 +1767,10 @@ function openUserDetailModal(user, mode) {
     form.elements.password.value = "";
     form.elements.roleCode.value = user.roleCode || "USER";
     form.elements.status.value = user.status || "ACTIVE";
-    elements.userDetailTitle.textContent = mode === "edit" ? "编辑用户资料" : "查看用户资料";
+    elements.userDetailTitle.textContent = mode === "edit" ? "缂栬緫鐢ㄦ埛璧勬枡" : "鏌ョ湅鐢ㄦ埛璧勬枡";
     elements.userDetailCopy.textContent = mode === "edit"
-        ? "修改后点击保存即可生效。普通用户只能修改自己的昵称、邮箱、手机号和密码。"
-        : "这里展示当前用户的详细资料。";
+        ? "淇敼鍚庣偣鍑讳繚瀛樺嵆鍙敓鏁堛€傛櫘閫氱敤鎴峰彧鑳戒慨鏀硅嚜宸辩殑鏄电О銆侀偖绠便€佹墜鏈哄彿鍜屽瘑鐮併€?
+        : "杩欓噷灞曠ず褰撳墠鐢ㄦ埛鐨勮缁嗚祫鏂欍€?;
     toggleUserDetailReadonly(mode !== "edit");
     elements.userDetailModal.classList.remove("hidden");
 }
@@ -1661,7 +1783,7 @@ function closeUserDetailModal() {
 }
 
 function renderKeysTable() {
-    elements.keysPanelSubtitle.textContent = `已创建 ${state.keys.length} 个接口密钥`;
+    elements.keysPanelSubtitle.textContent = `宸插垱寤?${state.keys.length} 涓帴鍙ｅ瘑閽;
     renderModelAccessSummary();
     elements.keysEmpty.classList.toggle("hidden", state.keys.length > 0);
     if (!state.keys.length) {
@@ -1674,24 +1796,24 @@ function renderKeysTable() {
             <div class="key-card-head">
                 <div>
                     <div class="key-card-name">${escapeHtml(key.name)}</div>
-                    <div class="key-card-subtitle">${escapeHtml(isAdmin() ? `${key.username} / 用户 ID ${key.userId}` : "当前账号密钥")}</div>
+                    <div class="key-card-subtitle">${escapeHtml(isAdmin() ? `${key.username} / 鐢ㄦ埛 ID ${key.userId}` : "褰撳墠璐﹀彿瀵嗛挜")}</div>
                     <div class="key-card-prefix"><code>${escapeHtml(key.accessKey)}</code></div>
                 </div>
                 ${statusChip(key.status)}
             </div>
             <div class="key-card-grid">
-                <div class="key-card-meta"><div class="key-card-meta-icon">T</div><div><div class="card-caption">创建时间</div><div class="key-card-meta-value">${escapeHtml(formatDateTime(key.createdAt))}</div></div></div>
-                <div class="key-card-meta"><div class="key-card-meta-icon">E</div><div><div class="card-caption">过期时间</div><div class="key-card-meta-value">${escapeHtml(formatDateTime(key.expiresAt))}</div></div></div>
+                <div class="key-card-meta"><div class="key-card-meta-icon">T</div><div><div class="card-caption">鍒涘缓鏃堕棿</div><div class="key-card-meta-value">${escapeHtml(formatDateTime(key.createdAt))}</div></div></div>
+                <div class="key-card-meta"><div class="key-card-meta-icon">E</div><div><div class="card-caption">杩囨湡鏃堕棿</div><div class="key-card-meta-value">${escapeHtml(formatDateTime(key.expiresAt))}</div></div></div>
             </div>
             <div class="key-card-tags">
-                ${key.modelPackageName ? `<span class="key-tag">套餐 ${escapeHtml(key.modelPackageName)} #${escapeHtml(key.modelPackageId)}</span>` : ""}
-                ${key.modelGroupName ? `<span class="key-tag">分组 ${escapeHtml(key.modelGroupName)}</span>` : ""}
-                <span class="key-tag">最近使用 ${escapeHtml(formatDateTime(key.lastUsedAt))}</span>
+                ${key.modelPackageName ? `<span class="key-tag">濂楅 ${escapeHtml(key.modelPackageName)} #${escapeHtml(key.modelPackageId)}</span>` : ""}
+                ${key.modelGroupName ? `<span class="key-tag">鍒嗙粍 ${escapeHtml(key.modelGroupName)}</span>` : ""}
+                <span class="key-tag">鏈€杩戜娇鐢?${escapeHtml(formatDateTime(key.lastUsedAt))}</span>
             </div>
             <div class="key-card-actions">
-                <button class="mini-button" type="button" data-key-copy="${key.id}">复制</button>
-                <button class="mini-button" type="button" data-key-toggle="${key.id}" data-next-status="${key.status === "ACTIVE" ? "DISABLED" : "ACTIVE"}">${key.status === "ACTIVE" ? "禁用" : "启用"}</button>
-                <button class="mini-button danger-button" type="button" data-key-delete="${key.id}" data-key-name="${escapeHtml(key.name)}" data-key-access="${escapeHtml(key.accessKey)}">删除</button>
+                <button class="mini-button" type="button" data-key-copy="${key.id}">澶嶅埗</button>
+                <button class="mini-button" type="button" data-key-toggle="${key.id}" data-next-status="${key.status === "ACTIVE" ? "DISABLED" : "ACTIVE"}">${key.status === "ACTIVE" ? "绂佺敤" : "鍚敤"}</button>
+                <button class="mini-button danger-button" type="button" data-key-delete="${key.id}" data-key-name="${escapeHtml(key.name)}" data-key-access="${escapeHtml(key.accessKey)}">鍒犻櫎</button>
             </div>
         </article>
     `).join("");
@@ -1702,7 +1824,7 @@ function renderKeysTable() {
             <td>${escapeHtml(key.name)}</td>
             <td><code>${escapeHtml(key.accessKey)}</code></td>
             <td>${statusChip(key.status)}</td>
-            <td><button class="mini-button" type="button" data-key-toggle="${key.id}" data-next-status="${key.status === "ACTIVE" ? "DISABLED" : "ACTIVE"}">${key.status === "ACTIVE" ? "禁用" : "启用"}</button></td>
+            <td><button class="mini-button" type="button" data-key-toggle="${key.id}" data-next-status="${key.status === "ACTIVE" ? "DISABLED" : "ACTIVE"}">${key.status === "ACTIVE" ? "绂佺敤" : "鍚敤"}</button></td>
         </tr>
     `).join("");
 }
@@ -1713,7 +1835,7 @@ function renderProvidersTable() {
         return;
     }
     if (!state.providers.length) {
-        elements.providersTable.innerHTML = '<tr><td colspan="8" class="empty-state">暂无渠道配置。</td></tr>';
+        elements.providersTable.innerHTML = '<tr><td colspan="8" class="empty-state">鏆傛棤娓犻亾閰嶇疆銆?/td></tr>';
         return;
     }
     elements.providersTable.innerHTML = state.providers.map((provider) => `
@@ -1725,7 +1847,7 @@ function renderProvidersTable() {
             <td>${escapeHtml(provider.providerType || "-")}</td>
             <td>${escapeHtml(provider.tokenCount)}</td>
             <td>${statusChip(provider.status)}</td>
-            <td><button class="mini-button" type="button" data-provider-toggle="${provider.id}" data-next-status="${provider.status === "ACTIVE" ? "DISABLED" : "ACTIVE"}">${provider.status === "ACTIVE" ? "禁用" : "启用"}</button></td>
+            <td><button class="mini-button" type="button" data-provider-toggle="${provider.id}" data-next-status="${provider.status === "ACTIVE" ? "DISABLED" : "ACTIVE"}">${provider.status === "ACTIVE" ? "绂佺敤" : "鍚敤"}</button></td>
         </tr>
     `).join("");
 }
@@ -1736,31 +1858,23 @@ function normalizeModelProviderLabel(item) {
         return "Claude";
     }
     if (type === "OPENAI_COMPATIBLE") {
-        return item?.providerName || "OpenAI 兼容";
+        return item?.providerName || "OpenAI 鍏煎";
     }
-    return item?.providerName || item?.providerType || "未分组";
+    return item?.providerName || item?.providerType || "鏈垎缁?;
 }
 
 function renderModelProviderFilters() {
-    const groups = getAccessGroups();
-    const validFilters = new Set(["ALL", "ALL_GROUPS", ...groups.map((group) => `GROUP:${group.id}`)]);
-    if (!validFilters.has(state.modelProviderFilter)) {
-        state.modelProviderFilter = "ALL_GROUPS";
+    if (!elements.modelProviderFilters) {
+        return;
     }
-    const filterButtons = ['<button type="button" class="filter-pill' + (state.modelProviderFilter === "ALL_GROUPS" || state.modelProviderFilter === "ALL" ? ' active' : '') + '" data-provider-filter="ALL_GROUPS">全部</button>']
-        .concat(groups.map((group) => {
-            const code = `GROUP:${group.id}`;
-            return `<button type="button" class="filter-pill${state.modelProviderFilter === code ? " active" : ""}" data-provider-filter="${escapeHtml(code)}">${escapeHtml(group.groupName || group.groupCode)}</button>`;
-        }));
-    elements.modelProviderFilters.innerHTML = filterButtons.join("");
+    elements.modelProviderFilters.innerHTML = "";
 }
 
 function showPackageModelDetails(groupId) {
     const groups = getAccessGroups();
     const targetGroup = groups.find((item) => String(item.id) === String(groupId));
-    state.modelProviderFilter = `GROUP:${groupId}`;
-
     const groupModels = state.models.filter((item) => String(item.groupId) === String(groupId));
+    state.modelProviderFilter = "ALL_MODELS";
     state.selectedModelId = groupModels.length ? getModelRowKey(groupModels[0]) : null;
 
     renderPackageSelectionViews();
@@ -1769,27 +1883,27 @@ function showPackageModelDetails(groupId) {
 
     document.querySelector(".package-model-head")?.scrollIntoView({ behavior: "smooth", block: "start" });
     showToast(groupModels.length
-        ? `${targetGroup?.groupName || "套餐"} 已展示 ${groupModels.length} 个模型`
-        : `${targetGroup?.groupName || "套餐"} 暂无可展示模型`);
+        ? "已定位到模型价格"
+        : `${targetGroup?.groupName || "当前套餐"} 暂无可展示模型`);
 }
 
 function inferModelBadges(model) {
     const tags = [];
     const code = String(model.modelCode || "").toLowerCase();
     if (code.includes("mini") || code.includes("flash") || code.includes("haiku")) {
-        tags.push("快速");
+        tags.push("蹇€?);
     }
     if (code.includes("gpt") || code.includes("claude") || code.includes("qwen") || code.includes("deepseek")) {
-        tags.push("对话");
+        tags.push("瀵硅瘽");
     }
     if (code.includes("embed")) {
-        tags.push("嵌入");
+        tags.push("宓屽叆");
     }
     if (code.includes("vision") || code.includes("vl")) {
-        tags.push("多模态");
+        tags.push("澶氭ā鎬?);
     }
     if (!tags.length) {
-        tags.push(model.modelType === "IMAGE" ? "图片" : "通用");
+        tags.push(model.modelType === "IMAGE" ? "鍥剧墖" : "閫氱敤");
     }
     return tags.slice(0, 3);
 }
@@ -1799,12 +1913,12 @@ function inferGatewayRouteMode(model) {
     const upstream = String(model?.upstreamModel || "").toLowerCase();
     const providerType = String(model?.providerType || "").toUpperCase();
     if (providerType === "ANTHROPIC") {
-        return "原生 Messages";
+        return "鍘熺敓 Messages";
     }
     if (isAgentCapableModel(code) || isAgentCapableModel(upstream)) {
-        return "原生 Responses";
+        return "鍘熺敓 Responses";
     }
-    return "兼容转发";
+    return "鍏煎杞彂";
 }
 
 function inferIdeCapability(model) {
@@ -1812,12 +1926,12 @@ function inferIdeCapability(model) {
     const upstream = String(model?.upstreamModel || "").toLowerCase();
     const providerType = String(model?.providerType || "").toUpperCase();
     if (providerType === "ANTHROPIC") {
-        return "对话为主";
+        return "瀵硅瘽涓轰富";
     }
     if (isAgentCapableModel(code) || isAgentCapableModel(upstream)) {
-        return "完整代理";
+        return "瀹屾暣浠ｇ悊";
     }
-    return "工具受限";
+    return "宸ュ叿鍙楅檺";
 }
 
 function isAgentCapableModel(value) {
@@ -1827,19 +1941,19 @@ function isAgentCapableModel(value) {
 
 function buildIdeClientHint(model) {
     const capability = inferIdeCapability(model);
-    if (capability === "完整代理") {
-        return "客户端若支持 Codex/Responses 工具流，可持续分析、调工具、改代码直到完成。";
+    if (capability === "瀹屾暣浠ｇ悊") {
+        return "瀹㈡埛绔嫢鏀寔 Codex/Responses 宸ュ叿娴侊紝鍙寔缁垎鏋愩€佽皟宸ュ叿銆佹敼浠ｇ爜鐩村埌瀹屾垚銆?;
     }
-    if (capability === "对话为主") {
-        return "更适合问答与内容生成，通常不承担持续改码代理。";
+    if (capability === "瀵硅瘽涓轰富") {
+        return "鏇撮€傚悎闂瓟涓庡唴瀹圭敓鎴愶紝閫氬父涓嶆壙鎷呮寔缁敼鐮佷唬鐞嗐€?;
     }
-    return "可用于普通问答或轻量工具调用，但不建议期待完整的自驱改码闭环。";
+    return "鍙敤浜庢櫘閫氶棶绛旀垨杞婚噺宸ュ叿璋冪敤锛屼絾涓嶅缓璁湡寰呭畬鏁寸殑鑷┍鏀圭爜闂幆銆?;
 }
 
 function buildModelSummary(model) {
     const provider = normalizeModelProviderLabel(model);
     const tags = inferModelBadges(model);
-    return `${provider} ${tags.join(" / ")} 模型，适合 ${model.modelType === "IMAGE" ? "图像生成" : "文本与智能体"} 场景。`;
+    return `${provider} ${tags.join(" / ")} 妯″瀷锛岄€傚悎 ${model.modelType === "IMAGE" ? "鍥惧儚鐢熸垚" : "鏂囨湰涓庢櫤鑳戒綋"} 鍦烘櫙銆俙;
 }
 
 function renderSelectedModelDetail(model) {
@@ -1847,13 +1961,13 @@ function renderSelectedModelDetail(model) {
         return;
     }
     if (!model) {
-        elements.modelDetailTitle.textContent = "暂未选择模型";
-        elements.modelDetailDesc.textContent = "点击左侧任一模型卡片，这里会显示模型详情与价格。";
+        elements.modelDetailTitle.textContent = "鏆傛湭閫夋嫨妯″瀷";
+        elements.modelDetailDesc.textContent = "鐐瑰嚮宸︿晶浠讳竴妯″瀷鍗＄墖锛岃繖閲屼細鏄剧ず妯″瀷璇︽儏涓庝环鏍笺€?;
         elements.modelDetailSpecs.innerHTML = "";
         elements.modelDetailPricing.innerHTML = "";
         elements.modelDetailCode.textContent = "-";
         if (elements.modelDetailBadge) {
-            elements.modelDetailBadge.textContent = "模型";
+            elements.modelDetailBadge.textContent = "妯″瀷";
         }
         return;
     }
@@ -1864,27 +1978,27 @@ function renderSelectedModelDetail(model) {
         elements.modelDetailBadge.textContent = provider;
     }
     elements.modelDetailTitle.textContent = model.modelName || model.modelCode;
-    elements.modelDetailDesc.textContent = `${buildModelSummary(model)} 当前网关路由为 ${routeMode}，IDE 能力等级为 ${ideCapability}。`;
+    elements.modelDetailDesc.textContent = `${buildModelSummary(model)} 褰撳墠缃戝叧璺敱涓?${routeMode}锛孖DE 鑳藉姏绛夌骇涓?${ideCapability}銆俙;
     elements.modelDetailSpecs.innerHTML = `
-        <div class="detail-spec-row"><span>模型编码</span><strong>${escapeHtml(model.modelCode)}</strong></div>
-        <div class="detail-spec-row"><span>所属套餐</span><strong>${escapeHtml(model.groupName || "-")}</strong></div>
-        <div class="detail-spec-row"><span>模型类型</span><strong>${escapeHtml(model.modelType || "CHAT")}</strong></div>
-        <div class="detail-spec-row"><span>上游模型</span><strong>${escapeHtml(model.upstreamModel || "-")}</strong></div>
-        <div class="detail-spec-row"><span>网关路由</span><strong>${escapeHtml(routeMode)}</strong></div>
-        <div class="detail-spec-row"><span>IDE 能力</span><strong>${escapeHtml(ideCapability)}</strong></div>
-        <div class="detail-spec-row"><span>当前状态</span><strong>${escapeHtml(statusLabel(model.status))}</strong></div>
+        <div class="detail-spec-row"><span>妯″瀷缂栫爜</span><strong>${escapeHtml(model.modelCode)}</strong></div>
+        <div class="detail-spec-row"><span>妯″瀷绫诲瀷</span><strong>${escapeHtml(model.modelType || "CHAT")}</strong></div>
+        <div class="detail-spec-row"><span>提供方</span><strong>${escapeHtml(provider)}</strong></div>
+        <div class="detail-spec-row"><span>涓婃父妯″瀷</span><strong>${escapeHtml(model.upstreamModel || "-")}</strong></div>
+        <div class="detail-spec-row"><span>缃戝叧璺敱</span><strong>${escapeHtml(routeMode)}</strong></div>
+        <div class="detail-spec-row"><span>IDE 鑳藉姏</span><strong>${escapeHtml(ideCapability)}</strong></div>
+        <div class="detail-spec-row"><span>褰撳墠鐘舵€?/span><strong>${escapeHtml(statusLabel(model.status))}</strong></div>
     `;
     elements.modelDetailPricing.innerHTML = `
         <div class="detail-price-box">
-            <span>输入 Token</span>
+            <span>杈撳叆 Token</span>
             <strong>$${escapeHtml(formatModelRate(model.promptPrice))} / 1M</strong>
         </div>
         <div class="detail-price-box">
-            <span>缓存读取 Token</span>
+            <span>缂撳瓨璇诲彇 Token</span>
             <strong>$${escapeHtml(formatModelRate(model.cachedPromptPrice))} / 1M</strong>
         </div>
         <div class="detail-price-box">
-            <span>输出 Token</span>
+            <span>杈撳嚭 Token</span>
             <strong>$${escapeHtml(formatModelRate(model.completionPrice))} / 1M</strong>
         </div>
         ${isAdmin() ? `
@@ -1894,11 +2008,11 @@ function renderSelectedModelDetail(model) {
         </div>
         ` : ""}
         <div class="detail-price-box">
-            <span>倍率</span>
+            <span>鍊嶇巼</span>
             <strong>${escapeHtml(formatDecimal(model.multiplier, 2))}x</strong>
         </div>
         <div class="detail-price-box detail-price-box-wide">
-            <span>IDE 提示</span>
+            <span>IDE 鎻愮ず</span>
             <strong>${escapeHtml(buildIdeClientHint(model))}</strong>
         </div>
     `;
@@ -1906,18 +2020,13 @@ function renderSelectedModelDetail(model) {
 }
 
 function renderModelCards() {
-    const selectedGroup = getModelPreviewGroup();
-    const showAllGroups = state.modelProviderFilter === "ALL" || state.modelProviderFilter === "ALL_GROUPS";
-    const list = state.models.filter((item) => {
-        const matchesGroup = showAllGroups || !selectedGroup || String(item.groupId) === String(selectedGroup.id);
-        return matchesGroup;
-    });
+    const list = Array.from(new Map(state.models.map((item) => [String(item.id), item])).values());
     elements.modelsEmpty.classList.toggle("hidden", list.length > 0);
     if (!list.length) {
         elements.modelsCardGrid.innerHTML = "";
         renderSelectedModelDetail(null);
         if (elements.modelsMarketMeta) {
-            elements.modelsMarketMeta.textContent = selectedGroup ? `${selectedGroup.groupName} 暂无可用模型` : "0 个模型可用";
+            elements.modelsMarketMeta.textContent = "0 个模型";
         }
         return;
     }
@@ -1925,9 +2034,7 @@ function renderModelCards() {
         state.selectedModelId = getModelRowKey(list[0]);
     }
     if (elements.modelsMarketMeta) {
-        elements.modelsMarketMeta.textContent = selectedGroup
-            ? `${selectedGroup.groupName} 可用 ${list.length} 个模型`
-            : `${list.length} 个模型可用`;
+        elements.modelsMarketMeta.textContent = `${list.length} 个模型`;
     }
     elements.modelsCardGrid.innerHTML = list.map((model) => {
         const providerLabel = normalizeModelProviderLabel(model);
@@ -1952,19 +2059,19 @@ function renderModelCards() {
                     </div>
                 </div>
                 <div class="model-price-grid">
-                    <div class="model-price-box"><span>输入</span><strong>$${escapeHtml(formatModelRate(model.promptPrice))}/M</strong></div>
-                    <div class="model-price-box"><span>缓存读取</span><strong>$${escapeHtml(formatModelRate(model.cachedPromptPrice))}/M</strong></div>
-                    <div class="model-price-box"><span>输出</span><strong>$${escapeHtml(formatModelRate(model.completionPrice))}/M</strong></div>
+                    <div class="model-price-box"><span>杈撳叆</span><strong>$${escapeHtml(formatModelRate(model.promptPrice))}/M</strong></div>
+                    <div class="model-price-box"><span>缂撳瓨璇诲彇</span><strong>$${escapeHtml(formatModelRate(model.cachedPromptPrice))}/M</strong></div>
+                    <div class="model-price-box"><span>杈撳嚭</span><strong>$${escapeHtml(formatModelRate(model.completionPrice))}/M</strong></div>
                     ${isAdmin() ? `<div class="model-price-box"><span>&#26368;&#20302;&#25187;&#36153;</span><strong>$${escapeHtml(formatModelRate(model.requestPrice || 0.07))}</strong></div>` : ""}
                 </div>
                 <div class="model-price-foot">
-                    <span>${escapeHtml(model.groupName || "未分组")} · 倍率 ${escapeHtml(formatDecimal(model.multiplier, 2))}x</span>
+                    <span>倍率 ${escapeHtml(formatDecimal(model.multiplier, 2))}x</span>
                     ${statusChip(model.status)}
                 </div>
                 ${isAdmin() ? `
                     <div class="model-card-actions">
-                        <button class="mini-button" type="button" data-model-edit="${model.id}" data-model-binding="${escapeHtml(model.bindingId || "")}">编辑</button>
-                        <button class="mini-button danger-button" type="button" data-model-delete="${model.id}" data-model-code="${escapeHtml(model.modelCode)}">删除</button>
+                        <button class="mini-button" type="button" data-model-edit="${model.id}" data-model-binding="${escapeHtml(model.bindingId || "")}">缂栬緫</button>
+                        <button class="mini-button danger-button" type="button" data-model-delete="${model.id}" data-model-code="${escapeHtml(model.modelCode)}">鍒犻櫎</button>
                     </div>
                 ` : ""}
             </article>
@@ -1979,7 +2086,7 @@ function renderModelsTable() {
         return;
     }
     if (!state.models.length) {
-        elements.modelsTable.innerHTML = '<tr><td colspan="13" class="empty-state">暂无模型配置。</td></tr>';
+        elements.modelsTable.innerHTML = '<tr><td colspan="13" class="empty-state">鏆傛棤妯″瀷閰嶇疆銆?/td></tr>';
         return;
     }
     elements.modelsTable.innerHTML = state.models.map((model) => `
@@ -1989,7 +2096,7 @@ function renderModelsTable() {
             <td>${escapeHtml(model.groupName || "-")}</td>
             <td>${escapeHtml(formatModelRate(model.promptPrice))}</td>
             <td>${escapeHtml(formatModelRate(model.cachedPromptPrice))}</td>
-            <span>&#21333;&#27425;&#26368;&#20302;&#25187;&#36153;</span>
+            <td>${escapeHtml(formatModelRate(model.completionPrice))}</td>
             <td>${escapeHtml(formatModelRate(model.requestPrice || 0.07))}</td>
             <td>${escapeHtml(formatDecimal(model.multiplier, 4))}</td>
             <td>${escapeHtml(model.modelType || "-")}</td>
@@ -1997,9 +2104,9 @@ function renderModelsTable() {
             <td>${escapeHtml(model.upstreamModel || "-")}</td>
             <td>${statusChip(model.status)}</td>
             <td class="action-row">
-                <button class="mini-button" type="button" data-model-edit="${model.id}" data-model-binding="${escapeHtml(model.bindingId || "")}">编辑价格</button>
-                <button class="mini-button" type="button" data-model-toggle="${model.id}" data-next-status="${model.status === "ACTIVE" ? "DISABLED" : "ACTIVE"}">${model.status === "ACTIVE" ? "禁用" : "启用"}</button>
-                <button class="mini-button danger-button" type="button" data-model-delete="${model.id}" data-model-code="${escapeHtml(model.modelCode)}">删除</button>
+                <button class="mini-button" type="button" data-model-edit="${model.id}" data-model-binding="${escapeHtml(model.bindingId || "")}">缂栬緫浠锋牸</button>
+                <button class="mini-button" type="button" data-model-toggle="${model.id}" data-next-status="${model.status === "ACTIVE" ? "DISABLED" : "ACTIVE"}">${model.status === "ACTIVE" ? "绂佺敤" : "鍚敤"}</button>
+                <button class="mini-button danger-button" type="button" data-model-delete="${model.id}" data-model-code="${escapeHtml(model.modelCode)}">鍒犻櫎</button>
             </td>
         </tr>
     `).join("");
@@ -2009,12 +2116,14 @@ function renderPackagePurchaseRecords() {
     if (!elements.packagePurchasesTable) {
         return;
     }
-    if (!state.packagePurchaseRecords.length) {
-        elements.packagePurchasesTable.innerHTML = '<tr><td colspan="8" class="empty-state">暂无套餐购买记录。</td></tr>';
+    const visibleRecords = getVisiblePackagePurchaseRecords();
+    if (!visibleRecords.length) {
+        elements.packagePurchasesTable.innerHTML = '<tr><td colspan="9" class="empty-state">鏆傛棤濂楅璐拱璁板綍銆?/td></tr>';
         return;
     }
-    elements.packagePurchasesTable.innerHTML = state.packagePurchaseRecords.map((item) => `
+    elements.packagePurchasesTable.innerHTML = visibleRecords.map((item) => `
         <tr>
+            <td>${escapeHtml(item.userId ?? "-")}</td>
             <td>${escapeHtml(item.username || "-")}</td>
             <td>${escapeHtml(item.groupName || item.groupCode || "-")}</td>
             <td>${escapeHtml(formatMoney(item.purchasePrice || 0))}</td>
@@ -2023,8 +2132,8 @@ function renderPackagePurchaseRecords() {
             <td>${statusChip(item.status || "-")}</td>
             <td>${escapeHtml(formatDateTime(item.createdAt))}</td>
             <td class="action-row">
-                <button class="mini-button" type="button" data-show-package-models="${escapeHtml(item.groupId)}">详情</button>
-                <button class="mini-button danger-button" type="button" data-delete-package-purchase="${escapeHtml(item.id)}" data-package-name="${escapeHtml(buildPurchasedPackageLabel(item))}">删除</button>
+                <button class="mini-button" type="button" data-show-package-models="${escapeHtml(item.groupId)}">璇︽儏</button>
+                <button class="mini-button danger-button" type="button" data-delete-package-purchase="${escapeHtml(item.id)}" data-package-name="${escapeHtml(buildPurchasedPackageLabel(item))}">鍒犻櫎</button>
             </td>
         </tr>
     `).join("");
@@ -2035,7 +2144,7 @@ function renderWalletTransactions() {
         return;
     }
     if (!state.walletTransactions.length) {
-        elements.walletTransactionsTable.innerHTML = '<tr><td colspan="8" class="empty-state">暂时还没有余额流水。</td></tr>';
+        elements.walletTransactionsTable.innerHTML = '<tr><td colspan="8" class="empty-state">鏆傛椂杩樻病鏈変綑棰濇祦姘淬€?/td></tr>';
         return;
     }
     elements.walletTransactionsTable.innerHTML = state.walletTransactions.map((item) => `
@@ -2054,18 +2163,18 @@ function renderWalletTransactions() {
 
 function populateImportProviderOptions() {
     if (!isAdmin()) {
-        elements.importProviderSelect.innerHTML = '<option value="">请先登录管理员</option>';
+        elements.importProviderSelect.innerHTML = '<option value="">璇峰厛鐧诲綍绠＄悊鍛?/option>';
         return;
     }
     const activeProviders = state.providers.filter((item) => item.status === "ACTIVE");
-    elements.importProviderSelect.innerHTML = ['<option value="">请选择渠道</option>']
-        .concat(activeProviders.map((item) => `<option value="${item.id}">${escapeHtml(item.providerName)} 路 ${escapeHtml(item.providerType || "-")}</option>`))
+    elements.importProviderSelect.innerHTML = ['<option value="">璇烽€夋嫨娓犻亾</option>']
+        .concat(activeProviders.map((item) => `<option value="${item.id}">${escapeHtml(item.providerName)} 璺?${escapeHtml(item.providerType || "-")}</option>`))
         .join("");
 }
 
 function renderUpstreamModels() {
     if (!state.upstreamModels.length) {
-        elements.upstreamModelsBox.innerHTML = '<div class="empty-state">先选择渠道，再点击“读取上游模型”。</div>';
+        elements.upstreamModelsBox.innerHTML = '<div class="empty-state">鍏堥€夋嫨娓犻亾锛屽啀鐐瑰嚮鈥滆鍙栦笂娓告ā鍨嬧€濄€?/div>';
         return;
     }
     elements.upstreamModelsBox.innerHTML = `
@@ -2075,7 +2184,7 @@ function renderUpstreamModels() {
                     <input type="checkbox" data-upstream-model="${escapeHtml(item.id)}" ${item.selected ? "checked" : ""}>
                     <span>
                         <span class="upstream-model-name">${escapeHtml(item.displayName || item.id)}</span>
-                        <span class="upstream-model-meta">${escapeHtml(item.id)} 路 ${escapeHtml(item.ownedBy || item.providerType || "-")}</span>
+                        <span class="upstream-model-meta">${escapeHtml(item.id)} 璺?${escapeHtml(item.ownedBy || item.providerType || "-")}</span>
                     </span>
                 </label>
             `).join("")}
@@ -2084,8 +2193,9 @@ function renderUpstreamModels() {
 }
 
 function renderLogsTable() {
+    renderLogsPagination();
     if (!state.logs.length) {
-        elements.logsTable.innerHTML = '<tr><td colspan="10" class="empty-state">暂无请求日志。</td></tr>';
+        elements.logsTable.innerHTML = '<tr><td colspan="10" class="empty-state">鏆傛棤璇锋眰鏃ュ織銆?/td></tr>';
         return;
     }
     elements.logsTable.innerHTML = state.logs.map((log) => `
@@ -2102,6 +2212,21 @@ function renderLogsTable() {
             <td>${escapeHtml(relativeTimeFromNow(log.createdAt))}<br><small>${escapeHtml(formatDateTime(log.createdAt))}</small></td>
         </tr>
     `).join("");
+}
+
+function renderLogsPagination() {
+    if (!elements.logsPaginationMeta || !elements.logsPrevPageButton || !elements.logsNextPageButton) {
+        return;
+    }
+    const page = state.logsPage?.page || 1;
+    const pageSize = state.logsPage?.pageSize || 20;
+    const total = state.logsPage?.total || 0;
+    const totalPages = state.logsPage?.totalPages || 0;
+    elements.logsPaginationMeta.textContent = total
+        ? `第 ${page} / ${totalPages} 页，共 ${total} 条，每页 ${pageSize} 条`
+        : `第 1 / 1 页，共 0 条，每页 ${pageSize} 条`;
+    elements.logsPrevPageButton.disabled = !state.logsPage?.hasPrevious;
+    elements.logsNextPageButton.disabled = !state.logsPage?.hasNext;
 }
 
 async function loadSession() {
@@ -2206,14 +2331,22 @@ async function loadWalletTransactions(render = true) {
     }
 }
 
-async function loadLogs(render = true) {
-    const [logs] = await Promise.all([
-        fetchJson("/admin/request-logs?limit=50"),
+async function loadLogs(render = true, page = state.logsPage.page, pageSize = state.logsPage.pageSize) {
+    const [logsPage] = await Promise.all([
+        fetchJson(`/admin/request-logs?page=${page}&pageSize=${pageSize}`),
         loadAccessSummary(false),
         loadPackagePurchaseRecords(false),
         loadWalletTransactions(false)
     ]);
-    state.logs = logs;
+    state.logs = logsPage?.records || [];
+    state.logsPage = {
+        page: logsPage?.page || 1,
+        pageSize: logsPage?.pageSize || pageSize,
+        total: logsPage?.total || 0,
+        totalPages: logsPage?.totalPages || 0,
+        hasPrevious: !!logsPage?.hasPrevious,
+        hasNext: !!logsPage?.hasNext
+    };
     if (render) {
         renderLogsTable();
         renderOverviewCards();
@@ -2251,6 +2384,7 @@ async function loadAllData() {
 }
 
 function resetRuntimeState() {
+    state.loginCaptchaId = "";
     state.me = null;
     state.overview = null;
     state.accessSummary = null;
@@ -2260,6 +2394,14 @@ function resetRuntimeState() {
     state.providers = [];
     state.models = [];
     state.logs = [];
+    state.logsPage = {
+        page: 1,
+        pageSize: 20,
+        total: 0,
+        totalPages: 0,
+        hasPrevious: false,
+        hasNext: false
+    };
     state.modelStats = [];
     state.packagePurchaseRecords = [];
     state.walletTransactions = [];
@@ -2302,9 +2444,15 @@ function logout() {
     stopDashboardAutoRefresh();
     resetRuntimeState();
     toggleAuth(false);
+    elements.loginForm?.reset();
     elements.keyCreateBox.classList.add("hidden");
     elements.plainKeyBox.classList.add("hidden");
     elements.importResultBox.classList.add("hidden");
+    void loadLoginCaptcha().catch(() => {
+        if (elements.loginCaptchaHint) {
+            elements.loginCaptchaHint.textContent = "图形验证码加载失败，请稍后刷新页面重试。";
+        }
+    });
 }
 
 async function viewUserDetail(id) {
@@ -2320,13 +2468,28 @@ async function editUserDetail(id) {
 async function onLogin(event) {
     event.preventDefault();
     const formData = new FormData(elements.loginForm);
-    const data = await fetchJson("/admin/auth/login", {
-        method: "POST",
-        body: {
-            username: String(formData.get("username") || "").trim(),
-            password: String(formData.get("password") || "")
+    let data;
+    try {
+        data = await fetchJson("/admin/auth/login", {
+            method: "POST",
+            body: {
+                username: String(formData.get("username") || "").trim(),
+                password: String(formData.get("password") || ""),
+                captchaId: String(formData.get("captchaId") || state.loginCaptchaId || "").trim(),
+                captchaCode: String(formData.get("captchaCode") || "").trim()
+            }
+        });
+    } catch (error) {
+        await loadLoginCaptcha().catch(() => {
+            if (elements.loginCaptchaHint) {
+                elements.loginCaptchaHint.textContent = "图形验证码加载失败，请稍后刷新页面重试。";
+            }
+        });
+        if (elements.loginForm?.elements?.captchaCode) {
+            elements.loginForm.elements.captchaCode.value = "";
         }
-    });
+        throw error;
+    }
     state.token = data.token;
     state.me = data;
     localStorage.setItem("zxw-console-token", data.token);
@@ -2335,7 +2498,7 @@ async function onLogin(event) {
     selectPanel("overview-panel");
     await loadAllData();
     startDashboardAutoRefresh();
-    showToast("登录成功");
+    showToast("鐧诲綍鎴愬姛");
 }
 
 async function onRegister(event) {
@@ -2343,7 +2506,7 @@ async function onRegister(event) {
     const formData = new FormData(elements.registerForm);
     const email = String(formData.get("email") || "").trim().toLowerCase();
     if (registerCodeSentToEmail && registerCodeSentToEmail !== email) {
-        throw new Error(`验证码发送到的是 ${registerCodeSentToEmail}，请保持邮箱一致或重新发送验证码`);
+        throw new Error(`楠岃瘉鐮佸彂閫佸埌鐨勬槸 ${registerCodeSentToEmail}锛岃淇濇寔閭涓€鑷存垨閲嶆柊鍙戦€侀獙璇佺爜`);
     }
     const data = await fetchJson("/admin/auth/register", {
         method: "POST",
@@ -2365,16 +2528,16 @@ async function onRegister(event) {
     applyRoleView();
     selectPanel("overview-panel");
     await loadAllData();
-    showToast("注册成功，已自动登录");
+    showToast("娉ㄥ唽鎴愬姛锛屽凡鑷姩鐧诲綍");
 }
 
 async function sendRegisterCode() {
     const email = String(elements.registerForm?.elements?.email?.value || "").trim();
     if (!email) {
-        throw new Error("请先填写 QQ 邮箱");
+        throw new Error("璇峰厛濉啓 QQ 閭");
     }
     if (!/^[^@\s]+@qq\.com$/i.test(email)) {
-        throw new Error("请输入正确的 QQ 邮箱");
+        throw new Error("璇疯緭鍏ユ纭殑 QQ 閭");
     }
     const data = await fetchJson("/admin/auth/register/code", {
         method: "POST",
@@ -2383,12 +2546,12 @@ async function sendRegisterCode() {
     registerCodeSentToEmail = String(data?.email || email).trim().toLowerCase();
     startRegisterCodeCooldown(60);
     if (elements.registerCodeHint) {
-        const debugSuffix = data?.code ? ` 当前验证码：${data.code}` : "";
-        elements.registerCodeHint.textContent = `验证码已发送到 ${registerCodeSentToEmail}，${data?.expireSeconds || 300} 秒内有效。${debugSuffix}`;
+        const debugSuffix = data?.code ? ` 褰撳墠楠岃瘉鐮侊細${data.code}` : "";
+        elements.registerCodeHint.textContent = `楠岃瘉鐮佸凡鍙戦€佸埌 ${registerCodeSentToEmail}锛?{data?.expireSeconds || 300} 绉掑唴鏈夋晥銆?{debugSuffix}`;
     }
     showToast(data?.code
-        ? `验证码已发送，当前验证码：${data.code}`
-        : "验证码已发送，请检查邮箱");
+        ? `楠岃瘉鐮佸凡鍙戦€侊紝褰撳墠楠岃瘉鐮侊細${data.code}`
+        : "楠岃瘉鐮佸凡鍙戦€侊紝璇锋鏌ラ偖绠?);
 }
 
 function onRegisterEmailChange(event) {
@@ -2398,7 +2561,7 @@ function onRegisterEmailChange(event) {
     }
     resetRegisterCodeState();
     if (elements.registerCodeHint) {
-        elements.registerCodeHint.textContent = "邮箱已修改，请重新发送验证码。";
+        elements.registerCodeHint.textContent = "閭宸蹭慨鏀癸紝璇烽噸鏂板彂閫侀獙璇佺爜銆?;
     }
 }
 
@@ -2421,7 +2584,7 @@ async function onCreateUser(event) {
     elements.userForm.elements.roleCode.value = "USER";
     elements.userForm.elements.initialBalance.value = "0";
     await Promise.all([loadUsers(), loadOverview(), loadWalletTransactions()]);
-    showToast("用户创建成功");
+    showToast("鐢ㄦ埛鍒涘缓鎴愬姛");
 }
 
 async function onRecharge(event) {
@@ -2437,7 +2600,7 @@ async function onRecharge(event) {
     });
     elements.rechargeForm.reset();
     await Promise.all([loadUsers(), loadOverview(), loadWalletTransactions()]);
-    showToast("充值成功");
+    showToast("鍏呭€兼垚鍔?);
 }
 
 async function onUpdateUser(event) {
@@ -2459,7 +2622,7 @@ async function onUpdateUser(event) {
     });
     closeUserDetailModal();
     await Promise.all([loadSession(), loadUsers(), loadOverview()]);
-    showToast("用户信息已更新");
+    showToast("鐢ㄦ埛淇℃伅宸叉洿鏂?);
 }
 
 async function toggleUserStatus(id, nextStatus) {
@@ -2468,11 +2631,11 @@ async function toggleUserStatus(id, nextStatus) {
         body: { status: nextStatus }
     });
     await Promise.all([loadUsers(), loadOverview()]);
-    showToast("用户状态已更新");
+    showToast("鐢ㄦ埛鐘舵€佸凡鏇存柊");
 }
 
 async function deleteUser(id, username) {
-    const confirmed = window.confirm(`确认删除用户 ${username || id} 吗？该用户及其 API 密钥、钱包、会话记录会被直接删除。`);
+    const confirmed = window.confirm(`纭鍒犻櫎鐢ㄦ埛 ${username || id} 鍚楋紵璇ョ敤鎴峰強鍏?API 瀵嗛挜銆侀挶鍖呫€佷細璇濊褰曚細琚洿鎺ュ垹闄ゃ€俙);
     if (!confirmed) {
         return;
     }
@@ -2483,7 +2646,7 @@ async function deleteUser(id, username) {
         closeUserDetailModal();
     }
     await Promise.all([loadUsers(), loadKeys(), loadOverview()]);
-    showToast("用户已删除");
+    showToast("鐢ㄦ埛宸插垹闄?);
 }
 
 function toggleKeyCreateBox(forceVisible) {
@@ -2538,14 +2701,14 @@ async function onCreatePackage(event) {
     });
     togglePackageCreateBox(false);
     await Promise.all([loadAccessSummary(), loadModels(), loadPackagePurchaseRecords()]);
-    showToast("套餐创建成功");
+    showToast("濂楅鍒涘缓鎴愬姛");
 }
 
 async function purchaseModelGroup(groupId) {
     const groups = getAccessGroups();
     const targetGroup = groups.find((item) => String(item.id) === String(groupId));
     if (!targetGroup) {
-        throw new Error("暂未找到对应套餐分组");
+        throw new Error("鏆傛湭鎵惧埌瀵瑰簲濂楅鍒嗙粍");
     }
     await fetchJson("/admin/model-access/purchase", {
         method: "POST",
@@ -2560,16 +2723,16 @@ async function purchaseModelGroup(groupId) {
         state.selectedPackageGroupId = newestPackage.groupId;
     }
     renderPackageSelectionViews();
-    showToast(`${targetGroup.groupName} 购买成功`);
+    showToast(`${targetGroup.groupName} 璐拱鎴愬姛`);
 }
 
 async function deleteModelGroup(groupId) {
     const groups = getAccessGroups();
     const targetGroup = groups.find((item) => String(item.id) === String(groupId));
     if (!targetGroup) {
-        throw new Error("暂未找到对应套餐分组");
+        throw new Error("鏆傛湭鎵惧埌瀵瑰簲濂楅鍒嗙粍");
     }
-    const confirmed = window.confirm(`确认删除套餐 ${targetGroup.groupName} 吗？删除后该套餐将不再展示和售卖。`);
+    const confirmed = window.confirm(`纭鍒犻櫎濂楅 ${targetGroup.groupName} 鍚楋紵鍒犻櫎鍚庤濂楅灏嗕笉鍐嶅睍绀哄拰鍞崠銆俙);
     if (!confirmed) {
         return;
     }
@@ -2580,11 +2743,11 @@ async function deleteModelGroup(groupId) {
         state.selectedPackageGroupId = null;
     }
     await Promise.all([loadAccessSummary(), loadModels(), loadOverview(), loadPackagePurchaseRecords()]);
-    showToast(`${targetGroup.groupName} 已删除`);
+    showToast(`${targetGroup.groupName} 宸插垹闄);
 }
 
 async function deletePurchasedPackage(packageId, packageName) {
-    const confirmed = window.confirm(`确认删除已购套餐 ${packageName || packageId} 吗？绑定该套餐的 API Key 会同步禁用。`);
+    const confirmed = window.confirm(`纭鍒犻櫎宸茶喘濂楅 ${packageName || packageId} 鍚楋紵缁戝畾璇ュ椁愮殑 API Key 浼氬悓姝ョ鐢ㄣ€俙);
     if (!confirmed) {
         return;
     }
@@ -2600,7 +2763,7 @@ async function deletePurchasedPackage(packageId, packageName) {
     }
     await Promise.all([loadAccessSummary(), loadKeys(), loadOverview(), loadPackagePurchaseRecords(), loadWalletTransactions()]);
     renderPackageSelectionViews();
-    showToast("已删除已购套餐");
+    showToast("宸插垹闄ゅ凡璐椁?);
 }
 async function onCreateKey(event) {
     event.preventDefault();
@@ -2618,7 +2781,7 @@ async function onCreateKey(event) {
     ).trim();
     const modelPackageId = rawModelPackageId ? toNumber(rawModelPackageId) : null;
     if (!modelPackageId) {
-        throw new Error("请先选择已购买且有效的具体套餐");
+        throw new Error("璇峰厛閫夋嫨宸茶喘涔颁笖鏈夋晥鐨勫叿浣撳椁?);
     }
     state.selectedPackageId = modelPackageId;
     const data = await fetchJson("/admin/api-keys", {
@@ -2632,12 +2795,12 @@ async function onCreateKey(event) {
         }
     });
     rememberPlainApiKey(data.plainTextKey);
-    elements.plainKeyBox.innerHTML = `新密钥已创建：<code>${escapeHtml(data.plainTextKey)}</code>`;
+    elements.plainKeyBox.innerHTML = `鏂板瘑閽ュ凡鍒涘缓锛?code>${escapeHtml(data.plainTextKey)}</code>`;
     elements.plainKeyBox.classList.remove("hidden");
     elements.plainKeyBox.innerHTML = `
-        <div>新密钥已创建：<code>${escapeHtml(data.plainTextKey)}</code></div>
+        <div>鏂板瘑閽ュ凡鍒涘缓锛?code>${escapeHtml(data.plainTextKey)}</code></div>
         <div class="inline-actions">
-            <button type="button" class="mini-button" data-copy-key-value="${escapeHtml(data.plainTextKey)}">一键复制</button>
+            <button type="button" class="mini-button" data-copy-key-value="${escapeHtml(data.plainTextKey)}">涓€閿鍒?/button>
         </div>
     `;
     elements.keyForm.reset();
@@ -2646,7 +2809,7 @@ async function onCreateKey(event) {
     }
     await Promise.all([loadKeys(), loadOverview(), loadAccessSummary()]);
     populateKeyGroupOptions();
-    showToast("API 密钥创建成功");
+    showToast("API 瀵嗛挜鍒涘缓鎴愬姛");
 }
 
 async function toggleKeyStatus(id, nextStatus) {
@@ -2655,11 +2818,11 @@ async function toggleKeyStatus(id, nextStatus) {
         body: { status: nextStatus }
     });
     await loadKeys();
-    showToast("密钥状态已更新");
+    showToast("瀵嗛挜鐘舵€佸凡鏇存柊");
 }
 
 async function deleteKey(id, keyName, accessKey) {
-    const confirmed = window.confirm(`确认删除 API Key ${keyName || id} 吗？删除后这个 Key 会立即不可用。`);
+    const confirmed = window.confirm(`纭鍒犻櫎 API Key ${keyName || id} 鍚楋紵鍒犻櫎鍚庤繖涓?Key 浼氱珛鍗充笉鍙敤銆俙);
     if (!confirmed) {
         return;
     }
@@ -2668,7 +2831,7 @@ async function deleteKey(id, keyName, accessKey) {
     });
     forgetPlainApiKey(accessKey);
     await loadKeys();
-    showToast("API Key 已删除");
+    showToast("API Key 宸插垹闄?);
 }
 
 async function onCreateProvider(event) {
@@ -2692,7 +2855,7 @@ async function onCreateProvider(event) {
     elements.providerForm.elements.priorityNo.value = "100";
     elements.providerForm.elements.timeoutMs.value = "60000";
     await loadProviders();
-    showToast("渠道创建成功");
+    showToast("娓犻亾鍒涘缓鎴愬姛");
 }
 
 async function toggleProviderStatus(id, nextStatus) {
@@ -2701,7 +2864,7 @@ async function toggleProviderStatus(id, nextStatus) {
         body: { status: nextStatus }
     });
     await loadProviders();
-    showToast("渠道状态已更新");
+    showToast("娓犻亾鐘舵€佸凡鏇存柊");
 }
 
 async function onCreateModel(event) {
@@ -2723,7 +2886,7 @@ async function onCreateModel(event) {
         upstreamModel: String(formData.get("upstreamModel") || "").trim()
     };
     if (!payload.groupId) {
-        throw new Error("请先选择套餐分组");
+        throw new Error("璇峰厛閫夋嫨濂楅鍒嗙粍");
     }
     if (state.editingModelId) {
         await fetchJson(`/admin/models/${state.editingModelId}`, {
@@ -2732,7 +2895,7 @@ async function onCreateModel(event) {
         });
         resetModelForm();
         await Promise.all([loadModels(), loadOverview(), loadAccessSummary()]);
-        showToast("模型已更新");
+        showToast("妯″瀷宸叉洿鏂?);
         return;
     }
     await fetchJson("/admin/models", {
@@ -2745,7 +2908,7 @@ async function onCreateModel(event) {
     });
     resetModelForm();
     await Promise.all([loadModels(), loadOverview(), loadAccessSummary()]);
-    showToast("模型创建成功");
+    showToast("妯″瀷鍒涘缓鎴愬姛");
 }
 
 function resetModelForm() {
@@ -2766,9 +2929,9 @@ function resetModelForm() {
     if (state.selectedPackageGroupId) {
         elements.modelForm.elements.groupId.value = String(state.selectedPackageGroupId);
     }
-    elements.modelFormTitle.textContent = "手动创建模型";
-    elements.modelFormCaption.textContent = "普通用户不能创建模型，只能使用管理员已创建的公开模型。";
-    elements.modelSubmitButton.textContent = "创建模型";
+    elements.modelFormTitle.textContent = "鎵嬪姩鍒涘缓妯″瀷";
+    elements.modelFormCaption.textContent = "鏅€氱敤鎴蜂笉鑳藉垱寤烘ā鍨嬶紝鍙兘浣跨敤绠＄悊鍛樺凡鍒涘缓鐨勫叕寮€妯″瀷銆?;
+    elements.modelSubmitButton.textContent = "鍒涘缓妯″瀷";
     elements.modelCancelEditButton.classList.add("hidden");
 }
 
@@ -2776,7 +2939,7 @@ function startModelEdit(id, bindingId = null) {
     const model = state.models.find((item) => bindingId && String(item.bindingId) === String(bindingId))
         || state.models.find((item) => String(item.id) === String(id));
     if (!model) {
-        throw new Error("未找到模型配置");
+        throw new Error("鏈壘鍒版ā鍨嬮厤缃?);
     }
     state.editingModelId = model.id;
     state.editingModelBindingId = model.bindingId || null;
@@ -2795,9 +2958,9 @@ function startModelEdit(id, bindingId = null) {
     elements.modelForm.elements.groupId.value = model.groupId || "";
     elements.modelForm.elements.providerId.value = model.providerId || "";
     elements.modelForm.elements.upstreamModel.value = model.upstreamModel || "";
-    elements.modelFormTitle.textContent = `编辑价格 / ${model.modelCode}`;
-    elements.modelFormCaption.textContent = "管理员可以修改模型价格、倍率、公开状态和上游映射。";
-    elements.modelSubmitButton.textContent = "保存修改";
+    elements.modelFormTitle.textContent = `缂栬緫浠锋牸 / ${model.modelCode}`;
+    elements.modelFormCaption.textContent = "绠＄悊鍛樺彲浠ヤ慨鏀规ā鍨嬩环鏍笺€佸€嶇巼銆佸叕寮€鐘舵€佸拰涓婃父鏄犲皠銆?;
+    elements.modelSubmitButton.textContent = "淇濆瓨淇敼";
     elements.modelCancelEditButton.classList.remove("hidden");
     elements.modelForm.scrollIntoView({ behavior: "auto", block: "start" });
 }
@@ -2808,11 +2971,11 @@ async function toggleModelStatus(id, nextStatus) {
         body: { status: nextStatus }
     });
     await Promise.all([loadModels(), loadOverview(), loadAccessSummary()]);
-    showToast("模型状态已更新");
+    showToast("妯″瀷鐘舵€佸凡鏇存柊");
 }
 
 async function deleteModel(id, modelCode) {
-    const confirmed = window.confirm(`确认删除模型 ${modelCode || id} 吗？会直接删除该模型和它的路由配置。`);
+    const confirmed = window.confirm(`纭鍒犻櫎妯″瀷 ${modelCode || id} 鍚楋紵浼氱洿鎺ュ垹闄よ妯″瀷鍜屽畠鐨勮矾鐢遍厤缃€俙);
     if (!confirmed) {
         return;
     }
@@ -2823,22 +2986,22 @@ async function deleteModel(id, modelCode) {
         resetModelForm();
     }
     await Promise.all([loadModels(), loadOverview(), loadAccessSummary()]);
-    showToast("模型已删除");
+    showToast("妯″瀷宸插垹闄?);
 }
 
 async function fetchUpstreamModels() {
     const groupId = toNumber(elements.importGroupSelect.value);
     const providerId = toNumber(elements.importProviderSelect.value);
     if (!groupId) {
-        throw new Error("请先选择套餐");
+        throw new Error("璇峰厛閫夋嫨濂楅");
     }
     if (!providerId) {
-        throw new Error("请先选择渠道");
+        throw new Error("璇峰厛閫夋嫨娓犻亾");
     }
     const list = await fetchJson(`/admin/models/upstream?providerId=${providerId}`);
     state.upstreamModels = (list || []).map((item) => ({ ...item, selected: false }));
     renderUpstreamModels();
-    showToast("已读取上游模型");
+    showToast("宸茶鍙栦笂娓告ā鍨?);
 }
 
 function toggleAllUpstreamModels() {
@@ -2855,13 +3018,13 @@ async function importUpstreamModels() {
     const providerId = toNumber(elements.importProviderSelect.value);
     const selected = state.upstreamModels.filter((item) => item.selected).map((item) => item.id);
     if (!groupId) {
-        throw new Error("请先选择套餐");
+        throw new Error("璇峰厛閫夋嫨濂楅");
     }
     if (!providerId) {
-        throw new Error("请先选择渠道");
+        throw new Error("璇峰厛閫夋嫨娓犻亾");
     }
     if (!selected.length) {
-        throw new Error("请至少勾选一个上游模型");
+        throw new Error("璇疯嚦灏戝嬀閫変竴涓笂娓告ā鍨?);
     }
     const result = await fetchJson("/admin/models/import", {
         method: "POST",
@@ -2869,17 +3032,13 @@ async function importUpstreamModels() {
             groupId,
             providerId,
             upstreamModels: selected,
-            promptPrice: toNumber(elements.importPromptPrice.value),
-            cachedPromptPrice: toNumber(elements.importCachedPromptPrice.value),
-            completionPrice: toNumber(elements.importCompletionPrice.value),
-            multiplier: toNumber(elements.importMultiplier.value) || 1,
             isPublic: elements.importIsPublic.value === "true"
         }
     });
     elements.importResultBox.classList.remove("hidden");
-    elements.importResultBox.innerHTML = `导入完成：成功 ${escapeHtml(result.importedCount)} 个，跳过 ${escapeHtml(result.skippedCount)} 个。`;
+    elements.importResultBox.innerHTML = `瀵煎叆瀹屾垚锛氭垚鍔?${escapeHtml(result.importedCount)} 涓紝璺宠繃 ${escapeHtml(result.skippedCount)} 涓€俙;
     await Promise.all([loadModels(), loadOverview(), loadAccessSummary()]);
-    showToast("批量导入完成");
+    showToast("鎵归噺瀵煎叆瀹屾垚");
 }
 
 async function refreshSection(section) {
@@ -2901,8 +3060,8 @@ function handleAction(action) {
         try {
             await action(event);
         } catch (error) {
-            const message = error instanceof Error ? error.message : "操作失败";
-            if (message.includes("请先登录")) {
+            const message = error instanceof Error ? error.message : "鎿嶄綔澶辫触";
+            if (message.includes("璇峰厛鐧诲綍")) {
                 logout();
             }
             showToast(message, true);
@@ -2910,10 +3069,20 @@ function handleAction(action) {
     };
 }
 
+const guardedLoginAction = withDebounceGuard("login-submit", onLogin, {
+    cooldownMs: 1200,
+    getButton: () => elements.loginSubmitButton,
+    busyText: "登录中..."
+});
+
+const guardedSendRegisterCodeAction = withDebounceGuard("register-code-send", sendRegisterCode, {
+    cooldownMs: 1200
+});
+
 function bindEvents() {
-    elements.loginForm.addEventListener("submit", handleAction(onLogin));
+    elements.loginForm.addEventListener("submit", handleAction(guardedLoginAction));
     elements.registerForm.addEventListener("submit", handleAction(onRegister));
-    elements.sendRegisterCodeButton?.addEventListener("click", handleAction(sendRegisterCode));
+    elements.sendRegisterCodeButton?.addEventListener("click", handleAction(guardedSendRegisterCodeAction));
     elements.registerForm?.elements?.email?.addEventListener("input", onRegisterEmailChange);
     elements.userForm.addEventListener("submit", handleAction(onCreateUser));
     elements.rechargeForm.addEventListener("submit", handleAction(onRecharge));
@@ -2928,11 +3097,11 @@ function bindEvents() {
     elements.refreshAllButton.addEventListener("click", handleAction(async () => {
         await loadSession();
         await loadAllData();
-        showToast("数据已刷新");
+        showToast("鏁版嵁宸插埛鏂?);
     }));
     elements.logoutButton.addEventListener("click", () => {
         logout();
-        showToast("已退出登录");
+        showToast("宸查€€鍑虹櫥褰?);
     });
     elements.openRegisterButton.addEventListener("click", () => elements.registerModal.classList.remove("hidden"));
     elements.closeRegisterButton.addEventListener("click", () => elements.registerModal.classList.add("hidden"));
@@ -2946,6 +3115,18 @@ function bindEvents() {
     elements.importUpstreamModelsButton.addEventListener("click", handleAction(importUpstreamModels));
     elements.menuItems.forEach((item) => item.addEventListener("click", () => selectPanel(item.dataset.panel)));
     elements.refreshButtons.forEach((button) => button.addEventListener("click", handleAction(() => refreshSection(button.dataset.refresh))));
+    elements.logsPrevPageButton?.addEventListener("click", handleAction(async () => {
+        if (!state.logsPage.hasPrevious) {
+            return;
+        }
+        await loadLogs(true, state.logsPage.page - 1, state.logsPage.pageSize);
+    }));
+    elements.logsNextPageButton?.addEventListener("click", handleAction(async () => {
+        if (!state.logsPage.hasNext) {
+            return;
+        }
+        await loadLogs(true, state.logsPage.page + 1, state.logsPage.pageSize);
+    }));
 
     elements.dashboardPackageSelect?.addEventListener("change", () => {
         state.selectedPackageId = elements.dashboardPackageSelect.value || null;
@@ -3140,7 +3321,7 @@ function bindEvents() {
         const copyButton = event.target.closest("[data-copy-endpoint]");
         if (copyButton && elements.overviewEndpointUrl) {
             await navigator.clipboard.writeText(elements.overviewEndpointUrl.textContent || "");
-            showToast("接入地址已复制");
+            showToast("鎺ュ叆鍦板潃宸插鍒?);
         }
     }));
 
@@ -3150,7 +3331,7 @@ function bindEvents() {
             return;
         }
         await navigator.clipboard.writeText(copyKeyButton.dataset.copyKeyValue || "");
-        showToast("API Key 已复制");
+        showToast("API Key 宸插鍒?);
     }));
 
     elements.agentDebugCopyPayloadButton?.addEventListener("click", handleAction(copyAgentDebugPayload));
@@ -3188,7 +3369,7 @@ async function bootstrap() {
         startDashboardAutoRefresh();
     } catch (error) {
         logout();
-        showToast(error instanceof Error ? error.message : "会话已失效，请重新登录", true);
+        showToast(error instanceof Error ? error.message : "浼氳瘽宸插け鏁堬紝璇烽噸鏂扮櫥褰?, true);
     }
 }
 

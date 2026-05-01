@@ -5,198 +5,103 @@ import com.zxw.common.security.JwtUser;
 import com.zxw.modules.dashboard.dto.DashboardModelStatResponse;
 import com.zxw.modules.dashboard.dto.DashboardOverviewResponse;
 import com.zxw.modules.dashboard.dto.DashboardTrendPointResponse;
-import org.springframework.beans.factory.ObjectProvider;
-import org.springframework.jdbc.core.JdbcTemplate;
+import com.zxw.persistence.mapper.DashboardQueryMapper;
+import com.zxw.persistence.model.DashboardModelStatView;
+import com.zxw.persistence.model.DashboardOverviewView;
+import com.zxw.persistence.model.DashboardTrendView;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
-import java.sql.Date;
-import java.util.Collections;
 import java.util.List;
 
 @Service
+/**
+ * 后台仪表盘服务。
+ * 负责按当前身份组装总览、趋势和模型维度统计数据。
+ */
 public class AdminDashboardService {
 
-    private final JdbcTemplate jdbcTemplate;
+    private final DashboardQueryMapper dashboardQueryMapper;
 
-    public AdminDashboardService(ObjectProvider<JdbcTemplate> jdbcTemplateProvider) {
-        this.jdbcTemplate = jdbcTemplateProvider.getIfAvailable();
+    public AdminDashboardService(DashboardQueryMapper dashboardQueryMapper) {
+        this.dashboardQueryMapper = dashboardQueryMapper;
     }
 
+    /**
+     * 查询仪表盘总览。
+     */
     public DashboardOverviewResponse getOverview() {
-        if (jdbcTemplate == null) {
-            return emptyOverview();
-        }
-
         JwtUser currentUser = AdminContext.require();
-        if (!AdminContext.isAdmin()) {
-            return jdbcTemplate.queryForObject("""
-                    select
-                        1 as user_count,
-                        (select count(*) from api_keys where deleted = 0 and user_id = ?) as api_key_count,
-                        0 as provider_count,
-                        (select count(*) from models where deleted = 0 and status = 'ACTIVE' and is_public = 1) as model_count,
-                        (select count(*) from request_logs where request_date = curdate() and user_id = ?) as request_count_today,
-                        coalesce((select sum(total_tokens) from request_logs where request_date = curdate() and user_id = ?), 0) as total_tokens_today,
-                        coalesce((select sum(total_tokens) from request_logs where user_id = ? and request_date >= curdate() - interval 6 day), 0) as total_tokens_7d,
-                        coalesce((select sum(case when direction = 'IN' then amount else 0 end)
-                                  from transactions
-                                  where transaction_date = curdate() and user_id = ?), 0) as recharge_amount_today,
-                        coalesce((select sum(user_amount)
-                                  from request_logs
-                                  where request_date = curdate() and user_id = ?), 0) as consume_amount_today,
-                        coalesce((select balance from wallets where user_id = ?), 0) as wallet_balance_total
-                    """, (rs, rowNum) -> new DashboardOverviewResponse(
-                    rs.getLong("user_count"),
-                    rs.getLong("api_key_count"),
-                    rs.getLong("provider_count"),
-                    rs.getLong("model_count"),
-                    rs.getLong("request_count_today"),
-                    rs.getLong("total_tokens_today"),
-                    rs.getLong("total_tokens_7d"),
-                    rs.getBigDecimal("recharge_amount_today"),
-                    rs.getBigDecimal("consume_amount_today"),
-                    rs.getBigDecimal("wallet_balance_total")
-            ), currentUser.userId(), currentUser.userId(), currentUser.userId(), currentUser.userId(), currentUser.userId(), currentUser.userId(), currentUser.userId());
-        }
-
-        return jdbcTemplate.queryForObject("""
-                select
-                    (select count(*) from users) as user_count,
-                    (select count(*) from api_keys where deleted = 0) as api_key_count,
-                    (select count(*) from providers where deleted = 0) as provider_count,
-                    (select count(*) from models where deleted = 0) as model_count,
-                    (select count(*) from request_logs where request_date = curdate()) as request_count_today,
-                    coalesce((select sum(total_tokens) from request_logs where request_date = curdate()), 0) as total_tokens_today,
-                    coalesce((select sum(total_tokens) from request_logs where request_date >= curdate() - interval 6 day), 0) as total_tokens_7d,
-                    coalesce((select sum(case when direction = 'IN' then amount else 0 end)
-                              from transactions
-                              where transaction_date = curdate()), 0) as recharge_amount_today,
-                    coalesce((select sum(user_amount)
-                              from request_logs
-                              where request_date = curdate()), 0) as consume_amount_today,
-                    coalesce((select sum(balance) from wallets), 0) as wallet_balance_total
-                """, (rs, rowNum) -> new DashboardOverviewResponse(
-                rs.getLong("user_count"),
-                rs.getLong("api_key_count"),
-                rs.getLong("provider_count"),
-                rs.getLong("model_count"),
-                rs.getLong("request_count_today"),
-                rs.getLong("total_tokens_today"),
-                rs.getLong("total_tokens_7d"),
-                rs.getBigDecimal("recharge_amount_today"),
-                rs.getBigDecimal("consume_amount_today"),
-                rs.getBigDecimal("wallet_balance_total")
-        ));
+        DashboardOverviewView overview = AdminContext.isAdmin()
+                ? dashboardQueryMapper.selectAdminOverview()
+                : dashboardQueryMapper.selectUserOverview(currentUser.userId());
+        return overview == null ? emptyOverview() : toOverviewResponse(overview);
     }
 
+    /**
+     * 查询最近若干天的请求趋势。
+     */
     public List<DashboardTrendPointResponse> getRequestTrend(int days) {
-        if (jdbcTemplate == null) {
-            return Collections.emptyList();
-        }
-
         JwtUser currentUser = AdminContext.require();
-        if (!AdminContext.isAdmin()) {
-            return jdbcTemplate.query("""
-                    select request_date as stat_date,
-                           count(*) as request_count,
-                           sum(case when success = 1 then 1 else 0 end) as success_count,
-                           coalesce(sum(total_tokens), 0) as total_tokens,
-                           coalesce(sum(user_amount), 0) as user_amount,
-                           coalesce(sum(cost_amount), 0) as cost_amount
-                    from request_logs
-                    where user_id = ? and request_date >= curdate() - interval ? day
-                    group by request_date
-                    order by request_date asc
-                    """, (rs, rowNum) -> new DashboardTrendPointResponse(
-                    rs.getObject("stat_date", Date.class).toLocalDate(),
-                    rs.getLong("request_count"),
-                    rs.getLong("success_count"),
-                    rs.getLong("total_tokens"),
-                    rs.getBigDecimal("user_amount"),
-                    rs.getBigDecimal("cost_amount")
-            ), currentUser.userId(), Math.max(days - 1, 0));
-        }
-
-        return jdbcTemplate.query("""
-                select request_date as stat_date,
-                       count(*) as request_count,
-                       sum(case when success = 1 then 1 else 0 end) as success_count,
-                       coalesce(sum(total_tokens), 0) as total_tokens,
-                       coalesce(sum(user_amount), 0) as user_amount,
-                       coalesce(sum(cost_amount), 0) as cost_amount
-                from request_logs
-                where request_date >= curdate() - interval ? day
-                group by request_date
-                order by request_date asc
-                """, (rs, rowNum) -> new DashboardTrendPointResponse(
-                rs.getObject("stat_date", Date.class).toLocalDate(),
-                rs.getLong("request_count"),
-                rs.getLong("success_count"),
-                rs.getLong("total_tokens"),
-                rs.getBigDecimal("user_amount"),
-                rs.getBigDecimal("cost_amount")
-        ), Math.max(days - 1, 0));
+        int daysBack = Math.max(days - 1, 0);
+        List<DashboardTrendView> rows = AdminContext.isAdmin()
+                ? dashboardQueryMapper.selectAdminTrend(daysBack)
+                : dashboardQueryMapper.selectUserTrend(currentUser.userId(), daysBack);
+        return rows.stream()
+                .map(item -> new DashboardTrendPointResponse(
+                        item.getStatDate(),
+                        defaultLong(item.getRequestCount()),
+                        defaultLong(item.getSuccessCount()),
+                        defaultLong(item.getTotalTokens()),
+                        defaultBigDecimal(item.getUserAmount()),
+                        defaultBigDecimal(item.getCostAmount())
+                ))
+                .toList();
     }
 
+    /**
+     * 查询模型维度统计结果。
+     */
     public List<DashboardModelStatResponse> getModelStats() {
-        if (jdbcTemplate == null) {
-            return Collections.emptyList();
-        }
-
         JwtUser currentUser = AdminContext.require();
-        if (!AdminContext.isAdmin()) {
-            return jdbcTemplate.query("""
-                    select model_code,
-                           coalesce(group_concat(distinct upstream_model order by upstream_model separator ', '), '') as upstream_models,
-                           count(*) as request_count,
-                           coalesce(sum(total_tokens), 0) as total_tokens,
-                           coalesce(avg(latency_ms), 0) as avg_latency_ms,
-                           coalesce(sum(latency_ms), 0) as total_latency_ms,
-                           coalesce(sum(case when success = 1 then 1 else 0 end) * 100.0 / count(*), 0) as success_rate,
-                           coalesce(sum(user_amount), 0) as user_amount
-                    from request_logs
-                    where user_id = ?
-                      and request_date >= date_format(curdate(), '%Y-%m-01')
-                    group by model_code
-                    order by request_count desc, total_tokens desc, model_code asc
-                    """, (rs, rowNum) -> new DashboardModelStatResponse(
-                    rs.getString("model_code"),
-                    rs.getString("upstream_models"),
-                    rs.getLong("request_count"),
-                    rs.getLong("total_tokens"),
-                    rs.getDouble("avg_latency_ms"),
-                    rs.getLong("total_latency_ms"),
-                    rs.getDouble("success_rate"),
-                    rs.getBigDecimal("user_amount")
-            ), currentUser.userId());
-        }
-
-        return jdbcTemplate.query("""
-                select model_code,
-                       coalesce(group_concat(distinct upstream_model order by upstream_model separator ', '), '') as upstream_models,
-                       count(*) as request_count,
-                       coalesce(sum(total_tokens), 0) as total_tokens,
-                       coalesce(avg(latency_ms), 0) as avg_latency_ms,
-                       coalesce(sum(latency_ms), 0) as total_latency_ms,
-                       coalesce(sum(case when success = 1 then 1 else 0 end) * 100.0 / count(*), 0) as success_rate,
-                       coalesce(sum(user_amount), 0) as user_amount
-                from request_logs
-                where request_date >= date_format(curdate(), '%Y-%m-01')
-                group by model_code
-                order by request_count desc, total_tokens desc, model_code asc
-                """, (rs, rowNum) -> new DashboardModelStatResponse(
-                rs.getString("model_code"),
-                rs.getString("upstream_models"),
-                rs.getLong("request_count"),
-                rs.getLong("total_tokens"),
-                rs.getDouble("avg_latency_ms"),
-                rs.getLong("total_latency_ms"),
-                rs.getDouble("success_rate"),
-                rs.getBigDecimal("user_amount")
-        ));
+        List<DashboardModelStatView> rows = AdminContext.isAdmin()
+                ? dashboardQueryMapper.selectAdminModelStats()
+                : dashboardQueryMapper.selectUserModelStats(currentUser.userId());
+        return rows.stream()
+                .map(item -> new DashboardModelStatResponse(
+                        item.getModelCode(),
+                        item.getUpstreamModels(),
+                        defaultLong(item.getRequestCount()),
+                        defaultLong(item.getTotalTokens()),
+                        item.getAvgLatencyMs() == null ? 0D : item.getAvgLatencyMs(),
+                        defaultLong(item.getTotalLatencyMs()),
+                        item.getSuccessRate() == null ? 0D : item.getSuccessRate(),
+                        defaultBigDecimal(item.getUserAmount())
+                ))
+                .toList();
     }
 
+    /**
+     * 把数据库视图对象转换为接口返回对象。
+     */
+    private DashboardOverviewResponse toOverviewResponse(DashboardOverviewView overview) {
+        return new DashboardOverviewResponse(
+                defaultLong(overview.getUserCount()),
+                defaultLong(overview.getApiKeyCount()),
+                defaultLong(overview.getProviderCount()),
+                defaultLong(overview.getModelCount()),
+                defaultLong(overview.getRequestCountToday()),
+                defaultLong(overview.getTotalTokensToday()),
+                defaultLong(overview.getTotalTokens7d()),
+                defaultBigDecimal(overview.getRechargeAmountToday()),
+                defaultBigDecimal(overview.getConsumeAmountToday()),
+                defaultBigDecimal(overview.getWalletBalanceTotal())
+        );
+    }
+
+    /**
+     * 构造空的默认总览对象。
+     */
     private DashboardOverviewResponse emptyOverview() {
         return new DashboardOverviewResponse(
                 0L,
@@ -210,5 +115,19 @@ public class AdminDashboardService {
                 BigDecimal.ZERO,
                 BigDecimal.ZERO
         );
+    }
+
+    /**
+     * 空 Long 值兜底成 0。
+     */
+    private long defaultLong(Long value) {
+        return value == null ? 0L : value;
+    }
+
+    /**
+     * 空金额兜底成 0。
+     */
+    private BigDecimal defaultBigDecimal(BigDecimal value) {
+        return value == null ? BigDecimal.ZERO : value;
     }
 }

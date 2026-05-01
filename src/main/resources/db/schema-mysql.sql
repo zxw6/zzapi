@@ -328,3 +328,212 @@ CREATE TABLE IF NOT EXISTS agent_tool_logs (
     KEY idx_agent_tool_logs_session (session_id, id),
     KEY idx_agent_tool_logs_response (response_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+SET @ddl = (
+    SELECT IF(COUNT(*) = 0,
+              'ALTER TABLE users ADD COLUMN package_restriction_enabled TINYINT(1) NOT NULL DEFAULT 1',
+              'SELECT 1')
+    FROM information_schema.columns
+    WHERE table_schema = DATABASE() AND table_name = 'users' AND column_name = 'package_restriction_enabled'
+);
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @ddl = (
+    SELECT IF(COUNT(*) = 0,
+              'ALTER TABLE api_keys ADD COLUMN model_group_id BIGINT NULL',
+              'SELECT 1')
+    FROM information_schema.columns
+    WHERE table_schema = DATABASE() AND table_name = 'api_keys' AND column_name = 'model_group_id'
+);
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @ddl = (
+    SELECT IF(COUNT(*) = 0,
+              'ALTER TABLE api_keys ADD COLUMN user_package_id BIGINT NULL',
+              'SELECT 1')
+    FROM information_schema.columns
+    WHERE table_schema = DATABASE() AND table_name = 'api_keys' AND column_name = 'user_package_id'
+);
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @ddl = (
+    SELECT IF(COUNT(*) = 0,
+              'ALTER TABLE api_keys ADD COLUMN total_quota DECIMAL(18, 4) NOT NULL DEFAULT 0.0000',
+              'SELECT 1')
+    FROM information_schema.columns
+    WHERE table_schema = DATABASE() AND table_name = 'api_keys' AND column_name = 'total_quota'
+);
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @ddl = (
+    SELECT IF(COUNT(*) = 0,
+              'ALTER TABLE api_keys ADD COLUMN used_quota DECIMAL(18, 4) NOT NULL DEFAULT 0.0000',
+              'SELECT 1')
+    FROM information_schema.columns
+    WHERE table_schema = DATABASE() AND table_name = 'api_keys' AND column_name = 'used_quota'
+);
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @ddl = (
+    SELECT IF(COUNT(*) = 0,
+              'CREATE INDEX idx_api_keys_package ON api_keys (user_package_id)',
+              'SELECT 1')
+    FROM information_schema.statistics
+    WHERE table_schema = DATABASE() AND table_name = 'api_keys' AND index_name = 'idx_api_keys_package'
+);
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @ddl = (
+    SELECT IF(COUNT(*) = 0,
+              'CREATE INDEX idx_api_keys_group ON api_keys (model_group_id)',
+              'SELECT 1')
+    FROM information_schema.statistics
+    WHERE table_schema = DATABASE() AND table_name = 'api_keys' AND index_name = 'idx_api_keys_group'
+);
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @ddl = (
+    SELECT IF(COUNT(*) = 0,
+              'ALTER TABLE request_logs ADD COLUMN user_package_id BIGINT NULL AFTER api_key_id',
+              'SELECT 1')
+    FROM information_schema.columns
+    WHERE table_schema = DATABASE() AND table_name = 'request_logs' AND column_name = 'user_package_id'
+);
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @ddl = (
+    SELECT IF(COUNT(*) = 0,
+              'ALTER TABLE request_logs ADD COLUMN cached_prompt_tokens INT NOT NULL DEFAULT 0 AFTER total_tokens',
+              'SELECT 1')
+    FROM information_schema.columns
+    WHERE table_schema = DATABASE() AND table_name = 'request_logs' AND column_name = 'cached_prompt_tokens'
+);
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @ddl = (
+    SELECT IF(COUNT(*) = 0,
+              'CREATE INDEX idx_request_logs_package_date ON request_logs (user_package_id, request_date)',
+              'SELECT 1')
+    FROM information_schema.statistics
+    WHERE table_schema = DATABASE() AND table_name = 'request_logs' AND index_name = 'idx_request_logs_package_date'
+);
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @ddl = (
+    SELECT IF(COUNT(*) = 0,
+              'ALTER TABLE models ADD COLUMN cached_prompt_price DECIMAL(18, 6) NOT NULL DEFAULT 0.000000 AFTER prompt_price',
+              'SELECT 1')
+    FROM information_schema.columns
+    WHERE table_schema = DATABASE() AND table_name = 'models' AND column_name = 'cached_prompt_price'
+);
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @ddl = (
+    SELECT IF(COUNT(*) = 0,
+              'ALTER TABLE model_group_models ADD COLUMN billing_type VARCHAR(32) NULL AFTER model_id',
+              'SELECT 1')
+    FROM information_schema.columns
+    WHERE table_schema = DATABASE() AND table_name = 'model_group_models' AND column_name = 'billing_type'
+);
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @ddl = (
+    SELECT IF(COUNT(*) = 0,
+              'ALTER TABLE model_group_models ADD COLUMN prompt_price DECIMAL(18, 6) NULL AFTER billing_type',
+              'SELECT 1')
+    FROM information_schema.columns
+    WHERE table_schema = DATABASE() AND table_name = 'model_group_models' AND column_name = 'prompt_price'
+);
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @ddl = (
+    SELECT IF(COUNT(*) = 0,
+              'ALTER TABLE model_group_models ADD COLUMN cached_prompt_price DECIMAL(18, 6) NULL AFTER prompt_price',
+              'SELECT 1')
+    FROM information_schema.columns
+    WHERE table_schema = DATABASE() AND table_name = 'model_group_models' AND column_name = 'cached_prompt_price'
+);
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @ddl = (
+    SELECT IF(COUNT(*) = 0,
+              'ALTER TABLE model_group_models ADD COLUMN completion_price DECIMAL(18, 6) NULL AFTER cached_prompt_price',
+              'SELECT 1')
+    FROM information_schema.columns
+    WHERE table_schema = DATABASE() AND table_name = 'model_group_models' AND column_name = 'completion_price'
+);
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @ddl = (
+    SELECT IF(COUNT(*) = 0,
+              'ALTER TABLE model_group_models ADD COLUMN request_price DECIMAL(18, 6) NULL AFTER completion_price',
+              'SELECT 1')
+    FROM information_schema.columns
+    WHERE table_schema = DATABASE() AND table_name = 'model_group_models' AND column_name = 'request_price'
+);
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @ddl = (
+    SELECT IF(COUNT(*) = 0,
+              'ALTER TABLE model_group_models ADD COLUMN multiplier DECIMAL(18, 4) NULL AFTER request_price',
+              'SELECT 1')
+    FROM information_schema.columns
+    WHERE table_schema = DATABASE() AND table_name = 'model_group_models' AND column_name = 'multiplier'
+);
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @ddl = (
+    SELECT IF(COUNT(*) = 0,
+              'ALTER TABLE agent_sessions ADD COLUMN summary_text LONGTEXT NULL',
+              'SELECT 1')
+    FROM information_schema.columns
+    WHERE table_schema = DATABASE() AND table_name = 'agent_sessions' AND column_name = 'summary_text'
+);
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @ddl = (
+    SELECT IF(COUNT(*) = 0,
+              'ALTER TABLE agent_sessions ADD COLUMN summary_message_id BIGINT NOT NULL DEFAULT 0',
+              'SELECT 1')
+    FROM information_schema.columns
+    WHERE table_schema = DATABASE() AND table_name = 'agent_sessions' AND column_name = 'summary_message_id'
+);
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;

@@ -1,5 +1,6 @@
 package com.zxw.modules.gateway.service;
 
+import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -7,6 +8,23 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.zxw.common.exception.BusinessException;
 import com.zxw.modules.access.service.UserModelAccessService;
 import com.zxw.modules.apikey.service.ApiKeyAuthService;
+import com.zxw.persistence.entity.AgentMessageEntity;
+import com.zxw.persistence.entity.AgentSessionEntity;
+import com.zxw.persistence.entity.AgentToolLogEntity;
+import com.zxw.persistence.entity.ModelEntity;
+import com.zxw.persistence.entity.RequestLogEntity;
+import com.zxw.persistence.entity.TransactionEntity;
+import com.zxw.persistence.entity.WalletEntity;
+import com.zxw.persistence.mapper.AgentMessageMapper;
+import com.zxw.persistence.mapper.AgentSessionMapper;
+import com.zxw.persistence.mapper.AgentToolLogMapper;
+import com.zxw.persistence.mapper.ApiKeyMapper;
+import com.zxw.persistence.mapper.GatewayAgentQueryMapper;
+import com.zxw.persistence.mapper.ModelMapper;
+import com.zxw.persistence.mapper.RequestLogMapper;
+import com.zxw.persistence.mapper.TransactionMapper;
+import com.zxw.persistence.mapper.UsageDailyMapper;
+import com.zxw.persistence.mapper.WalletMapper;
 import jakarta.servlet.http.HttpServletRequest;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
@@ -19,7 +37,6 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
@@ -54,10 +71,15 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 @Service
-
+/**
+ * 网关聊天服务。
+ * 负责统一接入 chat completions、responses、anthropic messages 等协议，
+ * 同时串联鉴权、套餐校验、路由转发、计费、日志记录以及本地 agent 会话能力。
+ */
 public class GatewayChatService {
 
     private static final Logger log = LoggerFactory.getLogger(GatewayChatService.class);
+    // 计费相关基础常量。
     private static final BigDecimal TOKENS_PER_MILLION = BigDecimal.valueOf(1_000_000L);
     private static final BigDecimal DEFAULT_REQUEST_PRICE = new BigDecimal("0.050000");
     private static final BigDecimal DEFAULT_MIN_TOKEN_CHARGE = new BigDecimal("0.003000");
@@ -65,6 +87,7 @@ public class GatewayChatService {
     private static final BigDecimal TOKEN_REQUEST_PRICE_RATIO = new BigDecimal("0.100000");
     private static final ZoneId APP_ZONE = ZoneId.of("Asia/Shanghai");
 
+    // agent 会话与工具执行相关限制，避免上下文无限膨胀。
     private static final int AGENT_MAX_STEPS = 6;
     private static final int AGENT_HISTORY_LIMIT = 24;
     private static final int AGENT_RECENT_MESSAGE_LIMIT = 8;
@@ -75,6 +98,7 @@ public class GatewayChatService {
     private static final int SIMPLE_QUERY_INPUT_ITEM_THRESHOLD = 24;
     private static final int SIMPLE_QUERY_INPUT_CHAR_THRESHOLD = 20000;
     private static final DateTimeFormatter DIRECT_TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+    // 默认注入给 IDE/Agent 模式模型的系统提示词。
     private static final String DEFAULT_IDE_AGENT_INSTRUCTIONS = """
             你是一个高级工程代理，不是普通聊天助手。你的目标不是只回答问题，而是接手任务、推进任务、完成任务。
             你必须像资深工程师一样工作：先检查，先分析，再执行，再验证，再汇报。默认目标是把项目真正修好、跑起来、可访问、可验证。
@@ -112,7 +136,16 @@ public class GatewayChatService {
     private final ApiKeyAuthService apiKeyAuthService;
     private final UserModelAccessService userModelAccessService;
     private final GatewayRouteService gatewayRouteService;
-    private final JdbcTemplate jdbcTemplate;
+    private final AgentSessionMapper agentSessionMapper;
+    private final AgentMessageMapper agentMessageMapper;
+    private final AgentToolLogMapper agentToolLogMapper;
+    private final RequestLogMapper requestLogMapper;
+    private final WalletMapper walletMapper;
+    private final TransactionMapper transactionMapper;
+    private final ApiKeyMapper apiKeyMapper;
+    private final UsageDailyMapper usageDailyMapper;
+    private final GatewayAgentQueryMapper gatewayAgentQueryMapper;
+    private final ModelMapper modelMapper;
     private final ObjectMapper objectMapper;
     private final HttpClient httpClient;
     private final OkHttpClient okHttpClient;
@@ -120,21 +153,42 @@ public class GatewayChatService {
     public GatewayChatService(ApiKeyAuthService apiKeyAuthService,
                               UserModelAccessService userModelAccessService,
                               GatewayRouteService gatewayRouteService,
-                              JdbcTemplate jdbcTemplate,
+                              AgentSessionMapper agentSessionMapper,
+                              AgentMessageMapper agentMessageMapper,
+                              AgentToolLogMapper agentToolLogMapper,
+                              RequestLogMapper requestLogMapper,
+                              WalletMapper walletMapper,
+                              TransactionMapper transactionMapper,
+                              ApiKeyMapper apiKeyMapper,
+                              UsageDailyMapper usageDailyMapper,
+                              GatewayAgentQueryMapper gatewayAgentQueryMapper,
+                              ModelMapper modelMapper,
                               ObjectMapper objectMapper) {
         this.apiKeyAuthService = apiKeyAuthService;
         this.userModelAccessService = userModelAccessService;
         this.gatewayRouteService = gatewayRouteService;
-        this.jdbcTemplate = jdbcTemplate;
+        this.agentSessionMapper = agentSessionMapper;
+        this.agentMessageMapper = agentMessageMapper;
+        this.agentToolLogMapper = agentToolLogMapper;
+        this.requestLogMapper = requestLogMapper;
+        this.walletMapper = walletMapper;
+        this.transactionMapper = transactionMapper;
+        this.apiKeyMapper = apiKeyMapper;
+        this.usageDailyMapper = usageDailyMapper;
+        this.gatewayAgentQueryMapper = gatewayAgentQueryMapper;
+        this.modelMapper = modelMapper;
         this.objectMapper = objectMapper;
         this.httpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(20)).build();
         this.okHttpClient = new OkHttpClient.Builder()
                 .retryOnConnectionFailure(true)
                 .build();
-        initializeAgentTables();
     }
 
+    /**
+     * OpenAI Chat Completions 协议入口。
+     */
     public ResponseEntity<?> chatCompletions(String authorization, String requestBody, HttpServletRequest servletRequest) {
+        // 先完成 API Key 鉴权与使用时间更新。
         String bearerToken = extractBearerToken(authorization);
         ApiKeyAuthService.AuthenticatedApiKey auth = apiKeyAuthService.authenticate(bearerToken);
         apiKeyAuthService.markUsed(auth.id());
@@ -146,11 +200,13 @@ public class GatewayChatService {
             String modelCode = getRequiredText(input, "model");
             boolean stream = input.path("stream").asBoolean(false);
             GatewayRouteService.RouteDefinition route = gatewayRouteService.resolve(modelCode);
+            // 路由解析后先校验套餐是否允许访问，再叠加套餐级价格覆盖。
             userModelAccessService.validateGatewayPackageAccess(auth, route);
             route = gatewayRouteService.applyGroupPricing(route, userModelAccessService.resolveGatewayPackageGroupId(auth, route));
             String requestId = buildRequestId();
             long startTime = System.currentTimeMillis();
 
+            // 对时间、简单问答等请求可以直接在网关层短路返回。
             ResponseEntity<?> directResponse = buildDirectChatResponseIfApplicable(
                     auth, route, requestId, requestBody, input, servletRequest, startTime, stream
             );
@@ -158,6 +214,7 @@ public class GatewayChatService {
                 return directResponse;
             }
 
+            // Claude 原生路由走单独分支处理。
             if (isAnthropicRoute(route)) {
                 if (stream) {
                     throw new BusinessException(400, "Claude 路由暂不支持 stream 请求");
@@ -168,6 +225,7 @@ public class GatewayChatService {
             boolean hasExplicitSystemPrompt = hasExplicitChatSystemPrompt(input);
             ObjectNode upstreamRequest = input.deepCopy();
             upstreamRequest.put("model", route.upstreamModel());
+            // 统一补齐 IDE/助手模式默认提示词与模型身份文案。
             boolean injectedIdePrompt = applyDefaultIdeInstructionsToChat(upstreamRequest, route.modelCode(), hasExplicitSystemPrompt);
             if (!injectedIdePrompt && !hasExplicitSystemPrompt) {
                 applyClientFacingModelIdentity(upstreamRequest, route.modelCode());
@@ -189,6 +247,9 @@ public class GatewayChatService {
         }
     }
 
+    /**
+     * OpenAI Responses 协议入口。
+     */
     public ResponseEntity<?> responses(String authorization, String requestBody, HttpServletRequest servletRequest) {
         String bearerToken = extractBearerToken(authorization);
         ApiKeyAuthService.AuthenticatedApiKey auth = apiKeyAuthService.authenticate(bearerToken);
@@ -206,6 +267,7 @@ public class GatewayChatService {
             String requestId = buildRequestId();
             long startTime = System.currentTimeMillis();
 
+            // 简单请求优先尝试直接返回，减少上游消耗与等待时间。
             ResponseEntity<?> directResponse = buildDirectResponsesIfApplicable(
                     auth, route, requestId, requestBody, input, servletRequest, startTime, stream
             );
@@ -214,6 +276,7 @@ public class GatewayChatService {
             }
 
             if (input instanceof ObjectNode objectInput) {
+                // Responses 协议会统一注入默认指令，并对简单输入做轻量优化。
                 applyDefaultIdeInstructionsToResponses(objectInput, route.modelCode());
                 ObjectNode optimizedInput = optimizeResponsesInputForSimpleQuery(objectInput, route.modelCode());
                 if (optimizedInput != objectInput) {
@@ -223,6 +286,7 @@ public class GatewayChatService {
             }
 
             if (input instanceof ObjectNode objectInput && shouldHandleResponsesAsAgent(route.modelCode(), objectInput)) {
+                // 进入 agent 模式时，不再走普通上游转发，而是由本地工具链驱动。
                 if (stream) {
                     return streamAgentResponses(auth, route, requestId, effectiveRequestBody, objectInput, servletRequest, startTime);
                 }
@@ -250,6 +314,9 @@ public class GatewayChatService {
         }
     }
 
+    /**
+     * Anthropic Messages 协议入口。
+     */
     public ResponseEntity<?> anthropicMessages(String authorization, String requestBody, HttpServletRequest servletRequest) {
         String bearerToken = extractBearerToken(authorization);
         ApiKeyAuthService.AuthenticatedApiKey auth = apiKeyAuthService.authenticate(bearerToken);
@@ -266,6 +333,7 @@ public class GatewayChatService {
             String requestId = buildRequestId();
             long startTime = System.currentTimeMillis();
 
+            // Claude 原生通道直接透传，其他模型则做兼容转换。
             if (isAnthropicRoute(route)) {
                 return anthropicNativeMessages(auth, route, requestId, requestBody, input, servletRequest, startTime, stream);
             }
@@ -299,6 +367,10 @@ public class GatewayChatService {
         }
     }
 
+    /**
+     * 查询当前可见模型列表。
+     * 未登录返回公共模型，带 API Key 时按当前套餐分组过滤。
+     */
     public Map<String, Object> listModels(String authorization) {
         List<GatewayRouteService.ModelCard> models = gatewayRouteService.listPublicModels();
         if (authorization != null && !authorization.isBlank()) {
@@ -319,6 +391,10 @@ public class GatewayChatService {
         return Map.of("object", "list", "data", data);
     }
 
+    /**
+     * 对聊天补全请求尝试走网关内置的直接回复捷径。
+     * 仅在明显是简单问答且不是 agent 模式时命中，避免无意义调用上游。
+     */
     private ResponseEntity<?> buildDirectChatResponseIfApplicable(ApiKeyAuthService.AuthenticatedApiKey auth,
                                                                   GatewayRouteService.RouteDefinition route,
                                                                   String requestId,
@@ -354,6 +430,9 @@ public class GatewayChatService {
                 .body(responseBody);
     }
 
+    /**
+     * 对 Responses 请求尝试走内置直接回复捷径。
+     */
     private ResponseEntity<?> buildDirectResponsesIfApplicable(ApiKeyAuthService.AuthenticatedApiKey auth,
                                                                GatewayRouteService.RouteDefinition route,
                                                                String requestId,
@@ -389,6 +468,9 @@ public class GatewayChatService {
         return null;
     }
 
+    /**
+     * 以非流式方式执行本地 agent 响应。
+     */
     private ResponseEntity<?> normalAgentResponses(ApiKeyAuthService.AuthenticatedApiKey auth,
                                                   GatewayRouteService.RouteDefinition route,
                                                   String requestId,
@@ -413,6 +495,9 @@ public class GatewayChatService {
                 .body(responseBody);
     }
 
+    /**
+     * 以流式方式执行本地 agent 响应。
+     */
     private ResponseEntity<?> streamAgentResponses(ApiKeyAuthService.AuthenticatedApiKey auth,
                                                    GatewayRouteService.RouteDefinition route,
                                                    String requestId,
@@ -451,6 +536,10 @@ public class GatewayChatService {
         }
     }
 
+    /**
+     * 用 OpenAI 协议返回 Claude 路由结果。
+     * 内部会把 Claude 原生响应转换成 chat completions 结构。
+     */
     private ResponseEntity<?> anthropicChat(ApiKeyAuthService.AuthenticatedApiKey auth,
                                             GatewayRouteService.RouteDefinition route,
                                             String requestId,
@@ -490,6 +579,9 @@ public class GatewayChatService {
                 .body(responseBody);
     }
 
+    /**
+     * Claude 原生 Messages 接口透传。
+     */
     private ResponseEntity<?> anthropicNativeMessages(ApiKeyAuthService.AuthenticatedApiKey auth,
                                                       GatewayRouteService.RouteDefinition route,
                                                       String requestId,
@@ -520,6 +612,9 @@ public class GatewayChatService {
                 .body(response.body());
     }
 
+    /**
+     * 把 Anthropic Messages 请求转换成 OpenAI 调用后，再转回 Anthropic 风格响应。
+     */
     private AnthropicMessageExecution executeAnthropicCompatibleMessage(ApiKeyAuthService.AuthenticatedApiKey auth,
                                                                         GatewayRouteService.RouteDefinition route,
                                                                         String requestId,
@@ -556,6 +651,9 @@ public class GatewayChatService {
         return new AnthropicMessageExecution(response.statusCode(), clientBody);
     }
 
+    /**
+     * 标准非流式 chat completions 转发。
+     */
     private ResponseEntity<?> normalChat(ApiKeyAuthService.AuthenticatedApiKey auth,
                                          GatewayRouteService.RouteDefinition route,
                                          String requestId,
@@ -590,6 +688,9 @@ public class GatewayChatService {
                 .body(responseBody);
     }
 
+    /**
+     * 标准非流式 responses 转发。
+     */
     private ResponseEntity<?> normalResponses(ApiKeyAuthService.AuthenticatedApiKey auth,
                                               GatewayRouteService.RouteDefinition route,
                                               String requestId,
@@ -626,6 +727,10 @@ public class GatewayChatService {
                 .body(responseBody);
     }
 
+    /**
+     * 标准流式 chat completions 转发。
+     * 会在流结束后回收 usage 信息并记账。
+     */
     private ResponseEntity<?> streamChat(ApiKeyAuthService.AuthenticatedApiKey auth,
                                          GatewayRouteService.RouteDefinition route,
                                          String requestId,
@@ -669,6 +774,9 @@ public class GatewayChatService {
                 .body(eventStreamBody);
     }
 
+    /**
+     * 标准流式 responses 转发。
+     */
     private ResponseEntity<?> streamResponses(ApiKeyAuthService.AuthenticatedApiKey auth,
                                               GatewayRouteService.RouteDefinition route,
                                               String requestId,
@@ -746,6 +854,9 @@ public class GatewayChatService {
                 .body(eventStreamBody);
     }
 
+    /**
+     * 针对 Codex 风格上游，把 chat stream 聚合后再转成 responses 事件流。
+     */
     private ResponseEntity<?> streamCodexResponses(ApiKeyAuthService.AuthenticatedApiKey auth,
                                                    GatewayRouteService.RouteDefinition route,
                                                    String requestId,
@@ -791,6 +902,10 @@ public class GatewayChatService {
                 .body(clientBody);
     }
 
+    /**
+     * 执行一次原始 OpenAI 风格 HTTP 请求。
+     * 这里直接返回 OkHttp Response，给上层决定如何读取文本或流。
+     */
     private Response executeOpenAiRequest(GatewayRouteService.RouteDefinition route, String path, String body) throws Exception {
         OkHttpClient client = okHttpClient.newBuilder()
                 .connectTimeout(Duration.ofMillis(route.timeoutMs()))
@@ -815,6 +930,9 @@ public class GatewayChatService {
         }
     }
 
+    /**
+     * 用 OkHttp 执行文本响应请求。
+     */
     private UpstreamTextResponse executeOpenAiRequestWithOkHttp(GatewayRouteService.RouteDefinition route, String path, String body) throws Exception {
         try (Response response = executeOpenAiRequest(route, path, body)) {
             return new UpstreamTextResponse(
@@ -824,12 +942,20 @@ public class GatewayChatService {
         }
     }
 
+    /**
+     * 统一执行 OpenAI 风格文本请求。
+     * 官方 OpenAI 域名走 PowerShell 调用，其他上游走 OkHttp。
+     */
     private UpstreamTextResponse executeOpenAiTextRequest(GatewayRouteService.RouteDefinition route, String path, String body) throws Exception {
         return isOfficialOpenAiRoute(route)
                 ? executeOpenAiRequestWithPowerShell(route, path, body)
                 : executeOpenAiRequestWithOkHttp(route, path, body);
     }
 
+    /**
+     * 通过 PowerShell 调用官方 OpenAI 接口。
+     * 主要是为了更稳地处理官方 SSE / 错误响应兼容性。
+     */
     private UpstreamTextResponse executeOpenAiRequestWithPowerShell(GatewayRouteService.RouteDefinition route, String path, String body) throws Exception {
         Path bodyFile = Files.createTempFile("zxw-openai-body-", ".json");
         try {
@@ -884,10 +1010,16 @@ public class GatewayChatService {
         }
     }
 
+    /**
+     * 判断是否为官方 OpenAI 域名。
+     */
     private boolean isOfficialOpenAiRoute(GatewayRouteService.RouteDefinition route) {
         return route.baseUrl() != null && route.baseUrl().toLowerCase(Locale.ROOT).contains("api.openai.com");
     }
 
+    /**
+     * 规范化 OpenAI 风格上游地址。
+     */
     private String resolveOpenAiEndpoint(String baseUrl, String path) {
         if (baseUrl == null || baseUrl.isBlank()) {
             return path;
@@ -902,6 +1034,9 @@ public class GatewayChatService {
         return normalizedBaseUrl + "/v1" + path;
     }
 
+    /**
+     * 组装上游请求失败的排查信息。
+     */
     private String buildUpstreamErrorMessage(GatewayRouteService.RouteDefinition route, String path, Exception ex) {
         String category = isTimeoutException(ex) ? "upstream timeout" : "upstream request failed";
         return category
@@ -913,6 +1048,9 @@ public class GatewayChatService {
                 + ", reason=" + describeException(ex);
     }
 
+    /**
+     * 判断异常链中是否包含超时语义。
+     */
     private boolean isTimeoutException(Throwable ex) {
         Throwable current = ex;
         while (current != null) {
@@ -931,6 +1069,9 @@ public class GatewayChatService {
         return false;
     }
 
+    /**
+     * 把异常链压缩成一行可读文本。
+     */
     private String describeException(Throwable ex) {
         List<String> parts = new ArrayList<>();
         Throwable current = ex;
@@ -950,12 +1091,18 @@ public class GatewayChatService {
         return value == null || value.isBlank() ? "-" : value;
     }
 
+    /**
+     * 判断当前上游是否需要把 Codex SSE 聚合成完整响应再向外转换。
+     */
     private boolean shouldAggregateCodexStream(GatewayRouteService.RouteDefinition route) {
         return !isOfficialOpenAiRoute(route)
                 && route.upstreamModel() != null
                 && route.upstreamModel().toLowerCase(Locale.ROOT).contains("codex");
     }
 
+    /**
+     * 判断当前模型是否应保留原生 Responses 路由能力。
+     */
     private boolean shouldKeepNativeResponsesRouting(GatewayRouteService.RouteDefinition route) {
         if (route == null) {
             return false;
@@ -965,6 +1112,9 @@ public class GatewayChatService {
         return isAgentCapableOpenAiModel(publicModel) || isAgentCapableOpenAiModel(upstreamModel);
     }
 
+    /**
+     * 判断是否需要把 Responses 请求兼容转换成 chat completions。
+     */
     private boolean shouldUseResponsesCompatibility(GatewayRouteService.RouteDefinition route) {
         return route != null
                 && !isAnthropicRoute(route)
@@ -973,6 +1123,9 @@ public class GatewayChatService {
                 && !shouldAggregateCodexStream(route);
     }
 
+    /**
+     * 把 Responses 请求转换成 chat completions，再把结果回组装成 Responses JSON。
+     */
     private UpstreamTextResponse executeResponsesCompatibility(GatewayRouteService.RouteDefinition route, String body) throws Exception {
         ObjectNode chatRequest = buildChatCompletionsRequestFromResponses((ObjectNode) objectMapper.readTree(body), route.upstreamModel(), route.modelCode());
         UpstreamTextResponse chatResponse = executeOpenAiTextRequest(route, "/chat/completions", objectMapper.writeValueAsString(chatRequest));
@@ -988,6 +1141,9 @@ public class GatewayChatService {
         return new UpstreamTextResponse(chatResponse.statusCode(), objectMapper.writeValueAsString(buildResponsesFromChatCompletion(chatJson, route.modelCode())));
     }
 
+    /**
+     * 兼容模式下执行流式 Responses。
+     */
     private UpstreamTextResponse executeResponsesCompatibilityStream(GatewayRouteService.RouteDefinition route, String body) throws Exception {
         UpstreamTextResponse response = executeResponsesCompatibility(route, body);
         if (response.statusCode() < 200 || response.statusCode() >= 300) {
@@ -1001,6 +1157,9 @@ public class GatewayChatService {
         return new UpstreamTextResponse(response.statusCode(), buildResponsesEventStreamFromResponseJson(responseJson));
     }
 
+    /**
+     * 调用 Codex chat stream，并把完整 SSE 聚合成单个 chat completion JSON。
+     */
     private UpstreamTextResponse executeCodexChatByStreaming(GatewayRouteService.RouteDefinition route, String body) throws Exception {
         ObjectNode streamRequest = ensureChatStreamUsageIncluded((ObjectNode) objectMapper.readTree(body));
 
@@ -1013,6 +1172,9 @@ public class GatewayChatService {
         }
     }
 
+    /**
+     * 调用 Codex stream 后，再把 chat completion 结果转成 Responses JSON。
+     */
     private UpstreamTextResponse executeCodexResponsesByStreaming(GatewayRouteService.RouteDefinition route, String body) throws Exception {
         ObjectNode chatRequest = buildChatCompletionsRequestFromResponses((ObjectNode) objectMapper.readTree(body), route.upstreamModel(), route.modelCode());
         UpstreamTextResponse chatResponse = executeCodexChatByStreaming(route, objectMapper.writeValueAsString(chatRequest));
@@ -1026,6 +1188,9 @@ public class GatewayChatService {
         return new UpstreamTextResponse(chatResponse.statusCode(), objectMapper.writeValueAsString(buildResponsesFromChatCompletion(chatJson, route.modelCode())));
     }
 
+    /**
+     * 把上游 chat SSE 事件流聚合成完整 chat completion JSON。
+     */
     private String buildChatCompletionFromSse(GatewayRouteService.RouteDefinition route, String sseBody) throws Exception {
         StringBuilder contentBuilder = new StringBuilder();
         String responseId = buildRequestId();
@@ -1035,6 +1200,7 @@ public class GatewayChatService {
         JsonNode usage = null;
         Map<Integer, ObjectNode> toolCallMap = new LinkedHashMap<>();
 
+        // 逐行提取 delta、tool_calls 和 usage，最后再拼成完整响应。
         for (String rawLine : sseBody.split("\\r?\\n")) {
             String line = rawLine == null ? "" : rawLine.trim();
             if (!line.startsWith("data:")) {
@@ -1138,6 +1304,9 @@ public class GatewayChatService {
         return objectMapper.writeValueAsString(response);
     }
 
+    /**
+     * 把 Responses SSE 聚合成完整 response JSON。
+     */
     private String buildResponsesFromSse(GatewayRouteService.RouteDefinition route, String sseBody) throws Exception {
         StringBuilder outputText = new StringBuilder();
         String responseId = buildRequestId();
@@ -1223,6 +1392,10 @@ public class GatewayChatService {
         return objectMapper.writeValueAsString(response);
     }
 
+    /**
+     * 标准化上游返回体。
+     * 主要补齐官方 OpenAI 某些空 body 错误场景下的可读错误信息。
+     */
     private String normalizeUpstreamResponseBody(GatewayRouteService.RouteDefinition route, int statusCode, String body) throws Exception {
         if (body != null && !body.isBlank()) {
             return body;
@@ -1248,6 +1421,9 @@ public class GatewayChatService {
         return body == null ? "" : body;
     }
 
+    /**
+     * 把返回给客户端的 model 字段统一改写成公网模型名。
+     */
     private String rewriteClientFacingModel(GatewayRouteService.RouteDefinition route, String body) throws Exception {
         if (body == null || body.isBlank() || route == null || route.modelCode() == null || route.modelCode().isBlank()) {
             return body == null ? "" : body;
@@ -1259,6 +1435,9 @@ public class GatewayChatService {
         return rewriteJsonModelField(body, route.modelCode());
     }
 
+    /**
+     * 改写普通 JSON 响应里的 model 字段。
+     */
     private String rewriteJsonModelField(String body, String modelCode) throws Exception {
         JsonNode json = tryReadJson(body);
         if (json == null || !json.isObject()) {
@@ -1275,6 +1454,9 @@ public class GatewayChatService {
         return objectMapper.writeValueAsString(copy);
     }
 
+    /**
+     * 改写 SSE 事件流里各事件的 model 字段。
+     */
     private String rewriteSseModelField(String eventStreamBody, String modelCode) throws Exception {
         StringBuilder builder = new StringBuilder();
         for (String rawLine : eventStreamBody.split("(?<=\\n)")) {
@@ -1312,12 +1494,18 @@ public class GatewayChatService {
         return builder.toString();
     }
 
+    /**
+     * 读取输入流全部字节。
+     */
     private byte[] readAllBytes(InputStream inputStream) throws Exception {
         ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
         inputStream.transferTo(outputStream);
         return outputStream.toByteArray();
     }
 
+    /**
+     * 构造基础 OpenAI 风格 HttpRequest。
+     */
     private HttpRequest baseHttpRequest(GatewayRouteService.RouteDefinition route, String path, String body) {
         return HttpRequest.newBuilder()
                 .uri(URI.create(route.baseUrl() + path))
@@ -1328,6 +1516,9 @@ public class GatewayChatService {
                 .build();
     }
 
+    /**
+     * 构造 Anthropic 原生请求。
+     */
     private HttpRequest anthropicHttpRequest(GatewayRouteService.RouteDefinition route, String body) {
         return HttpRequest.newBuilder()
                 .uri(URI.create(resolveAnthropicEndpoint(route.baseUrl())))
@@ -1340,6 +1531,9 @@ public class GatewayChatService {
                 .build();
     }
 
+    /**
+     * 把 OpenAI 风格 chat 请求转换成 Claude 原生 messages 请求。
+     */
     private ObjectNode buildAnthropicRequest(JsonNode input, String upstreamModel) {
         ObjectNode request = objectMapper.createObjectNode();
         request.put("model", upstreamModel);
@@ -1362,6 +1556,7 @@ public class GatewayChatService {
             request.put("system", systemText);
         }
 
+        // system 单独提取，user/assistant 再重组为 Claude 所需结构。
         ArrayNode messages = objectMapper.createArrayNode();
         for (JsonNode item : input.path("messages")) {
             String role = item.path("role").asText("");
@@ -1391,6 +1586,9 @@ public class GatewayChatService {
         return request;
     }
 
+    /**
+     * 复制 Responses 协议中的 tools / tool_choice 配置到 chat 请求。
+     */
     private void copyResponsesToolConfig(ObjectNode input, ObjectNode request) {
         if (input == null || request == null) {
             return;
@@ -1406,6 +1604,9 @@ public class GatewayChatService {
         }
     }
 
+    /**
+     * 把 Responses 风格工具定义转换成 chat completions 工具定义。
+     */
     private ArrayNode transformResponsesToolsToChatTools(ArrayNode tools) {
         ArrayNode transformed = objectMapper.createArrayNode();
         for (JsonNode tool : tools) {
@@ -1429,6 +1630,9 @@ public class GatewayChatService {
         return transformed;
     }
 
+    /**
+     * 把 Responses 风格 tool_choice 转换成 chat completions 风格。
+     */
     private JsonNode transformResponsesToolChoiceToChatToolChoice(JsonNode toolChoice) {
         if (toolChoice == null || toolChoice.isNull()) {
             return null;
@@ -1458,6 +1662,9 @@ public class GatewayChatService {
         return transformed;
     }
 
+    /**
+     * 把 Anthropic Messages 请求转换成 OpenAI chat completions 请求。
+     */
     private ObjectNode buildOpenAiChatRequestFromAnthropic(JsonNode input, String upstreamModel) {
         ObjectNode request = objectMapper.createObjectNode();
         request.put("model", upstreamModel);
@@ -1512,6 +1719,9 @@ public class GatewayChatService {
         return request;
     }
 
+    /**
+     * 把 Claude 原生响应转换成 OpenAI chat completion 响应。
+     */
     private ObjectNode buildOpenAiResponseFromAnthropic(JsonNode anthropicResponse, String modelCode) {
         int promptTokens = anthropicResponse.path("usage").path("input_tokens").asInt(0);
         int completionTokens = anthropicResponse.path("usage").path("output_tokens").asInt(0);
@@ -1543,6 +1753,10 @@ public class GatewayChatService {
         return response;
     }
 
+    /**
+     * 把 Responses 请求转换成 chat completions 请求。
+     * 这是兼容不支持原生 Responses 上游的核心转换入口。
+     */
     private ObjectNode buildChatCompletionsRequestFromResponses(ObjectNode input, String upstreamModel, String modelCode) {
         ObjectNode request = objectMapper.createObjectNode();
         request.put("model", upstreamModel);
@@ -1592,6 +1806,9 @@ public class GatewayChatService {
         return request;
     }
 
+    /**
+     * 给消息列表前置一条“对外身份提示”，统一模型自我介绍口径。
+     */
     private void applyClientFacingModelIdentity(ObjectNode request, String modelCode) {
         if (request == null || modelCode == null || modelCode.isBlank()) {
             return;
@@ -1603,6 +1820,9 @@ public class GatewayChatService {
         prependClientFacingModelIdentity(messages, modelCode);
     }
 
+    /**
+     * 在消息头部插入系统提示，约束模型对外展示名称与回答风格。
+     */
     private void prependClientFacingModelIdentity(ArrayNode messages, String modelCode) {
         if (messages == null || modelCode == null || modelCode.isBlank()) {
             return;
@@ -1649,14 +1869,24 @@ public class GatewayChatService {
         messages.insert(0, systemMessage);
     }
 
+    /**
+     * 预留给 IDE agent 默认参数注入的钩子。
+     * 当前选择保持透传，不在网关侧强加工作流提示。
+     */
     private void applyIdeAgentDefaults(ObjectNode request, String modelCode) {
         // IDE clients should be forwarded as-is. Do not inject server-side agent defaults.
     }
 
+    /**
+     * 预留 chat completions 默认 IDE 提示词注入钩子。
+     */
     private boolean applyDefaultIdeInstructionsToChat(ObjectNode request, String modelCode, boolean hasExplicitSystemPrompt) {
         return false;
     }
 
+    /**
+     * 为非显式 IDE / tool 场景补一层通用助手提示词与默认采样参数。
+     */
     private void applyGeneralAssistantDefaults(ObjectNode request, String modelCode) {
         if (request == null || !shouldUseAgentMode(modelCode)) {
             return;
@@ -1687,6 +1917,9 @@ public class GatewayChatService {
         }
     }
 
+    /**
+     * 判断消息里是否已经存在 system / developer 级提示。
+     */
     private boolean hasSystemLikeMessage(ArrayNode messages) {
         if (messages == null) {
             return false;
@@ -1700,6 +1933,9 @@ public class GatewayChatService {
         return false;
     }
 
+    /**
+     * 判断 chat 请求是否显式携带了系统提示。
+     */
     private boolean hasExplicitChatSystemPrompt(JsonNode input) {
         if (!(input instanceof ObjectNode objectNode)) {
             return false;
@@ -1711,11 +1947,17 @@ public class GatewayChatService {
         return hasSystemLikeMessage(messages);
     }
 
+    /**
+     * 判断请求里是否显式声明了 tools。
+     */
     private boolean hasRequestTools(ObjectNode request) {
         JsonNode tools = request.path("tools");
         return tools != null && tools.isArray() && !tools.isEmpty();
     }
 
+    /**
+     * 粗略判断当前会话是否更像 IDE / 编程任务。
+     */
     private boolean looksLikeIdeCodingTask(ArrayNode messages) {
         String text = flattenMessagesForIntent(messages).toLowerCase(Locale.ROOT);
         if (text.isBlank()) {
@@ -1752,6 +1994,9 @@ public class GatewayChatService {
                 || text.contains("接口");
     }
 
+    /**
+     * 将多条消息压平成一段文本，供意图识别复用。
+     */
     private String flattenMessagesForIntent(ArrayNode messages) {
         if (messages == null || messages.isEmpty()) {
             return "";
@@ -1770,6 +2015,9 @@ public class GatewayChatService {
         return builder.toString();
     }
 
+    /**
+     * 把 Responses 协议输入规整成 chat completions 消息数组。
+     */
     private ArrayNode buildMessagesFromResponsesInput(ObjectNode input) {
         ArrayNode messages = objectMapper.createArrayNode();
 
@@ -1865,10 +2113,16 @@ public class GatewayChatService {
         return messages;
     }
 
+    /**
+     * 预留给 Responses 默认 IDE 提示词注入的钩子。
+     */
     private void applyDefaultIdeInstructionsToResponses(ObjectNode input, String modelCode) {
         // Keep Responses requests untouched so IDE clients can use their own tool and workflow prompts.
     }
 
+    /**
+     * 判断 Responses 请求里是否已经显式携带 instructions / developer 级提示。
+     */
     private boolean hasExplicitResponsesInstructions(ObjectNode input) {
         if (input == null) {
             return false;
@@ -1892,6 +2146,9 @@ public class GatewayChatService {
         return false;
     }
 
+    /**
+     * 将 Responses 风格 role 映射到 chat completions role。
+     */
     private String mapResponsesRole(String role) {
         String normalized = role == null ? "" : role.trim().toLowerCase(Locale.ROOT);
         if ("assistant".equals(normalized)) {
@@ -1903,10 +2160,16 @@ public class GatewayChatService {
         return "user";
     }
 
+    /**
+     * 预留轻量化 Codex 提示词策略开关。
+     */
     private boolean shouldUseLightweightCodexPrompt(String modelCode, ArrayNode messages) {
         return false;
     }
 
+    /**
+     * 对简单问答型 Responses 请求做瘦身，避免长上下文白白消耗。
+     */
     private ObjectNode optimizeResponsesInputForSimpleQuery(ObjectNode input, String modelCode) {
         if (input == null || !shouldUseAgentMode(modelCode)) {
             return input;
@@ -1923,6 +2186,7 @@ public class GatewayChatService {
             return input;
         }
 
+        // 保留核心问题，移除对简单问答无关的历史、tools 与并行配置。
         ObjectNode optimized = input.deepCopy();
         optimized.remove("previous_response_id");
         optimized.remove("conversation");
@@ -1959,6 +2223,9 @@ public class GatewayChatService {
         return optimized;
     }
 
+    /**
+     * 判断 Responses 输入是否明显过于臃肿。
+     */
     private boolean isBloatedResponsesInput(ObjectNode input) {
         JsonNode inputNode = input == null ? null : input.get("input");
         if (inputNode == null || inputNode.isNull()) {
@@ -1970,6 +2237,9 @@ public class GatewayChatService {
         return inputNode.toString().length() >= SIMPLE_QUERY_INPUT_CHAR_THRESHOLD;
     }
 
+    /**
+     * 构造最小化消息集，只保留一条系统提示和最新用户问题。
+     */
     private ArrayNode buildLightweightCodexMessages(ArrayNode messages) {
         String latestUser = "";
         for (JsonNode message : messages) {
@@ -1991,6 +2261,9 @@ public class GatewayChatService {
         return optimized;
     }
 
+    /**
+     * 粗略识别是否为短平快的一般问答，而不是编程 / 工具任务。
+     */
     private boolean looksLikeSimpleGeneralQuestion(String text) {
         if (text == null) {
             return false;
@@ -2024,6 +2297,9 @@ public class GatewayChatService {
                 || lower.contains("能做什么");
     }
 
+    /**
+     * 把 chat completion JSON 转换成 Responses JSON。
+     */
     private ObjectNode buildResponsesFromChatCompletion(JsonNode chatResponse, String modelCode) {
         JsonNode choice = chatResponse.path("choices").isArray() && !chatResponse.path("choices").isEmpty()
                 ? chatResponse.path("choices").get(0)
@@ -2083,6 +2359,9 @@ public class GatewayChatService {
         return response;
     }
 
+    /**
+     * 把 chat completion JSON 转换成 Responses SSE 事件流。
+     */
     private String buildResponsesEventStreamFromChatCompletion(JsonNode chatResponse, String modelCode) throws Exception {
         ObjectNode completedResponse = buildResponsesFromChatCompletion(chatResponse, modelCode);
 
@@ -2153,6 +2432,9 @@ public class GatewayChatService {
                 .toString();
     }
 
+    /**
+     * 把 OpenAI chat completion 响应转换成 Anthropic Messages 响应。
+     */
     private ObjectNode buildAnthropicResponseFromOpenAi(JsonNode openAiResponse, String modelCode) {
         JsonNode choice = openAiResponse.path("choices").isArray() && !openAiResponse.path("choices").isEmpty()
                 ? openAiResponse.path("choices").get(0)
@@ -2187,6 +2469,9 @@ public class GatewayChatService {
         return response;
     }
 
+    /**
+     * 统一整理 stop sequences 为数组格式。
+     */
     private ArrayNode normalizeStopSequences(JsonNode stopNode) {
         if (stopNode == null || stopNode.isNull()) {
             return null;
@@ -2208,6 +2493,9 @@ public class GatewayChatService {
         return array;
     }
 
+    /**
+     * 从消息数组中提取并拼接全部 system prompt。
+     */
     private String collectSystemPrompt(JsonNode messages) {
         StringBuilder builder = new StringBuilder();
         for (JsonNode item : messages) {
@@ -2228,6 +2516,9 @@ public class GatewayChatService {
         return builder.toString();
     }
 
+    /**
+     * 压平多种 message content 结构，提取纯文本。
+     */
     private String flattenMessageContent(JsonNode contentNode) {
         if (contentNode == null || contentNode.isNull()) {
             return "";
@@ -2253,6 +2544,9 @@ public class GatewayChatService {
         return contentNode.asText("");
     }
 
+    /**
+     * 提取 Claude content 数组中的文本内容。
+     */
     private String extractAnthropicText(JsonNode contentArray) {
         if (contentArray == null || contentArray.isNull()) {
             return "";
@@ -2274,6 +2568,9 @@ public class GatewayChatService {
         return builder.toString();
     }
 
+    /**
+     * 提取 Responses output 中的 output_text 内容。
+     */
     private String extractResponseOutputText(JsonNode contentArray) {
         if (contentArray == null || contentArray.isNull()) {
             return "";
@@ -2295,6 +2592,9 @@ public class GatewayChatService {
         return builder.toString();
     }
 
+    /**
+     * 压平 Responses 协议里的 input / content 结构，尽量提取为纯文本。
+     */
     private String flattenResponsesInputText(JsonNode inputNode) {
         if (inputNode == null || inputNode.isNull()) {
             return "";
@@ -2366,6 +2666,9 @@ public class GatewayChatService {
         return inputNode.asText("");
     }
 
+    /**
+     * 清洗并裁剪 developer / instructions 文本，避免把无关内部提示原样透传过长。
+     */
     private String sanitizeDeveloperInstructions(String text) {
         if (text == null) {
             return "";
@@ -2400,6 +2703,9 @@ public class GatewayChatService {
         return normalized.length() > 4000 ? normalized.substring(0, 4000) : normalized;
     }
 
+    /**
+     * 构造默认 IDE agent 系统提示词。
+     */
     private String buildDefaultIdeAgentSystemPrompt(String modelCode) {
         return ("""
                 你对外显示为 %s。用户问你是什么模型时，回答 %s，不要提上游供应商或网关。
@@ -2408,15 +2714,24 @@ public class GatewayChatService {
                 """.formatted(modelCode, modelCode, DEFAULT_IDE_AGENT_INSTRUCTIONS)).trim();
     }
 
+    /**
+     * 判断当前模型是否启用 agent 模式能力。
+     */
     private boolean shouldUseAgentMode(String modelCode) {
         return isAgentCapableOpenAiModel(modelCode);
     }
 
+    /**
+     * 判断模型名是否属于当前支持 agent 的 OpenAI 风格模型。
+     */
     private boolean isAgentCapableOpenAiModel(String modelCode) {
         String normalized = modelCode == null ? "" : modelCode.toLowerCase(Locale.ROOT);
         return normalized.contains("codex") || normalized.contains("gpt-5");
     }
 
+    /**
+     * 判断当前 Responses 请求是否必须跳过“直接回复捷径”。
+     */
     private boolean shouldBypassDirectResponsesShortcut(String modelCode, ObjectNode input) {
         if (input == null || !shouldUseAgentMode(modelCode)) {
             return false;
@@ -2427,6 +2742,9 @@ public class GatewayChatService {
                 || hasExplicitResponsesInstructions(input);
     }
 
+    /**
+     * 判断当前 Responses 请求是否应该进入本地 agent 工作流。
+     */
     private boolean shouldHandleResponsesAsAgent(String modelCode, ObjectNode input) {
         if (input == null || !shouldUseAgentMode(modelCode)) {
             return false;
@@ -2448,6 +2766,9 @@ public class GatewayChatService {
         return looksLikeWorkspaceAgentRequest(latestUserText);
     }
 
+    /**
+     * 基于关键词粗略判断是否是工作区/代码操作类请求。
+     */
     private boolean looksLikeWorkspaceAgentRequest(String text) {
         if (text == null || text.isBlank()) {
             return false;
@@ -2524,6 +2845,9 @@ public class GatewayChatService {
                 || normalized.contains("修复");
     }
 
+    /**
+     * 判断请求是否显式声明要启用 gateway agent。
+     */
     private boolean isExplicitGatewayAgentRequest(ObjectNode input) {
         JsonNode metadata = input.path("metadata");
         return isTrueNode(metadata.get("gateway_agent"))
@@ -2532,6 +2856,9 @@ public class GatewayChatService {
                 || isTrueNode(input.get("server_agent"));
     }
 
+    /**
+     * 把布尔或字符串节点统一识别成 true/false。
+     */
     private boolean isTrueNode(JsonNode node) {
         if (node == null || node.isNull()) {
             return false;
@@ -2543,6 +2870,9 @@ public class GatewayChatService {
         return "true".equalsIgnoreCase(text) || "1".equals(text) || "yes".equalsIgnoreCase(text);
     }
 
+    /**
+     * 判断请求里是否携带工作区路径提示。
+     */
     private boolean hasWorkspaceHint(ObjectNode input) {
         JsonNode metadata = input.path("metadata");
         return hasNonBlankText(
@@ -2559,6 +2889,9 @@ public class GatewayChatService {
         );
     }
 
+    /**
+     * 判断多个节点里是否至少有一个非空文本。
+     */
     private boolean hasNonBlankText(JsonNode... nodes) {
         if (nodes == null) {
             return false;
@@ -2571,6 +2904,9 @@ public class GatewayChatService {
         return false;
     }
 
+    /**
+     * 提取 Responses 输入里最后一条用户文本。
+     */
     private String extractLatestUserTextFromResponses(JsonNode input) {
         if (!(input instanceof ObjectNode objectNode)) {
             return "";
@@ -2588,6 +2924,9 @@ public class GatewayChatService {
         return latest;
     }
 
+    /**
+     * 提取 chat 请求里最后一条用户文本。
+     */
     private String extractLatestUserTextFromChat(JsonNode input) {
         if (input == null || input.isNull()) {
             return "";
@@ -2605,10 +2944,16 @@ public class GatewayChatService {
         return latest;
     }
 
+    /**
+     * 预留简单问答直出能力。
+     */
     private String buildSimpleDirectAnswer(String text) {
         return null;
     }
 
+    /**
+     * 构造零 token 消耗的简单 Responses 响应。
+     */
     private ObjectNode buildSimpleResponsesResponse(String modelCode, String text) {
         ObjectNode textPart = objectMapper.createObjectNode();
         textPart.put("type", "output_text");
@@ -2644,6 +2989,9 @@ public class GatewayChatService {
         return response;
     }
 
+    /**
+     * 构造零 token 消耗的简单 chat completion 响应。
+     */
     private ObjectNode buildSimpleChatCompletionResponse(String modelCode, String text) {
         ObjectNode message = objectMapper.createObjectNode();
         message.put("role", "assistant");
@@ -2672,6 +3020,9 @@ public class GatewayChatService {
         return response;
     }
 
+    /**
+     * 把完整 Responses JSON 转回 SSE 事件流。
+     */
     private String buildResponsesEventStreamFromResponseJson(JsonNode responseJson) throws Exception {
         ObjectNode createdEvent = objectMapper.createObjectNode();
         createdEvent.put("type", "response.created");
@@ -2740,6 +3091,9 @@ public class GatewayChatService {
                 .toString();
     }
 
+    /**
+     * 构造失败场景下的 Responses SSE 事件流。
+     */
     private String buildResponsesErrorEventStream(int status, String message) throws Exception {
         ObjectNode event = objectMapper.createObjectNode();
         event.put("type", "error");
@@ -2767,6 +3121,9 @@ public class GatewayChatService {
                 .toString();
     }
 
+    /**
+     * 把完整 chat completion JSON 转成最简 SSE 输出。
+     */
     private String buildChatCompletionEventStreamFromResponseJson(JsonNode responseJson) throws Exception {
         JsonNode choice = responseJson.path("choices").isArray() && !responseJson.path("choices").isEmpty()
                 ? responseJson.path("choices").get(0)
@@ -2793,6 +3150,10 @@ public class GatewayChatService {
         return "data: " + objectMapper.writeValueAsString(chunk) + "\n\n" + "data: [DONE]\n\n";
     }
 
+    /**
+     * 执行本地 agent 响应主流程。
+     * 负责会话衔接、规划、工具调用、最终总结以及事件流输出。
+     */
     private AgentExecutionResult executeLocalAgentResponses(ApiKeyAuthService.AuthenticatedApiKey auth,
                                                             GatewayRouteService.RouteDefinition route,
                                                             String requestId,
@@ -2809,6 +3170,7 @@ public class GatewayChatService {
         session = compressSessionHistoryIfNeeded(session, null);
         ArrayNode conversation = loadSessionConversation(session);
 
+        // 先持久化本轮请求，再把消息接到内存会话上下文里。
         persistMessages(session.id(), requestId, requestMessages, "request");
         appendMessages(conversation, requestMessages);
 
@@ -2827,6 +3189,7 @@ public class GatewayChatService {
         List<String> analyses = new ArrayList<>();
         boolean toolReminderInjected = false;
 
+        // 采用“规划 -> 工具 -> 回灌 -> 再规划”的多步 agent 循环。
         for (int step = 1; step <= AGENT_MAX_STEPS; step++) {
             sink.emit(buildAgentStatusEvent("thinking", Map.of(
                     "step", step,
@@ -2882,6 +3245,7 @@ public class GatewayChatService {
 
                 persistToolConversation(session.id(), requestId, decision.toolName(), decision.arguments(), toolExecution.modelVisibleResult());
                 toolSummaries.add(toolExecution.summaryJson().deepCopy());
+                // 工具调用结果会回灌进会话，供下一轮规划继续使用。
                 conversation.add(buildAssistantToolRequestMessage(decision.toolName(), decision.arguments(), toolTitle));
                 conversation.add(buildToolResultMessage(toolExecution.modelVisibleResult()));
                 continue;
@@ -2907,6 +3271,7 @@ public class GatewayChatService {
             }
         }
 
+        // 多轮后仍没得到 final，就生成一个兜底总结。
         if (finalText.isBlank()) {
             finalText = buildAgentFallbackFinalText(toolSummaries);
         }
@@ -2958,6 +3323,7 @@ public class GatewayChatService {
             finalText = analyses.get(0) + "\n\n" + finalText;
         }
 
+        // 最终答案落库，并更新会话最后响应 id。
         persistAssistantMessage(session.id(), requestId, finalText);
         updateSessionLastResponse(session.id(), requestId);
         session = compressSessionHistoryIfNeeded(session, sink);
@@ -3000,6 +3366,10 @@ public class GatewayChatService {
         return new AgentExecutionResult(responseJson, promptTokens, completionTokens, totalTokens);
     }
 
+    /**
+     * 执行网关内置的 agent 流程。
+     * 当前服务已经收敛为纯转发网关，这里保留统一拦截口，明确拒绝服务器侧本地文件/命令能力。
+     */
     private AgentExecutionResult executeAgentResponses(ApiKeyAuthService.AuthenticatedApiKey auth,
                                                        GatewayRouteService.RouteDefinition route,
                                                        String requestId,
@@ -3008,6 +3378,9 @@ public class GatewayChatService {
         throw new BusinessException(400, "当前服务已切换为纯网关模式，不再在服务器上扫描、读取、修改或执行本地文件。请在你自己的电脑上安装 Codex，并通过本网关 API 使用你的本地工具。");
     }
 
+    /**
+     * 执行一轮 agent 规划，让模型决定下一步是调工具还是直接给结论。
+     */
     private AgentModelTurn executeAgentPlanner(GatewayRouteService.RouteDefinition route,
                                                ArrayNode conversation,
                                                Path workspaceRoot,
@@ -3049,6 +3422,9 @@ public class GatewayChatService {
         return new AgentModelTurn(text, promptTokens, completionTokens, totalTokens);
     }
 
+    /**
+     * 构造本地 agent 的系统提示词。
+     */
     private String buildAgentSystemPrompt(Path workspaceRoot, int step) {
         return """
                 你是 ZXW Agent，一个在 AI Gateway 内运行的编程助手。
@@ -3123,6 +3499,9 @@ public class GatewayChatService {
                 """.formatted(step, LocalDateTime.now().format(DIRECT_TIME_FORMATTER), workspaceRoot);
     }
 
+    /**
+     * 在 agent 没有顺利给出 final 时，基于工具执行结果生成兜底总结。
+     */
     private String buildAgentFallbackFinalText(List<ObjectNode> toolSummaries) {
         if (toolSummaries == null || toolSummaries.isEmpty()) {
             return "我需要更多信息才能继续。请补充具体的目标、文件路径或报错信息，我来帮你处理。";
@@ -3144,6 +3523,9 @@ public class GatewayChatService {
         return builder.toString().trim();
     }
 
+    /**
+     * 启发式处理一些明显的“读文件”类请求，避免模型没调工具就提前结束。
+     */
     private HeuristicAgentOutcome tryHandleHeuristicAgentRequest(AgentSession session,
                                                                  String responseId,
                                                                  Path workspaceRoot,
@@ -3194,6 +3576,9 @@ public class GatewayChatService {
         return new HeuristicAgentOutcome(toolExecution, finalText);
     }
 
+    /**
+     * 判断用户文本是否像“读取文件内容”的意图。
+     */
     private boolean looksLikeReadFileIntent(String text) {
         if (text == null || text.isBlank()) {
             return false;
@@ -3211,6 +3596,9 @@ public class GatewayChatService {
                 || normalized.contains("pom.xml");
     }
 
+    /**
+     * 从用户文本中提取显式文件名或路径线索。
+     */
     private String extractExplicitFileHint(String text) {
         if (text == null || text.isBlank()) {
             return "";
@@ -3222,6 +3610,9 @@ public class GatewayChatService {
         return "";
     }
 
+    /**
+     * 基于启发式 read_file 结果构造最终回答。
+     */
     private String buildHeuristicReadFileAnswer(Path workspaceRoot,
                                                 String latestUserText,
                                                 AgentToolExecution toolExecution) throws Exception {
@@ -3246,6 +3637,9 @@ public class GatewayChatService {
         return "我已读取 `" + relativePath + "`。如果你要我继续提取具体字段、定位问题或直接修改它，我可以继续处理。";
     }
 
+    /**
+     * 判断是否需要提醒模型“你其实可以用工具”后再试一轮。
+     */
     private boolean shouldRetryAgentWithToolReminder(String text, ObjectNode input) {
         if (text == null || text.isBlank() || !hasWorkspaceHint(input)) {
             return false;
@@ -3263,6 +3657,9 @@ public class GatewayChatService {
                 || normalized.contains("无法查看");
     }
 
+    /**
+     * 构造一条提醒模型继续使用工具的系统提示。
+     */
     private String buildAgentToolReminder(Path workspaceRoot) {
         return """
                 提醒：
@@ -3275,6 +3672,9 @@ public class GatewayChatService {
                 """.formatted(workspaceRoot);
     }
 
+    /**
+     * 解析模型返回的 agent JSON 决策。
+     */
     private AgentDecision parseAgentDecision(String rawText) {
         String cleaned = rawText == null ? "" : rawText.trim();
         if (cleaned.startsWith("```")) {
@@ -3300,6 +3700,9 @@ public class GatewayChatService {
         return new AgentDecision(type, title, toolName, arguments, finalText, analysis);
     }
 
+    /**
+     * 根据工具名分发执行具体工具。
+     */
     private AgentToolExecution executeAgentTool(AgentSession session,
                                                 String responseId,
                                                 int step,
@@ -3318,6 +3721,9 @@ public class GatewayChatService {
         };
     }
 
+    /**
+     * 列出工作区内文件。
+     */
     private AgentToolExecution executeListFilesTool(AgentSession session,
                                                     String responseId,
                                                     int step,
@@ -3349,6 +3755,9 @@ public class GatewayChatService {
         }
     }
 
+    /**
+     * 读取文件指定行区间内容。
+     */
     private AgentToolExecution executeReadFileTool(AgentSession session,
                                                    String responseId,
                                                    int step,
@@ -3383,6 +3792,9 @@ public class GatewayChatService {
         }
     }
 
+    /**
+     * 用 `rg` 在工作区内搜索代码。
+     */
     private AgentToolExecution executeSearchCodeTool(AgentSession session,
                                                      String responseId,
                                                      int step,
@@ -3415,6 +3827,9 @@ public class GatewayChatService {
         }
     }
 
+    /**
+     * 写入或追加文件内容。
+     */
     private AgentToolExecution executeWriteFileTool(AgentSession session,
                                                     String responseId,
                                                     int step,
@@ -3459,6 +3874,9 @@ public class GatewayChatService {
         }
     }
 
+    /**
+     * 在文件中替换字符串，可单次替换或全量替换。
+     */
     private AgentToolExecution executeReplaceInFileTool(AgentSession session,
                                                         String responseId,
                                                         int step,
@@ -3493,6 +3911,9 @@ public class GatewayChatService {
         }
     }
 
+    /**
+     * 在工作区中执行安全受限命令。
+     */
     private AgentToolExecution executeRunCommandTool(AgentSession session,
                                                      String responseId,
                                                      int step,
@@ -3523,6 +3944,9 @@ public class GatewayChatService {
         }
     }
 
+    /**
+     * 返回“不支持的工具”结果。
+     */
     private AgentToolExecution executeUnsupportedTool(AgentSession session,
                                                       String responseId,
                                                       int step,
@@ -3533,6 +3957,9 @@ public class GatewayChatService {
         return completeToolExecution(session, responseId, step, toolName, title, arguments, result, objectMapper.createArrayNode());
     }
 
+    /**
+     * 统一收尾一次工具调用，写日志并组装摘要。
+     */
     private AgentToolExecution completeToolExecution(AgentSession session,
                                                      String responseId,
                                                      int step,
@@ -3557,6 +3984,9 @@ public class GatewayChatService {
         );
     }
 
+    /**
+     * 构造统一的工具失败 JSON。
+     */
     private ObjectNode simpleToolError(String message) {
         ObjectNode result = objectMapper.createObjectNode();
         result.put("ok", false);
@@ -3564,6 +3994,9 @@ public class GatewayChatService {
         return result;
     }
 
+    /**
+     * 启动本地进程并等待结果。
+     */
     private ProcessResult runProcess(List<String> command, Path workdir, long timeoutMs) throws Exception {
         ProcessBuilder processBuilder = new ProcessBuilder(command);
         processBuilder.directory(workdir.toFile());
@@ -3585,6 +4018,9 @@ public class GatewayChatService {
         return new ProcessResult(process.exitValue(), stdout, stderr);
     }
 
+    /**
+     * 拦截明显危险的命令，避免 agent 做出破坏性操作。
+     */
     private void validateSafeCommand(String command) {
         String lower = command.toLowerCase(Locale.ROOT);
         if (lower.contains("format ") || lower.contains("shutdown ") || lower.contains("restart-computer")
@@ -3595,6 +4031,9 @@ public class GatewayChatService {
         }
     }
 
+    /**
+     * 解析本次请求对应的工作区根目录。
+     */
     private Path resolveWorkspaceRoot(ObjectNode input) {
         JsonNode metadata = input.path("metadata");
         String raw = firstNonBlank(
@@ -3618,6 +4057,9 @@ public class GatewayChatService {
         return path;
     }
 
+    /**
+     * 把工具传入路径解析成工作区内的绝对路径。
+     */
     private Path resolveToolPath(Path workspaceRoot, String rawPath) {
         if (rawPath == null || rawPath.isBlank() || ".".equals(rawPath)) {
             return workspaceRoot;
@@ -3633,6 +4075,10 @@ public class GatewayChatService {
         return resolved;
     }
 
+    /**
+     * 解析并定位一个已存在的文件。
+     * 支持相对路径，也支持仅传文件名时在工作区内搜索。
+     */
     private Path resolveExistingToolFile(Path workspaceRoot, String rawPath) {
         if (rawPath == null || rawPath.isBlank()) {
             throw new BusinessException(400, "path cannot be empty");
@@ -3673,6 +4119,9 @@ public class GatewayChatService {
         throw new BusinessException(404, "File not found in workspace: " + rawPath);
     }
 
+    /**
+     * 取第一个非空白字符串。
+     */
     private String firstNonBlank(String... values) {
         if (values == null) {
             return "";
@@ -3685,6 +4134,9 @@ public class GatewayChatService {
         return "";
     }
 
+    /**
+     * 把绝对路径转换成相对工作区路径。
+     */
     private String relativizePath(Path workspaceRoot, Path target) {
         if (workspaceRoot.equals(target)) {
             return ".";
@@ -3692,6 +4144,9 @@ public class GatewayChatService {
         return workspaceRoot.relativize(target).toString().replace("\\", "/");
     }
 
+    /**
+     * 只替换第一个精确字面量匹配。
+     */
     private String replaceFirstLiteral(String source, String search, String replacement) {
         int index = source.indexOf(search);
         if (index < 0) {
@@ -3700,6 +4155,9 @@ public class GatewayChatService {
         return source.substring(0, index) + replacement + source.substring(index + search.length());
     }
 
+    /**
+     * 构造 Responses 风格的 response.created 事件。
+     */
     private ObjectNode buildResponseCreatedEvent(String responseId, String modelCode) {
         ObjectNode response = objectMapper.createObjectNode();
         response.put("id", responseId);
@@ -3714,6 +4172,9 @@ public class GatewayChatService {
         return event;
     }
 
+    /**
+     * 构造 agent 状态事件。
+     */
     private ObjectNode buildAgentStatusEvent(String kind, Map<String, Object> payload) {
         ObjectNode event = objectMapper.createObjectNode();
         event.put("type", "response.agent.status");
@@ -3724,6 +4185,9 @@ public class GatewayChatService {
         return event;
     }
 
+    /**
+     * 构造“工具调用已创建”事件。
+     */
     private ObjectNode buildToolCallAddedEvent(int step, String callId, String toolName, ObjectNode arguments, String title) {
         ObjectNode item = objectMapper.createObjectNode();
         item.put("id", callId);
@@ -3741,6 +4205,9 @@ public class GatewayChatService {
         return event;
     }
 
+    /**
+     * 构造“工具调用已完成”事件。
+     */
     private ObjectNode buildToolCallDoneEvent(int step, String callId, String toolName, ObjectNode arguments, String title) {
         ObjectNode item = objectMapper.createObjectNode();
         item.put("id", callId);
@@ -3758,6 +4225,9 @@ public class GatewayChatService {
         return event;
     }
 
+    /**
+     * 构造“工具输出已产生”事件。
+     */
     private ObjectNode buildToolOutputAddedEvent(int step, String callId, String outputItemId, AgentToolExecution toolExecution) {
         ObjectNode item = objectMapper.createObjectNode();
         item.put("id", outputItemId);
@@ -3774,6 +4244,9 @@ public class GatewayChatService {
         return event;
     }
 
+    /**
+     * 构造“工具输出已完成”事件。
+     */
     private ObjectNode buildToolOutputDoneEvent(int step, String callId, String outputItemId, AgentToolExecution toolExecution) {
         ObjectNode item = objectMapper.createObjectNode();
         item.put("id", outputItemId);
@@ -3790,6 +4263,9 @@ public class GatewayChatService {
         return event;
     }
 
+    /**
+     * 构造文件变更预览事件。
+     */
     private ObjectNode buildFileChangedEvent(int step, JsonNode preview) {
         ObjectNode event = objectMapper.createObjectNode();
         event.put("type", "response.agent.file_changed");
@@ -3798,6 +4274,9 @@ public class GatewayChatService {
         return event;
     }
 
+    /**
+     * 构造本地 agent 最终返回给客户端的 Responses JSON。
+     */
     private ObjectNode buildAgentResponsesResponse(String responseId,
                                                    String modelCode,
                                                    String finalText,
@@ -3818,6 +4297,9 @@ public class GatewayChatService {
         return response;
     }
 
+    /**
+     * 构造会话内 assistant 发起工具调用的消息。
+     */
     private ObjectNode buildAssistantToolRequestMessage(String toolName, ObjectNode arguments, String title) {
         ObjectNode message = objectMapper.createObjectNode();
         message.put("role", "assistant");
@@ -3830,6 +4312,9 @@ public class GatewayChatService {
         return message;
     }
 
+    /**
+     * 构造工具结果回流给模型的消息。
+     */
     private ObjectNode buildToolResultMessage(ObjectNode toolResult) {
         ObjectNode message = objectMapper.createObjectNode();
         message.put("role", "user");
@@ -3837,6 +4322,9 @@ public class GatewayChatService {
         return message;
     }
 
+    /**
+     * 截断文本长度，避免日志或事件体过大。
+     */
     private String clipText(String text, int maxLength) {
         if (text == null) {
             return "";
@@ -3847,6 +4335,9 @@ public class GatewayChatService {
         return text.substring(0, maxLength) + "\n...[truncated]";
     }
 
+    /**
+     * 构造文件变更预览 JSON。
+     */
     private ObjectNode buildFilePreviewJson(Path workspaceRoot, Path file, String before, String after) {
         ObjectNode preview = objectMapper.createObjectNode();
         preview.put("path", relativizePath(workspaceRoot, file));
@@ -3856,6 +4347,9 @@ public class GatewayChatService {
         return preview;
     }
 
+    /**
+     * 从上游错误返回体中尽量提取人类可读错误信息。
+     */
     private String extractUpstreamErrorMessage(String responseBody) {
         JsonNode json = tryReadJson(responseBody);
         if (json != null && json.has("error")) {
@@ -3865,12 +4359,18 @@ public class GatewayChatService {
         return responseBody == null || responseBody.isBlank() ? "Upstream request failed" : responseBody;
     }
 
+    /**
+     * 追加消息数组。
+     */
     private void appendMessages(ArrayNode target, ArrayNode source) {
         for (JsonNode item : source) {
             target.add(item.deepCopy());
         }
     }
 
+    /**
+     * 合并旧摘要与新消息，生成新的会话压缩摘要。
+     */
     private String mergeSessionSummary(String existingSummary, List<StoredAgentMessage> messages) {
         StringBuilder builder = new StringBuilder();
         if (existingSummary != null && !existingSummary.isBlank()) {
@@ -3901,6 +4401,9 @@ public class GatewayChatService {
         return summary.substring(summary.length() - AGENT_SUMMARY_MAX_CHARS);
     }
 
+    /**
+     * 将工具结果压缩成一行摘要，便于最终回答里回显。
+     */
     private String summarizeToolResult(String toolName, String contentText) {
         String raw = contentText == null ? "" : contentText.trim();
         if (raw.startsWith("TOOL_RESULT ")) {
@@ -3937,6 +4440,9 @@ public class GatewayChatService {
         return toolName + " -> " + summarizeFreeText(raw, 180);
     }
 
+    /**
+     * 压缩多行文本为单行简述。
+     */
     private String summarizeFreeText(String text, int maxLength) {
         if (text == null) {
             return "";
@@ -3948,73 +4454,61 @@ public class GatewayChatService {
         return normalized.substring(0, maxLength) + "...";
     }
 
+    /**
+     * 解析或创建 agent 会话。
+     * 先尝试按 previous_response_id 续接，其次按 session_id 复用，最后再创建新会话。
+     */
     private AgentSession resolveAgentSession(ApiKeyAuthService.AuthenticatedApiKey auth,
                                              String modelCode,
                                              ObjectNode input,
                                              Path workspaceRoot) {
+        // 如果前端携带了 previous_response_id，优先复用原有会话。
         String previousResponseId = input.path("previous_response_id").asText("");
         if (!previousResponseId.isBlank()) {
-            List<AgentSession> existingByResponse = jdbcTemplate.query("""
-                    select s.id, s.session_key, s.workspace_root, s.summary_text, s.summary_message_id
-                    from agent_sessions s
-                    join agent_messages m on m.session_id = s.id
-                    where m.response_id = ? and s.user_id = ?
-                    order by s.id desc
-                    limit 1
-                    """, (rs, rowNum) -> new AgentSession(
-                    rs.getLong("id"),
-                    rs.getString("session_key"),
-                    rs.getString("workspace_root"),
-                    rs.getString("summary_text"),
-                    rs.getObject("summary_message_id") == null ? 0L : rs.getLong("summary_message_id")
-            ), previousResponseId, auth.userId());
-            if (!existingByResponse.isEmpty()) {
-                return existingByResponse.get(0);
+            AgentSessionEntity existingByResponse = gatewayAgentQueryMapper.selectSessionByResponse(previousResponseId, auth.userId());
+            if (existingByResponse != null) {
+                return toAgentSession(existingByResponse);
             }
         }
 
+        // 其次按 metadata.session_id 复用，没有则自动生成一个新的 session key。
         String sessionKey = input.path("metadata").path("session_id").asText("");
         if (sessionKey.isBlank()) {
             sessionKey = "sess_" + UUID.randomUUID().toString().replace("-", "");
         }
 
-        List<AgentSession> existing = jdbcTemplate.query("""
-                select id, session_key, workspace_root, summary_text, summary_message_id
-                from agent_sessions
-                where session_key = ? and user_id = ?
-                limit 1
-                """, (rs, rowNum) -> new AgentSession(
-                rs.getLong("id"),
-                rs.getString("session_key"),
-                rs.getString("workspace_root"),
-                rs.getString("summary_text"),
-                rs.getObject("summary_message_id") == null ? 0L : rs.getLong("summary_message_id")
-        ), sessionKey, auth.userId());
-        if (!existing.isEmpty()) {
-            return existing.get(0);
+        AgentSessionEntity existing = agentSessionMapper.selectOne(Wrappers.<AgentSessionEntity>lambdaQuery()
+                .eq(AgentSessionEntity::getSessionKey, sessionKey)
+                .eq(AgentSessionEntity::getUserId, auth.userId())
+                .last("limit 1"));
+        if (existing != null) {
+            return toAgentSession(existing);
         }
 
-        jdbcTemplate.update("""
-                insert into agent_sessions (session_key, user_id, api_key_id, model_code, workspace_root, created_at, updated_at)
-                values (?, ?, ?, ?, ?, now(), now())
-                """, sessionKey, auth.userId(), auth.id(), modelCode, workspaceRoot.toString());
-        Long sessionId = jdbcTemplate.queryForObject("select id from agent_sessions where session_key = ?", Long.class, sessionKey);
-        return new AgentSession(sessionId, sessionKey, workspaceRoot.toString(), null, 0L);
+        AgentSessionEntity sessionEntity = new AgentSessionEntity();
+        sessionEntity.setSessionKey(sessionKey);
+        sessionEntity.setUserId(auth.userId());
+        sessionEntity.setApiKeyId(auth.id());
+        sessionEntity.setModelCode(modelCode);
+        sessionEntity.setWorkspaceRoot(workspaceRoot.toString());
+        sessionEntity.setSummaryMessageId(0L);
+        sessionEntity.setCreatedAt(LocalDateTime.now());
+        sessionEntity.setUpdatedAt(LocalDateTime.now());
+        agentSessionMapper.insert(sessionEntity);
+        return toAgentSession(sessionEntity);
     }
 
+    /**
+     * 当会话历史过长时，把旧消息压缩成摘要，保留最近消息继续参与推理。
+     */
     private AgentSession compressSessionHistoryIfNeeded(AgentSession session, AgentSseSink sink) throws Exception {
-        List<StoredAgentMessage> unsummarized = jdbcTemplate.query("""
-                select id, role_code, source_type, content_text, tool_name
-                from agent_messages
-                where session_id = ? and id > ?
-                order by id asc
-                """, (rs, rowNum) -> new StoredAgentMessage(
-                rs.getLong("id"),
-                rs.getString("role_code"),
-                rs.getString("source_type"),
-                rs.getString("content_text"),
-                rs.getString("tool_name")
-        ), session.id(), session.summaryMessageId());
+        List<StoredAgentMessage> unsummarized = agentMessageMapper.selectList(Wrappers.<AgentMessageEntity>lambdaQuery()
+                        .eq(AgentMessageEntity::getSessionId, session.id())
+                        .gt(AgentMessageEntity::getId, session.summaryMessageId())
+                        .orderByAsc(AgentMessageEntity::getId))
+                .stream()
+                .map(this::toStoredAgentMessage)
+                .toList();
 
         if (unsummarized.size() <= AGENT_SUMMARY_TRIGGER_MESSAGES) {
             return session;
@@ -4025,15 +4519,17 @@ public class GatewayChatService {
             return session;
         }
 
+        // 前半段旧消息压缩成 summary，后半段近期消息继续保留原文。
         List<StoredAgentMessage> toSummarize = unsummarized.subList(0, splitIndex);
         long summaryMessageId = toSummarize.get(toSummarize.size() - 1).id();
         String summaryText = mergeSessionSummary(session.summaryText(), toSummarize);
 
-        jdbcTemplate.update("""
-                update agent_sessions
-                set summary_text = ?, summary_message_id = ?, updated_at = now()
-                where id = ?
-                """, summaryText, summaryMessageId, session.id());
+        AgentSessionEntity updateEntity = new AgentSessionEntity();
+        updateEntity.setSummaryText(summaryText);
+        updateEntity.setSummaryMessageId(summaryMessageId);
+        updateEntity.setUpdatedAt(LocalDateTime.now());
+        agentSessionMapper.update(updateEntity, Wrappers.<AgentSessionEntity>lambdaUpdate()
+                .eq(AgentSessionEntity::getId, session.id()));
 
         if (sink != null) {
             sink.emit(buildAgentStatusEvent("memory.compacted", Map.of(
@@ -4045,28 +4541,28 @@ public class GatewayChatService {
         return new AgentSession(session.id(), session.sessionKey(), session.workspaceRoot(), summaryText, summaryMessageId);
     }
 
+    /**
+     * 组装当前 agent 会话可继续使用的对话上下文。
+     */
     private ArrayNode loadSessionConversation(AgentSession session) {
-        List<StoredAgentMessage> messages = jdbcTemplate.query("""
-                select id, role_code, source_type, content_text, tool_name
-                from agent_messages
-                where session_id = ? and id > ?
-                order by id asc
-                """, (rs, rowNum) -> new StoredAgentMessage(
-                rs.getLong("id"),
-                rs.getString("role_code"),
-                rs.getString("source_type"),
-                rs.getString("content_text"),
-                rs.getString("tool_name")
-        ), session.id(), session.summaryMessageId());
+        List<StoredAgentMessage> messages = agentMessageMapper.selectList(Wrappers.<AgentMessageEntity>lambdaQuery()
+                        .eq(AgentMessageEntity::getSessionId, session.id())
+                        .gt(AgentMessageEntity::getId, session.summaryMessageId())
+                        .orderByAsc(AgentMessageEntity::getId))
+                .stream()
+                .map(this::toStoredAgentMessage)
+                .toList();
 
         ArrayNode conversation = objectMapper.createArrayNode();
         if (session.summaryText() != null && !session.summaryText().isBlank()) {
+            // 历史摘要以 system 消息注入，给模型一个压缩后的背景记忆。
             ObjectNode summaryMessage = objectMapper.createObjectNode();
             summaryMessage.put("role", "system");
             summaryMessage.put("content", "Compressed background context:\n" + session.summaryText());
             conversation.add(summaryMessage);
         }
 
+        // 只保留最近几轮原始消息，控制上下文长度。
         int start = Math.max(0, messages.size() - AGENT_RECENT_MESSAGE_LIMIT);
         for (int i = start; i < messages.size(); i++) {
             StoredAgentMessage item = messages.get(i);
@@ -4078,49 +4574,71 @@ public class GatewayChatService {
         return conversation;
     }
 
+    /**
+     * 批量保存一组对话消息。
+     */
     private void persistMessages(Long sessionId, String responseId, ArrayNode messages, String sourceType) {
         for (JsonNode message : messages) {
-            jdbcTemplate.update("""
-                    insert into agent_messages (session_id, response_id, role_code, source_type, content_text, created_at)
-                    values (?, ?, ?, ?, ?, now())
-                    """,
-                    sessionId,
-                    responseId,
-                    message.path("role").asText("user"),
-                    sourceType,
-                    message.path("content").asText("")
-            );
+            AgentMessageEntity entity = new AgentMessageEntity();
+            entity.setSessionId(sessionId);
+            entity.setResponseId(responseId);
+            entity.setRoleCode(message.path("role").asText("user"));
+            entity.setSourceType(sourceType);
+            entity.setContentText(message.path("content").asText(""));
+            entity.setCreatedAt(LocalDateTime.now());
+            agentMessageMapper.insert(entity);
         }
     }
 
+    /**
+     * 保存最终 assistant 回复，便于后续继续追溯会话。
+     */
     private void persistAssistantMessage(Long sessionId, String responseId, String text) {
-        jdbcTemplate.update("""
-                insert into agent_messages (session_id, response_id, role_code, source_type, content_text, created_at)
-                values (?, ?, 'assistant', 'response', ?, now())
-                """, sessionId, responseId, text);
+        AgentMessageEntity entity = new AgentMessageEntity();
+        entity.setSessionId(sessionId);
+        entity.setResponseId(responseId);
+        entity.setRoleCode("assistant");
+        entity.setSourceType("response");
+        entity.setContentText(text);
+        entity.setCreatedAt(LocalDateTime.now());
+        agentMessageMapper.insert(entity);
     }
 
+    /**
+     * 把一次工具调用写成两条会话消息。
+     * 一条代表 assistant 发起 tool_call，一条代表工具结果回流给模型。
+     */
     private void persistToolConversation(Long sessionId,
                                          String responseId,
                                          String toolName,
                                          ObjectNode arguments,
                                          ObjectNode toolResult) {
-        jdbcTemplate.update("""
-                insert into agent_messages (session_id, response_id, role_code, source_type, content_text, tool_name, tool_payload_json, created_at)
-                values (?, ?, 'assistant', 'tool_call', ?, ?, cast(? as json), now())
-                """, sessionId, responseId,
-                "{\"type\":\"tool\",\"tool_name\":\"" + toolName + "\"}",
-                toolName,
-                normalizeJson(arguments.toString()));
-        jdbcTemplate.update("""
-                insert into agent_messages (session_id, response_id, role_code, source_type, content_text, tool_name, tool_payload_json, created_at)
-                values (?, ?, 'user', 'tool_result', ?, ?, cast(? as json), now())
-                """, sessionId, responseId,
-                "TOOL_RESULT " + toolResult,
-                toolName,
-                normalizeJson(toolResult.toString()));
+        AgentMessageEntity toolCall = new AgentMessageEntity();
+        toolCall.setSessionId(sessionId);
+        toolCall.setResponseId(responseId);
+        toolCall.setRoleCode("assistant");
+        toolCall.setSourceType("tool_call");
+        toolCall.setContentText("{\"type\":\"tool\",\"tool_name\":\"" + toolName + "\"}");
+        toolCall.setToolName(toolName);
+        toolCall.setToolPayloadJson(normalizeJson(arguments.toString()));
+        toolCall.setCreatedAt(LocalDateTime.now());
+        agentMessageMapper.insert(toolCall);
+
+        AgentMessageEntity toolReply = new AgentMessageEntity();
+        toolReply.setSessionId(sessionId);
+        toolReply.setResponseId(responseId);
+        toolReply.setRoleCode("user");
+        toolReply.setSourceType("tool_result");
+        toolReply.setContentText("TOOL_RESULT " + toolResult);
+        toolReply.setToolName(toolName);
+        toolReply.setToolPayloadJson(normalizeJson(toolResult.toString()));
+        toolReply.setCreatedAt(LocalDateTime.now());
+        agentMessageMapper.insert(toolReply);
     }
 
+    /**
+     * 记录工具执行明细，方便前端回显和后续排查。
+     */
     private void saveToolLog(Long sessionId,
                              String responseId,
                              int step,
@@ -4129,96 +4647,111 @@ public class GatewayChatService {
                              ObjectNode arguments,
                              ObjectNode result,
                              ArrayNode previews) {
-        jdbcTemplate.update("""
-                insert into agent_tool_logs (session_id, response_id, step_no, tool_name, title, success, arguments_json, result_json, file_previews_json, created_at)
-                values (?, ?, ?, ?, ?, ?, cast(? as json), cast(? as json), cast(? as json), now())
-                """,
-                sessionId,
-                responseId,
-                step,
-                toolName,
-                title,
-                result.path("ok").asBoolean(false) ? 1 : 0,
-                normalizeJson(arguments.toString()),
-                normalizeJson(result.toString()),
-                normalizeJson(previews.toString()));
+        AgentToolLogEntity entity = new AgentToolLogEntity();
+        entity.setSessionId(sessionId);
+        entity.setResponseId(responseId);
+        entity.setStepNo(step);
+        entity.setToolName(toolName);
+        entity.setTitle(title);
+        entity.setSuccess(result.path("ok").asBoolean(false) ? 1 : 0);
+        entity.setArgumentsJson(normalizeJson(arguments.toString()));
+        entity.setResultJson(normalizeJson(result.toString()));
+        entity.setFilePreviewsJson(normalizeJson(previews.toString()));
+        entity.setCreatedAt(LocalDateTime.now());
+        agentToolLogMapper.insert(entity);
     }
 
+    /**
+     * 更新会话最后一次响应 id，便于下次 previous_response_id 续接。
+     */
     private void updateSessionLastResponse(Long sessionId, String responseId) {
-        jdbcTemplate.update("""
-                update agent_sessions
-                set last_response_id = ?, updated_at = now()
-                where id = ?
-                """, responseId, sessionId);
+        AgentSessionEntity entity = new AgentSessionEntity();
+        entity.setLastResponseId(responseId);
+        entity.setUpdatedAt(LocalDateTime.now());
+        agentSessionMapper.update(entity, Wrappers.<AgentSessionEntity>lambdaUpdate()
+                .eq(AgentSessionEntity::getId, sessionId));
     }
 
-    private void initializeAgentTables() {
-        jdbcTemplate.execute("""
-                create table if not exists agent_sessions (
-                    id bigint primary key auto_increment,
-                    session_key varchar(96) not null,
-                    user_id bigint not null,
-                    api_key_id bigint not null,
-                    model_code varchar(64) not null,
-                    workspace_root varchar(512) null,
-                    summary_text longtext null,
-                    summary_message_id bigint not null default 0,
-                    last_response_id varchar(96) null,
-                    created_at datetime not null default current_timestamp,
-                    updated_at datetime not null default current_timestamp on update current_timestamp,
-                    unique key uk_agent_sessions_key (session_key),
-                    key idx_agent_sessions_user (user_id, updated_at)
-                ) engine=InnoDB default charset=utf8mb4 collate=utf8mb4_unicode_ci
-                """);
-        ensureColumnExists("agent_sessions", "summary_text", "alter table agent_sessions add column summary_text longtext null");
-        ensureColumnExists("agent_sessions", "summary_message_id", "alter table agent_sessions add column summary_message_id bigint not null default 0");
-        jdbcTemplate.execute("""
-                create table if not exists agent_messages (
-                    id bigint primary key auto_increment,
-                    session_id bigint not null,
-                    response_id varchar(96) not null,
-                    role_code varchar(16) not null,
-                    source_type varchar(32) not null,
-                    content_text longtext null,
-                    tool_name varchar(64) null,
-                    tool_payload_json json null,
-                    created_at datetime not null default current_timestamp,
-                    key idx_agent_messages_session (session_id, id),
-                    key idx_agent_messages_response (response_id)
-                ) engine=InnoDB default charset=utf8mb4 collate=utf8mb4_unicode_ci
-                """);
-        jdbcTemplate.execute("""
-                create table if not exists agent_tool_logs (
-                    id bigint primary key auto_increment,
-                    session_id bigint not null,
-                    response_id varchar(96) not null,
-                    step_no int not null,
-                    tool_name varchar(64) not null,
-                    title varchar(128) null,
-                    success tinyint(1) not null default 1,
-                    arguments_json json null,
-                    result_json json null,
-                    file_previews_json json null,
-                    created_at datetime not null default current_timestamp,
-                    key idx_agent_tool_logs_session (session_id, id),
-                    key idx_agent_tool_logs_response (response_id)
-                ) engine=InnoDB default charset=utf8mb4 collate=utf8mb4_unicode_ci
-                """);
+    private AgentSession toAgentSession(AgentSessionEntity entity) {
+        return new AgentSession(
+                entity.getId(),
+                entity.getSessionKey(),
+                entity.getWorkspaceRoot(),
+                entity.getSummaryText(),
+                entity.getSummaryMessageId() == null ? 0L : entity.getSummaryMessageId()
+        );
     }
 
-    private void ensureColumnExists(String tableName, String columnName, String ddl) {
-        Integer count = jdbcTemplate.queryForObject("""
-                select count(*)
-                from information_schema.columns
-                where table_schema = database()
-                  and table_name = ?
-                  and column_name = ?
-                """, Integer.class, tableName, columnName);
-        if (count == null || count == 0) {
-            jdbcTemplate.execute(ddl);
-        }
+    private StoredAgentMessage toStoredAgentMessage(AgentMessageEntity entity) {
+        return new StoredAgentMessage(
+                entity.getId(),
+                entity.getRoleCode(),
+                entity.getSourceType(),
+                entity.getContentText(),
+                entity.getToolName()
+        );
     }
 
+    /**
+     * 组装请求日志实体。
+     */
+    private RequestLogEntity buildRequestLogEntity(String requestId,
+                                                   Long userId,
+                                                   Long apiKeyId,
+                                                   Long userPackageId,
+                                                   String modelCode,
+                                                   Long providerId,
+                                                   Long providerTokenId,
+                                                   String upstreamModel,
+                                                   String requestPath,
+                                                   String requestMethod,
+                                                   String requestIp,
+                                                   String requestBodyJson,
+                                                   String responseBodyJson,
+                                                   int promptTokens,
+                                                   int completionTokens,
+                                                   int totalTokens,
+                                                   int cachedPromptTokens,
+                                                   BigDecimal userAmount,
+                                                   BigDecimal costAmount,
+                                                   int latencyMs,
+                                                   int success,
+                                                   int statusCode,
+                                                   String errorMessage,
+                                                   LocalDate requestDate,
+                                                   LocalDateTime createdAt) {
+        RequestLogEntity entity = new RequestLogEntity();
+        entity.setRequestId(requestId);
+        entity.setUserId(userId);
+        entity.setApiKeyId(apiKeyId);
+        entity.setUserPackageId(userPackageId);
+        entity.setModelCode(modelCode);
+        entity.setProviderId(providerId);
+        entity.setProviderTokenId(providerTokenId);
+        entity.setUpstreamModel(upstreamModel);
+        entity.setRequestPath(requestPath);
+        entity.setRequestMethod(requestMethod);
+        entity.setRequestIp(requestIp);
+        entity.setRequestBodyJson(requestBodyJson);
+        entity.setResponseBodyJson(responseBodyJson);
+        entity.setPromptTokens(promptTokens);
+        entity.setCompletionTokens(completionTokens);
+        entity.setTotalTokens(totalTokens);
+        entity.setCachedPromptTokens(cachedPromptTokens);
+        entity.setUserAmount(userAmount);
+        entity.setCostAmount(costAmount);
+        entity.setLatencyMs(latencyMs);
+        entity.setSuccess(success);
+        entity.setStatusCode(statusCode);
+        entity.setErrorMessage(errorMessage);
+        entity.setRequestDate(requestDate);
+        entity.setCreatedAt(createdAt);
+        return entity;
+    }
+
+    /**
+     * 把 Anthropic stop_reason 映射成 OpenAI 风格 finish_reason。
+     */
     private String mapAnthropicStopReason(String stopReason) {
         return switch (stopReason) {
             case "max_tokens" -> "length";
@@ -4227,6 +4760,9 @@ public class GatewayChatService {
         };
     }
 
+    /**
+     * 把 OpenAI finish_reason 映射成 Anthropic 风格 stop_reason。
+     */
     private String mapOpenAiStopReason(String stopReason) {
         return switch (stopReason) {
             case "length" -> "max_tokens";
@@ -4235,6 +4771,9 @@ public class GatewayChatService {
         };
     }
 
+    /**
+     * 把完整 Anthropic Messages 响应拆成其原生 SSE 事件流。
+     */
     private String buildAnthropicMessageStream(JsonNode anthropicResponse) throws Exception {
         String messageId = anthropicResponse.path("id").asText("msg_" + UUID.randomUUID().toString().replace("-", ""));
         String model = anthropicResponse.path("model").asText("");
@@ -4303,19 +4842,39 @@ public class GatewayChatService {
         return builder.toString();
     }
 
+    /**
+     * 向 SSE builder 追加一条事件。
+     */
     private void appendSseEvent(StringBuilder builder, String eventName, JsonNode data) throws Exception {
         builder.append("event: ").append(eventName).append("\n");
         builder.append("data: ").append(objectMapper.writeValueAsString(data)).append("\n\n");
     }
 
+    /**
+     * 统一封装 agent 响应事件的输出方式。
+     * 既支持先缓存在内存中一次性返回，也支持边生成边通过 SSE 推送给客户端。
+     */
     private interface AgentSseSink {
+        /**
+         * 推送单个中间事件。
+         */
         void emit(JsonNode event) throws Exception;
 
+        /**
+         * 推送最终响应以及结束事件。
+         */
         void emitFinalResponse(ObjectNode responseJson, String finalText) throws Exception;
 
+        /**
+         * 返回当前已经输出的完整 SSE 文本，便于记录日志或兜底回写。
+         */
         String fullBody();
     }
 
+    /**
+     * 内存缓冲版 SSE 输出器。
+     * 适用于非流式场景，先把完整事件拼好，最后再一次性写回 HTTP 响应。
+     */
     private final class BufferingAgentSseSink implements AgentSseSink {
         private final StringBuilder builder = new StringBuilder();
 
@@ -4329,6 +4888,7 @@ public class GatewayChatService {
             JsonNode message = responseJson.path("output").get(0);
             String messageId = message.path("id").asText("msg_" + UUID.randomUUID().toString().replace("-", ""));
 
+            // 先补一个 assistant message 外壳，和 Responses 官方事件顺序保持一致。
             ObjectNode itemAdded = objectMapper.createObjectNode();
             itemAdded.put("type", "response.output_item.added");
             itemAdded.put("output_index", 0);
@@ -4341,6 +4901,7 @@ public class GatewayChatService {
             itemAdded.set("item", addedItem);
             emit(itemAdded);
 
+            // 再输出正文增量，让前端可以按 delta 模式回放文本。
             ObjectNode deltaEvent = objectMapper.createObjectNode();
             deltaEvent.put("type", "response.output_text.delta");
             deltaEvent.put("item_id", messageId);
@@ -4349,6 +4910,7 @@ public class GatewayChatService {
             deltaEvent.put("delta", finalText);
             emit(deltaEvent);
 
+            // 正文结束后补 done 事件，表示该段文本已经完整。
             ObjectNode doneEvent = objectMapper.createObjectNode();
             doneEvent.put("type", "response.output_text.done");
             doneEvent.put("item_id", messageId);
@@ -4357,6 +4919,7 @@ public class GatewayChatService {
             doneEvent.put("text", finalText);
             emit(doneEvent);
 
+            // 最后把完整 message 与 completed 事件一并补齐。
             ObjectNode itemDone = objectMapper.createObjectNode();
             itemDone.put("type", "response.output_item.done");
             itemDone.put("output_index", 0);
@@ -4376,6 +4939,10 @@ public class GatewayChatService {
         }
     }
 
+    /**
+     * 直写版 SSE 输出器。
+     * 每次收到事件都会立即写入网络流，同时保留一份副本用于日志记录。
+     */
     private final class StreamingAgentSseSink implements AgentSseSink {
         private final OutputStream outputStream;
         private final StringBuilder builder = new StringBuilder();
@@ -4397,6 +4964,7 @@ public class GatewayChatService {
             JsonNode message = responseJson.path("output").get(0);
             String messageId = message.path("id").asText("msg_" + UUID.randomUUID().toString().replace("-", ""));
 
+            // 和缓冲模式保持同样的事件顺序，避免前端解析分支不一致。
             ObjectNode itemAdded = objectMapper.createObjectNode();
             itemAdded.put("type", "response.output_item.added");
             itemAdded.put("output_index", 0);
@@ -4437,6 +5005,9 @@ public class GatewayChatService {
             emit(completedEvent);
         }
 
+        /**
+         * 在流式模式下补发标准错误事件，尽量让前端按统一协议展示失败原因。
+         */
         private void emitError(String message) throws Exception {
             ObjectNode event = objectMapper.createObjectNode();
             event.put("type", "error");
@@ -4447,6 +5018,9 @@ public class GatewayChatService {
             emit(event);
         }
 
+        /**
+         * 主动结束 SSE 输出，并写入 `[DONE]` 终止标记。
+         */
         private void finish() throws Exception {
             String done = "data: [DONE]\n\n";
             builder.append(done);
@@ -4460,10 +5034,16 @@ public class GatewayChatService {
         }
     }
 
+    /**
+     * 判断是否为 Anthropic 路由。
+     */
     private boolean isAnthropicRoute(GatewayRouteService.RouteDefinition route) {
         return "ANTHROPIC".equalsIgnoreCase(route.providerType());
     }
 
+    /**
+     * 规范化 Anthropic messages 接口地址。
+     */
     private String resolveAnthropicEndpoint(String baseUrl) {
         if (baseUrl.endsWith("/v1/messages")) {
             return baseUrl;
@@ -4475,6 +5055,9 @@ public class GatewayChatService {
     }
 
     @Transactional
+    /**
+     * 统一写请求日志、扣费流水和日统计。
+     */
     protected void logAndCharge(ApiKeyAuthService.AuthenticatedApiKey auth,
                                 GatewayRouteService.RouteDefinition route,
                                 String requestId,
@@ -4495,16 +5078,10 @@ public class GatewayChatService {
         LocalDate requestDate = currentDate();
         LocalDateTime createdAt = currentDateTime();
         try {
-            jdbcTemplate.update("""
-                    insert into request_logs (request_id, user_id, api_key_id, user_package_id, model_code, provider_id, provider_token_id, upstream_model,
-                                              request_path, request_method, request_ip, request_body_json, response_body_json,
-                                              prompt_tokens, completion_tokens, total_tokens, cached_prompt_tokens, user_amount, cost_amount, latency_ms,
-                                              success, status_code, error_message, request_date, created_at)
-                    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, cast(? as json), cast(? as json), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
+            requestLogMapper.insert(buildRequestLogEntity(
                     requestId,
-                    auth.userId(),
-                    auth.id(),
+                    auth == null ? null : auth.userId(),
+                    auth == null ? null : auth.id(),
                     chargedPackageId,
                     route.modelCode(),
                     route.providerId(),
@@ -4527,7 +5104,7 @@ public class GatewayChatService {
                     truncateForColumn(errorMessage, 500),
                     requestDate,
                     createdAt
-            );
+            ));
         } catch (Exception ex) {
             log.warn("Failed to persist request log for requestId={}, model={}: {}",
                     requestId, route.modelCode(), ex.getMessage());
@@ -4536,49 +5113,34 @@ public class GatewayChatService {
         if (userAmount.compareTo(BigDecimal.ZERO) > 0) {
             boolean chargeWallet = auth.modelGroupId() == null && chargedPackageId == null;
             if (chargeWallet) {
-                jdbcTemplate.update("""
-                        update wallets
-                        set balance = balance - ?, total_consume = total_consume + ?, updated_at = now()
-                        where user_id = ?
-                        """, userAmount, userAmount, auth.userId());
-
-                Long walletId = jdbcTemplate.queryForObject("select id from wallets where user_id = ?", Long.class, auth.userId());
-                BigDecimal balanceAfter = jdbcTemplate.queryForObject("select balance from wallets where user_id = ?", BigDecimal.class, auth.userId());
-                BigDecimal balanceBefore = balanceAfter == null ? BigDecimal.ZERO : balanceAfter.add(userAmount);
-                jdbcTemplate.update("""
-                        insert into transactions (user_id, wallet_id, order_no, transaction_type, direction, amount,
-                                                  balance_before, balance_after, status, transaction_date, description_text)
-                        values (?, ?, ?, 'CONSUME', 'OUT', ?, ?, ?, 'SUCCESS', ?, ?)
-                        """,
-                        auth.userId(),
-                        walletId,
-                        "C" + System.currentTimeMillis() + UUID.randomUUID().toString().replace("-", "").substring(0, 6).toUpperCase(),
-                        userAmount,
-                        balanceBefore,
-                        balanceAfter,
-                        requestDate,
-                        "模型调用扣费: " + route.modelCode()
-                );
+                WalletEntity wallet = walletMapper.selectByUserId(auth.userId());
+                if (wallet != null) {
+                    BigDecimal balanceBefore = wallet.getBalance() == null ? BigDecimal.ZERO : wallet.getBalance();
+                    int updated = walletMapper.debitBalance(auth.userId(), userAmount);
+                    if (updated > 0) {
+                        BigDecimal balanceAfter = balanceBefore.subtract(userAmount);
+                        TransactionEntity transaction = new TransactionEntity();
+                        transaction.setUserId(auth.userId());
+                        transaction.setWalletId(wallet.getId());
+                        transaction.setOrderNo("C" + System.currentTimeMillis()
+                                + UUID.randomUUID().toString().replace("-", "").substring(0, 6).toUpperCase());
+                        transaction.setTransactionType("CONSUME");
+                        transaction.setDirection("OUT");
+                        transaction.setAmount(userAmount);
+                        transaction.setBalanceBefore(balanceBefore);
+                        transaction.setBalanceAfter(balanceAfter);
+                        transaction.setStatus("SUCCESS");
+                        transaction.setTransactionDate(requestDate);
+                        transaction.setDescriptionText("模型调用扣费: " + route.modelCode());
+                        transactionMapper.insert(transaction);
+                    }
+                }
             }
 
-            jdbcTemplate.update("""
-                    update api_keys
-                    set used_quota = used_quota + ?, updated_at = now()
-                    where id = ?
-                    """, userAmount, auth.id());
+            apiKeyMapper.incrementUsedQuota(auth.id(), userAmount);
         }
 
-        jdbcTemplate.update("""
-                insert into usage_daily (stat_date, user_id, model_code, provider_id, request_count, success_count, total_tokens, user_amount, cost_amount)
-                values (?, ?, ?, ?, 1, ?, ?, ?, ?)
-                on duplicate key update
-                    request_count = request_count + 1,
-                    success_count = success_count + values(success_count),
-                    total_tokens = total_tokens + values(total_tokens),
-                    user_amount = user_amount + values(user_amount),
-                    cost_amount = cost_amount + values(cost_amount),
-                    updated_at = now()
-                """,
+        usageDailyMapper.upsert(
                 requestDate,
                 auth.userId(),
                 route.modelCode(),
@@ -4590,6 +5152,9 @@ public class GatewayChatService {
         );
     }
 
+    /**
+     * 记录失败请求日志。
+     */
     private void logFailedRequest(ApiKeyAuthService.AuthenticatedApiKey auth,
                                   String requestBody,
                                   HttpServletRequest servletRequest,
@@ -4602,44 +5167,17 @@ public class GatewayChatService {
             Long chargedPackageId = null;
             if (auth != null && modelId != null) {
                 if (auth.userPackageId() != null) {
-                    chargedPackageId = jdbcTemplate.query("""
-                            select p.id
-                            from user_model_packages p
-                            join model_group_models mgm on mgm.group_id = p.group_id
-                            where p.id = ?
-                              and p.user_id = ?
-                              and p.status = 'ACTIVE'
-                              and p.expires_at > now()
-                              and mgm.model_id = ?
-                            limit 1
-                            """, rs -> rs.next() ? rs.getLong("id") : null,
+                    chargedPackageId = gatewayAgentQueryMapper.selectBoundPackageIdForModel(
                             auth.userPackageId(), auth.userId(), modelId);
                 } else if (auth.modelGroupId() != null) {
-                    chargedPackageId = jdbcTemplate.query("""
-                        select p.id
-                        from user_model_packages p
-                        join model_group_models mgm on mgm.group_id = p.group_id
-                        where p.user_id = ?
-                          and p.group_id = ?
-                          and p.status = 'ACTIVE'
-                          and p.expires_at > now()
-                          and mgm.model_id = ?
-                        order by p.id asc
-                        limit 1
-                        """, rs -> rs.next() ? rs.getLong("id") : null,
+                    chargedPackageId = gatewayAgentQueryMapper.selectFirstActivePackageIdByGroupAndModel(
                             auth.userId(), auth.modelGroupId(), modelId);
                 }
             }
             int latencyMs = (int) Math.max(0, System.currentTimeMillis() - startTime);
             LocalDate requestDate = currentDate();
             LocalDateTime createdAt = currentDateTime();
-            jdbcTemplate.update("""
-                    insert into request_logs (request_id, user_id, api_key_id, user_package_id, model_code, provider_id, provider_token_id, upstream_model,
-                                              request_path, request_method, request_ip, request_body_json, response_body_json,
-                                              prompt_tokens, completion_tokens, total_tokens, cached_prompt_tokens, user_amount, cost_amount, latency_ms,
-                                              success, status_code, error_message, request_date, created_at)
-                    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, cast(? as json), cast(? as json), 0, 0, 0, 0, 0, 0, ?, 0, ?, ?, ?, ?)
-                    """,
+            requestLogMapper.insert(buildRequestLogEntity(
                     buildRequestId(),
                     auth == null ? null : auth.userId(),
                     auth == null ? null : auth.id(),
@@ -4653,17 +5191,27 @@ public class GatewayChatService {
                     extractRequestIp(servletRequest),
                     normalizeJson(requestBody),
                     null,
+                    0,
+                    0,
+                    0,
+                    0,
+                    BigDecimal.ZERO,
+                    BigDecimal.ZERO,
                     latencyMs,
+                    0,
                     statusCode,
                     truncateForColumn(errorMessage, 500),
                     requestDate,
                     createdAt
-            );
+            ));
         } catch (Exception ex) {
             log.warn("Failed to persist failed-request log: {}", ex.getMessage());
         }
     }
 
+    /**
+     * 从请求体中尽量提取 model 字段。
+     */
     private String extractModelCodeFromBody(String requestBody) {
         if (requestBody == null || requestBody.isBlank()) {
             return null;
@@ -4677,17 +5225,24 @@ public class GatewayChatService {
         }
     }
 
+    /**
+     * 按公网模型编码查找模型 id。
+     */
     private Long findModelIdByCode(String modelCode) {
         try {
-            return jdbcTemplate.query(
-                    "select id from models where model_code = ? and deleted = 0 limit 1",
-                    rs -> rs.next() ? rs.getLong(1) : null,
-                    modelCode);
+            ModelEntity model = modelMapper.selectOne(Wrappers.<ModelEntity>lambdaQuery()
+                    .eq(ModelEntity::getModelCode, modelCode)
+                    .eq(ModelEntity::getDeleted, 0)
+                    .last("limit 1"));
+            return model == null ? null : model.getId();
         } catch (Exception ignored) {
             return null;
         }
     }
 
+    /**
+     * 计算本次请求的用户金额和成本金额。
+     */
     private ChargeAmounts calculateCharge(GatewayRouteService.RouteDefinition route,
                                           String requestBody,
                                           int promptTokens,
@@ -4700,6 +5255,9 @@ public class GatewayChatService {
         return new ChargeAmounts(userAmount, costAmount);
     }
 
+    /**
+     * 计算上游成本金额。
+     */
     private BigDecimal calculateCostAmount(GatewayRouteService.RouteDefinition route,
                                            String requestBody,
                                            int promptTokens,
@@ -4714,6 +5272,9 @@ public class GatewayChatService {
         return tokenCost.setScale(6, RoundingMode.HALF_UP);
     }
 
+    /**
+     * 按输入/缓存输入/输出 token 单价计算 token 成本。
+     */
     private BigDecimal calculateTokenCost(GatewayRouteService.RouteDefinition route, int promptTokens, int completionTokens, int cachedPromptTokens) {
         int safePromptTokens = Math.max(0, promptTokens);
         int safeCachedPromptTokens = Math.min(Math.max(0, cachedPromptTokens), safePromptTokens);
@@ -4727,6 +5288,9 @@ public class GatewayChatService {
         return promptCost.add(cachedPromptCost).add(completionCost).setScale(6, RoundingMode.HALF_UP);
     }
 
+    /**
+     * 计算 token 计费模式下的最低消费门槛。
+     */
     private BigDecimal resolveTokenMinimumCharge(GatewayRouteService.RouteDefinition route) {
         BigDecimal requestPrice = route.requestPrice();
         if (isGptFamilyRoute(route) && requestPrice != null && requestPrice.compareTo(BigDecimal.ZERO) > 0) {
@@ -4745,6 +5309,9 @@ public class GatewayChatService {
         return minimumCharge;
     }
 
+    /**
+     * 解析单次请求价格，缺省时回退默认值。
+     */
     private BigDecimal resolveRequestPrice(GatewayRouteService.RouteDefinition route) {
         if (route.requestPrice() == null || route.requestPrice().compareTo(BigDecimal.ZERO) <= 0) {
             return DEFAULT_REQUEST_PRICE;
@@ -4752,6 +5319,9 @@ public class GatewayChatService {
         return route.requestPrice().setScale(6, RoundingMode.HALF_UP);
     }
 
+    /**
+     * 解析用户侧倍率，缺省时回退 1。
+     */
     private BigDecimal resolveMultiplier(GatewayRouteService.RouteDefinition route) {
         if (route.multiplier() == null || route.multiplier().compareTo(BigDecimal.ZERO) <= 0) {
             return BigDecimal.ONE;
@@ -4759,14 +5329,23 @@ public class GatewayChatService {
         return route.multiplier();
     }
 
+    /**
+     * 获取应用时区下的当前日期。
+     */
     private LocalDate currentDate() {
         return LocalDate.now(APP_ZONE);
     }
 
+    /**
+     * 获取应用时区下的当前时间。
+     */
     private LocalDateTime currentDateTime() {
         return LocalDateTime.now(APP_ZONE);
     }
 
+    /**
+     * 判断是否属于 GPT 系列路由。
+     */
     private boolean isGptFamilyRoute(GatewayRouteService.RouteDefinition route) {
         if (route == null) {
             return false;
@@ -4776,6 +5355,9 @@ public class GatewayChatService {
         return publicModel.startsWith("gpt-") || upstreamModel.startsWith("gpt-");
     }
 
+    /**
+     * 确保 chat stream 请求带上 usage 输出。
+     */
     private ObjectNode ensureChatStreamUsageIncluded(ObjectNode request) {
         request.put("stream", true);
         ObjectNode streamOptions = request.hasNonNull("stream_options") && request.path("stream_options").isObject()
@@ -4786,6 +5368,9 @@ public class GatewayChatService {
         return request;
     }
 
+    /**
+     * 从 chat completion 响应中提取 usage。
+     */
     private UsageTotals extractChatUsage(JsonNode responseJson) {
         JsonNode usage = responseJson == null ? null : responseJson.path("usage");
         int promptTokens = usage == null ? 0 : usage.path("prompt_tokens").asInt(0);
@@ -4795,6 +5380,9 @@ public class GatewayChatService {
         return new UsageTotals(promptTokens, completionTokens, totalTokens, cachedPromptTokens);
     }
 
+    /**
+     * 从 Responses 响应中提取 usage。
+     */
     private UsageTotals extractResponsesUsage(JsonNode responseJson) {
         JsonNode usage = responseJson == null ? null : responseJson.path("usage");
         int promptTokens = usage == null ? 0 : usage.path("input_tokens").asInt(0);
@@ -4804,6 +5392,9 @@ public class GatewayChatService {
         return new UsageTotals(promptTokens, completionTokens, totalTokens, cachedPromptTokens);
     }
 
+    /**
+     * 从 Anthropic 响应中提取 usage。
+     */
     private UsageTotals extractAnthropicUsage(JsonNode responseJson) {
         JsonNode usage = responseJson == null ? null : responseJson.path("usage");
         int promptTokens = usage == null ? 0 : usage.path("input_tokens").asInt(0);
@@ -4813,6 +5404,9 @@ public class GatewayChatService {
         return new UsageTotals(promptTokens, completionTokens, totalTokens, cachedPromptTokens);
     }
 
+    /**
+     * 从 Authorization 头提取 Bearer token。
+     */
     private String extractBearerToken(String authorization) {
         if (authorization == null || !authorization.startsWith("Bearer ")) {
             throw new BusinessException(401, "缺少 API Key");
@@ -4820,6 +5414,9 @@ public class GatewayChatService {
         return authorization.substring(7);
     }
 
+    /**
+     * 读取必填文本字段，缺失时报 400。
+     */
     private String getRequiredText(JsonNode node, String fieldName) {
         String value = node.path(fieldName).asText(null);
         if (value == null || value.isBlank()) {
@@ -4828,10 +5425,16 @@ public class GatewayChatService {
         return value;
     }
 
+    /**
+     * 生成内部 request id。
+     */
     private String buildRequestId() {
         return "req_" + UUID.randomUUID().toString().replace("-", "");
     }
 
+    /**
+     * 提取客户端请求 IP。
+     */
     private String extractRequestIp(HttpServletRequest request) {
         String forwarded = request.getHeader("X-Forwarded-For");
         if (forwarded != null && !forwarded.isBlank()) {
@@ -4840,6 +5443,9 @@ public class GatewayChatService {
         return request.getRemoteAddr();
     }
 
+    /**
+     * 尝试解析 JSON，失败时返回 null。
+     */
     private JsonNode tryReadJson(String body) {
         try {
             return objectMapper.readTree(body);
@@ -4848,6 +5454,9 @@ public class GatewayChatService {
         }
     }
 
+    /**
+     * 规范化 JSON 文本，便于入库。
+     */
     private String normalizeJson(String body) {
         if (body == null || body.isBlank()) {
             return null;
@@ -4874,6 +5483,9 @@ public class GatewayChatService {
         }
     }
 
+    /**
+     * 按数据库列长度截断字符串。
+     */
     private String truncateForColumn(String value, int maxLength) {
         if (value == null || value.length() <= maxLength) {
             return value;
@@ -4881,35 +5493,57 @@ public class GatewayChatService {
         return value.substring(0, Math.max(0, maxLength - 3)) + "...";
     }
 
+    /**
+     * 上游文本响应结果。
+     * 统一承载 HTTP 状态码和原始响应体，便于后续做协议转换与计费解析。
+     */
     private record UpstreamTextResponse(
             int statusCode,
             String body
     ) {
     }
 
+    /**
+     * 标准化后的 token 用量统计。
+     * 不同厂商字段名不一致，这里统一映射成网关内部使用的结构。
+     */
     private record UsageTotals(
             int promptTokens,
             int completionTokens,
             int totalTokens,
             int cachedPromptTokens
     ) {
+        /**
+         * 计算真正需要计费的输入 token，自动扣除缓存命中的部分。
+         */
         private int billablePromptTokens() {
             return Math.max(0, promptTokens - Math.max(0, cachedPromptTokens));
         }
     }
 
+    /**
+     * 单次请求的金额结果。
+     * `userAmount` 是用户侧扣费，`costAmount` 是上游成本。
+     */
     private record ChargeAmounts(
             BigDecimal userAmount,
             BigDecimal costAmount
     ) {
     }
 
+    /**
+     * Anthropic messages 接口执行结果。
+     */
     private record AnthropicMessageExecution(
             int statusCode,
             String body
     ) {
     }
 
+    /**
+     * agent 规划阶段解析出的决策结果。
+     * 可能是继续调工具，也可能是直接输出最终结论。
+     */
     private record AgentDecision(
             String type,
             String title,
@@ -4920,6 +5554,9 @@ public class GatewayChatService {
     ) {
     }
 
+    /**
+     * agent 单轮模型输出及其 token 消耗。
+     */
     private record AgentModelTurn(
             String text,
             int promptTokens,
@@ -4928,6 +5565,9 @@ public class GatewayChatService {
     ) {
     }
 
+    /**
+     * agent 完整执行结果，包含最终响应体和累计 token 用量。
+     */
     private record AgentExecutionResult(
             ObjectNode responseJson,
             int promptTokens,
@@ -4936,6 +5576,10 @@ public class GatewayChatService {
     ) {
     }
 
+    /**
+     * agent 会话元信息。
+     * 用于串联会话 key、工作区、摘要和最近一次摘要消息。
+     */
     private record AgentSession(
             Long id,
             String sessionKey,
@@ -4945,6 +5589,9 @@ public class GatewayChatService {
     ) {
     }
 
+    /**
+     * 持久化后的 agent 消息快照。
+     */
     private record StoredAgentMessage(
             Long id,
             String roleCode,
@@ -4954,6 +5601,10 @@ public class GatewayChatService {
     ) {
     }
 
+    /**
+     * 单次工具调用执行结果。
+     * 同时保留给模型看的结果、文件预览和摘要信息，方便继续多轮规划。
+     */
     private record AgentToolExecution(
             String toolName,
             String title,
@@ -4964,12 +5615,19 @@ public class GatewayChatService {
     ) {
     }
 
+    /**
+     * 启发式捷径处理结果。
+     * 当请求足够明确时，可直接调用工具并快速构造最终回答。
+     */
     private record HeuristicAgentOutcome(
             AgentToolExecution toolExecution,
             String finalText
     ) {
     }
 
+    /**
+     * 本地进程执行结果。
+     */
     private record ProcessResult(
             int exitCode,
             String stdout,

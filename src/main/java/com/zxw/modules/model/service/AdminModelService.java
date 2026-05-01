@@ -12,10 +12,18 @@ import com.zxw.modules.model.dto.ModelCreateRequest;
 import com.zxw.modules.model.dto.ModelListItemResponse;
 import com.zxw.modules.model.dto.ModelUpdateRequest;
 import com.zxw.modules.model.dto.UpstreamModelOptionResponse;
+import com.zxw.persistence.entity.ModelEntity;
+import com.zxw.persistence.entity.ModelGroupModelEntity;
+import com.zxw.persistence.entity.ModelRouteEntity;
+import com.zxw.persistence.mapper.ModelAdminQueryMapper;
+import com.zxw.persistence.mapper.ModelGroupModelMapper;
+import com.zxw.persistence.mapper.ModelMapper;
+import com.zxw.persistence.mapper.ModelRouteMapper;
+import com.zxw.persistence.model.ExistingRouteModelView;
+import com.zxw.persistence.model.ModelAdminListView;
+import com.zxw.persistence.model.ProviderAccessView;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
-import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -33,145 +41,107 @@ import java.util.Locale;
 import java.util.Set;
 
 @Service
+/**
+ * 模型管理服务。
+ * 负责模型创建、更新、删除、批量导入以及上游模型拉取。
+ */
 public class AdminModelService {
 
     private static final BigDecimal DEFAULT_REQUEST_PRICE = new BigDecimal("0.200000");
 
-    private final JdbcTemplate jdbcTemplate;
+    private final ModelMapper modelMapper;
+    private final ModelRouteMapper modelRouteMapper;
+    private final ModelGroupModelMapper modelGroupModelMapper;
+    private final ModelAdminQueryMapper modelAdminQueryMapper;
     private final AesCryptoService aesCryptoService;
     private final ObjectMapper objectMapper;
     private final HttpClient httpClient;
     private final UserModelAccessService userModelAccessService;
 
-    public AdminModelService(JdbcTemplate jdbcTemplate,
+    public AdminModelService(ModelMapper modelMapper,
+                             ModelRouteMapper modelRouteMapper,
+                             ModelGroupModelMapper modelGroupModelMapper,
+                             ModelAdminQueryMapper modelAdminQueryMapper,
                              AesCryptoService aesCryptoService,
                              ObjectMapper objectMapper,
                              UserModelAccessService userModelAccessService) {
-        this.jdbcTemplate = jdbcTemplate;
+        this.modelMapper = modelMapper;
+        this.modelRouteMapper = modelRouteMapper;
+        this.modelGroupModelMapper = modelGroupModelMapper;
+        this.modelAdminQueryMapper = modelAdminQueryMapper;
         this.aesCryptoService = aesCryptoService;
         this.objectMapper = objectMapper;
         this.userModelAccessService = userModelAccessService;
         this.httpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(20)).build();
     }
 
+    /**
+     * 查询模型列表。
+     */
     public List<ModelListItemResponse> listModels() {
-        if (!AdminContext.isAdmin()) {
-            return jdbcTemplate.query("""
-                    select m.id, mgm.id as binding_id, m.model_code, m.model_name, m.model_type,
-                           coalesce(mgm.billing_type, m.billing_type) as billing_type,
-                           coalesce(mgm.prompt_price, m.prompt_price) as prompt_price,
-                           coalesce(mgm.cached_prompt_price, m.cached_prompt_price) as cached_prompt_price,
-                           coalesce(mgm.completion_price, m.completion_price) as completion_price,
-                           coalesce(mgm.request_price, m.request_price) as request_price,
-                           coalesce(mgm.multiplier, m.multiplier) as multiplier,
-                           m.is_public, m.status, m.created_at,
-                           g.id as group_id, g.group_code, g.group_name,
-                           p.id as provider_id, p.provider_name, p.provider_type, r.upstream_model
-                    from models m
-                    left join model_group_models mgm on mgm.model_id = m.id
-                    left join model_groups g on g.id = mgm.group_id and g.status = 'ACTIVE'
-                    left join model_routes r on r.model_id = m.id and r.status = 'ACTIVE'
-                    left join providers p on p.id = r.provider_id
-                    where m.deleted = 0 and m.status = 'ACTIVE' and m.is_public = 1
-                    order by g.id asc, m.id desc
-                    """, (rs, rowNum) -> new ModelListItemResponse(
-                    rs.getLong("id"),
-                    rs.getObject("binding_id") == null ? null : rs.getLong("binding_id"),
-                    rs.getString("model_code"),
-                    rs.getString("model_name"),
-                    rs.getString("model_type"),
-                    rs.getString("billing_type"),
-                    rs.getBigDecimal("prompt_price"),
-                    rs.getBigDecimal("cached_prompt_price"),
-                    rs.getBigDecimal("completion_price"),
-                    rs.getBigDecimal("request_price"),
-                    rs.getBigDecimal("multiplier"),
-                    rs.getInt("is_public"),
-                    rs.getString("status"),
-                    rs.getObject("group_id") == null ? null : rs.getLong("group_id"),
-                    rs.getString("group_code"),
-                    rs.getString("group_name"),
-                    rs.getObject("provider_id") == null ? null : rs.getLong("provider_id"),
-                    rs.getString("provider_name"),
-                    rs.getString("provider_type"),
-                    rs.getString("upstream_model"),
-                    rs.getTimestamp("created_at").toLocalDateTime()
-            ));
-        }
-
-        return jdbcTemplate.query("""
-                select m.id, mgm.id as binding_id, m.model_code, m.model_name, m.model_type,
-                       coalesce(mgm.billing_type, m.billing_type) as billing_type,
-                       coalesce(mgm.prompt_price, m.prompt_price) as prompt_price,
-                       coalesce(mgm.cached_prompt_price, m.cached_prompt_price) as cached_prompt_price,
-                       coalesce(mgm.completion_price, m.completion_price) as completion_price,
-                       coalesce(mgm.request_price, m.request_price) as request_price,
-                       coalesce(mgm.multiplier, m.multiplier) as multiplier,
-                       m.is_public, m.status, m.created_at,
-                       g.id as group_id, g.group_code, g.group_name,
-                       p.id as provider_id, p.provider_name, p.provider_type, r.upstream_model
-                from models m
-                left join model_group_models mgm on mgm.model_id = m.id
-                left join model_groups g on g.id = mgm.group_id and g.status = 'ACTIVE'
-                left join model_routes r on r.model_id = m.id and r.status = 'ACTIVE'
-                left join providers p on p.id = r.provider_id
-                where m.deleted = 0
-                order by g.id asc, m.id desc
-                """, (rs, rowNum) -> new ModelListItemResponse(
-                rs.getLong("id"),
-                rs.getObject("binding_id") == null ? null : rs.getLong("binding_id"),
-                rs.getString("model_code"),
-                rs.getString("model_name"),
-                rs.getString("model_type"),
-                rs.getString("billing_type"),
-                rs.getBigDecimal("prompt_price"),
-                rs.getBigDecimal("cached_prompt_price"),
-                rs.getBigDecimal("completion_price"),
-                rs.getBigDecimal("request_price"),
-                rs.getBigDecimal("multiplier"),
-                rs.getInt("is_public"),
-                rs.getString("status"),
-                rs.getObject("group_id") == null ? null : rs.getLong("group_id"),
-                rs.getString("group_code"),
-                rs.getString("group_name"),
-                rs.getObject("provider_id") == null ? null : rs.getLong("provider_id"),
-                rs.getString("provider_name"),
-                rs.getString("provider_type"),
-                rs.getString("upstream_model"),
-                rs.getTimestamp("created_at").toLocalDateTime()
-        ));
+        // 查询模型列表并转换成前端展示结构
+        return modelAdminQueryMapper.listModels(AdminContext.isAdmin()).stream()
+                .map(item -> new ModelListItemResponse(
+                        item.getId(),
+                        item.getBindingId(),
+                        item.getModelCode(),
+                        item.getModelName(),
+                        item.getModelType(),
+                        item.getBillingType(),
+                        item.getPromptPrice(),
+                        item.getCachedPromptPrice(),
+                        item.getCompletionPrice(),
+                        item.getRequestPrice(),
+                        item.getMultiplier(),
+                        item.getIsPublic(),
+                        item.getStatus(),
+                        item.getGroupId(),
+                        item.getGroupCode(),
+                        item.getGroupName(),
+                        item.getProviderId(),
+                        item.getProviderName(),
+                        item.getProviderType(),
+                        item.getUpstreamModel(),
+                        item.getCreatedAt()
+                ))
+                .toList();
     }
 
+    /**
+     * 从上游渠道拉取可用模型列表。
+     */
     public List<UpstreamModelOptionResponse> fetchUpstreamModels(Long providerId) {
         AdminContext.requireAdmin();
+        // 读取渠道访问凭证并构造远程请求
         ProviderAccess provider = loadProviderAccess(providerId);
         HttpRequest request = buildModelListRequest(provider);
 
         try {
+            // 调用上游接口拉取模型列表
             HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
             if (response.statusCode() < 200 || response.statusCode() >= 300) {
-                throw new BusinessException(400, "鎷夊彇涓婃父妯″瀷澶辫触: " + extractErrorMessage(response.body(), response.statusCode()));
+                throw new BusinessException(400, "Failed to fetch upstream models: " + extractErrorMessage(response.body(), response.statusCode()));
             }
             return parseUpstreamModels(response.body(), provider);
         } catch (BusinessException ex) {
             throw ex;
         } catch (Exception ex) {
-            throw new BusinessException(500, "鎷夊彇涓婃父妯″瀷澶辫触: " + ex.getMessage());
+            throw new BusinessException(500, "Failed to fetch upstream models: " + ex.getMessage());
         }
     }
 
     @Transactional
+    /**
+     * 创建模型、默认路由和分组绑定。
+     */
     public void create(ModelCreateRequest request) {
         AdminContext.requireAdmin();
-        Integer exists = jdbcTemplate.queryForObject(
-                "select count(*) from models where model_code = ?",
-                Integer.class,
-                request.modelCode()
-        );
-        if (exists != null && exists > 0) {
+        // 新建前先校验模型编码唯一性
+        if (modelMapper.existsByModelCode(request.modelCode())) {
             throw new BusinessException("Model code already exists");
         }
 
+        // 同时创建模型主记录、主路由以及默认分组绑定
         insertModelWithRoute(
                 request.modelCode(),
                 request.modelName(),
@@ -191,40 +161,43 @@ public class AdminModelService {
     }
 
     @Transactional
+    /**
+     * 更新模型配置、路由和分组绑定。
+     */
     public void update(Long id, ModelUpdateRequest request) {
         AdminContext.requireAdmin();
-        int updated = jdbcTemplate.update("""
-                update models
-                set model_name = ?, model_type = ?, is_public = ?, updated_at = now()
-                where id = ? and deleted = 0
-                """,
-                trimToLength(request.modelName(), 64),
-                blankToDefault(request.modelType(), "CHAT"),
-                Boolean.TRUE.equals(request.isPublic()) ? 1 : 0,
-                id
-        );
+        // 先更新模型自身配置
+        ModelEntity updateModel = new ModelEntity();
+        updateModel.setModelName(trimToLength(request.modelName(), 64));
+        updateModel.setModelType(blankToDefault(request.modelType(), "CHAT"));
+        updateModel.setBillingType(blankToDefault(request.billingType(), "TOKEN"));
+        updateModel.setPromptPrice(numberOrZero(request.promptPrice()));
+        updateModel.setCachedPromptPrice(numberOrZero(request.cachedPromptPrice()));
+        updateModel.setCompletionPrice(numberOrZero(request.completionPrice()));
+        updateModel.setRequestPrice(request.requestPrice() == null ? DEFAULT_REQUEST_PRICE : numberOrZero(request.requestPrice()));
+        updateModel.setMultiplier(request.multiplier() == null ? BigDecimal.ONE : request.multiplier());
+        updateModel.setIsPublic(Boolean.TRUE.equals(request.isPublic()) ? 1 : 0);
+        int updated = modelMapper.updateActiveById(id, updateModel);
         if (updated == 0) {
             throw new BusinessException("Model does not exist");
         }
 
+        // 再同步路由、分组绑定以及分组价格继承关系
         replaceModelRoutes(id, request.providerId(), request.upstreamModel());
-        userModelAccessService.updateModelGroupBindingPrice(
-                id,
-                request.groupId(),
-                blankToDefault(request.billingType(), "TOKEN"),
-                numberOrZero(request.promptPrice()),
-                numberOrZero(request.cachedPromptPrice()),
-                numberOrZero(request.completionPrice()),
-                request.requestPrice() == null ? DEFAULT_REQUEST_PRICE : numberOrZero(request.requestPrice()),
-                request.multiplier() == null ? BigDecimal.ONE : request.multiplier()
-        );
+        syncModelGroupBinding(id, request.bindingId(), request.groupId());
+        userModelAccessService.clearModelGroupBindingPrices(id);
     }
 
     @Transactional
+    /**
+     * 批量导入上游模型并建立分组绑定。
+     */
     public ModelBatchImportResponse batchImport(ModelBatchImportRequest request) {
         AdminContext.requireAdmin();
+        // 仅校验渠道可访问，不在这里直接发拉取请求
         loadProviderAccess(request.providerId());
 
+        // 去重并过滤空模型名
         Set<String> upstreamModels = new LinkedHashSet<>();
         for (String item : request.upstreamModels()) {
             if (item != null && !item.isBlank()) {
@@ -238,6 +211,7 @@ public class AdminModelService {
         List<String> importedModels = new ArrayList<>();
         List<String> skippedModels = new ArrayList<>();
 
+        // 逐个处理：能复用就复用，不能复用就新建
         for (String upstreamModel : upstreamModels) {
             ExistingRouteModel existingRouteModel = findExistingRouteModel(request.providerId(), upstreamModel);
             if (existingRouteModel != null) {
@@ -245,16 +219,7 @@ public class AdminModelService {
                     skippedModels.add(upstreamModel);
                     continue;
                 }
-                userModelAccessService.addModelGroupBindingWithPrices(
-                        existingRouteModel.modelId(),
-                        request.groupId(),
-                        "TOKEN",
-                        numberOrZero(request.promptPrice()),
-                        numberOrZero(request.cachedPromptPrice()),
-                        numberOrZero(request.completionPrice()),
-                        DEFAULT_REQUEST_PRICE,
-                        request.multiplier() == null ? BigDecimal.ONE : request.multiplier()
-                );
+                userModelAccessService.addModelGroupBinding(existingRouteModel.modelId(), request.groupId());
                 importedModels.add(existingRouteModel.modelCode());
                 continue;
             }
@@ -266,16 +231,7 @@ public class AdminModelService {
                     skippedModels.add(upstreamModel);
                     continue;
                 }
-                userModelAccessService.addModelGroupBindingWithPrices(
-                        existingModelId,
-                        request.groupId(),
-                        "TOKEN",
-                        numberOrZero(request.promptPrice()),
-                        numberOrZero(request.cachedPromptPrice()),
-                        numberOrZero(request.completionPrice()),
-                        DEFAULT_REQUEST_PRICE,
-                        request.multiplier() == null ? BigDecimal.ONE : request.multiplier()
-                );
+                userModelAccessService.addModelGroupBinding(existingModelId, request.groupId());
                 importedModels.add(modelCode);
                 continue;
             }
@@ -286,12 +242,12 @@ public class AdminModelService {
                     modelName,
                     "CHAT",
                     "TOKEN",
-                    numberOrZero(request.promptPrice()),
-                    numberOrZero(request.cachedPromptPrice()),
-                    numberOrZero(request.completionPrice()),
+                    BigDecimal.ZERO,
+                    BigDecimal.ZERO,
+                    BigDecimal.ZERO,
                     DEFAULT_REQUEST_PRICE,
                     BigDecimal.ZERO,
-                    request.multiplier() == null ? BigDecimal.ONE : request.multiplier(),
+                    BigDecimal.ONE,
                     request.isPublic() == null || request.isPublic(),
                     request.groupId(),
                     request.providerId(),
@@ -308,41 +264,40 @@ public class AdminModelService {
         );
     }
 
+    /**
+     * 单独更新模型状态。
+     */
     public void updateStatus(Long id, String status) {
         AdminContext.requireAdmin();
-        int updated = jdbcTemplate.update("""
-                update models
-                set status = ?, updated_at = now()
-                where id = ? and deleted = 0
-                """, status, id);
+        // 单独维护模型启用状态
+        ModelEntity updateModel = new ModelEntity();
+        updateModel.setStatus(status);
+        int updated = modelMapper.updateActiveById(id, updateModel);
         if (updated == 0) {
             throw new BusinessException("Model does not exist");
         }
     }
 
     @Transactional
+    /**
+     * 删除模型并清理路由和分组绑定。
+     */
     public void delete(Long id) {
         AdminContext.requireAdmin();
-        Integer exists = jdbcTemplate.queryForObject(
-                "select count(*) from models where id = ? and deleted = 0",
-                Integer.class,
-                id
-        );
-        if (exists == null || exists == 0) {
+        // 删除模型前先确认模型存在
+        if (!modelMapper.existsActiveById(id)) {
             throw new BusinessException("Model does not exist");
         }
 
-        jdbcTemplate.update("""
-                delete from model_routes
-                where model_id = ?
-                """, id);
+        // 顺序清理路由、分组绑定，再删主表
+        modelRouteMapper.deleteByModelId(id);
         userModelAccessService.deleteModelBindings(id);
-        jdbcTemplate.update("""
-                delete from models
-                where id = ?
-                """, id);
+        modelMapper.deleteById(id);
     }
 
+    /**
+     * 插入模型主记录、主路由以及默认分组绑定。
+     */
     private Long insertModelWithRoute(String modelCode,
                                       String modelName,
                                       String modelType,
@@ -357,85 +312,127 @@ public class AdminModelService {
                                       Long groupId,
                                       Long providerId,
                                       String upstreamModel) {
-        try {
-            jdbcTemplate.update("""
-                    insert into models (model_code, model_name, model_type, billing_type, prompt_price, cached_prompt_price, completion_price,
-                                        request_price, image_price, multiplier, is_public, status)
-                    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE')
-                    """,
-                    trimToLength(modelCode, 64),
-                    trimToLength(modelName, 64),
-                    modelType,
-                    billingType,
-                    promptPrice,
-                    cachedPromptPrice,
-                    completionPrice,
-                    requestPrice,
-                    imagePrice,
-                    multiplier,
-                    isPublic ? 1 : 0
-            );
-        } catch (DuplicateKeyException ex) {
-            throw new BusinessException("Model code already exists");
-        }
+        // 插入模型主记录
+        ModelEntity model = new ModelEntity();
+        model.setModelCode(trimToLength(modelCode, 64));
+        model.setModelName(trimToLength(modelName, 64));
+        model.setModelType(modelType);
+        model.setBillingType(billingType);
+        model.setPromptPrice(promptPrice);
+        model.setCachedPromptPrice(cachedPromptPrice);
+        model.setCompletionPrice(completionPrice);
+        model.setRequestPrice(requestPrice);
+        model.setImagePrice(imagePrice);
+        model.setMultiplier(multiplier);
+        model.setIsPublic(isPublic ? 1 : 0);
+        model.setStatus("ACTIVE");
+        modelMapper.insert(model);
 
-        Long modelId = jdbcTemplate.queryForObject(
-                "select id from models where model_code = ?",
-                Long.class,
-                trimToLength(modelCode, 64)
-        );
-        jdbcTemplate.update("""
-                insert into model_routes (model_id, provider_id, provider_token_id, upstream_model, route_type, priority_no, status)
-                values (?, ?, null, ?, 'PRIMARY', 100, 'ACTIVE')
-                """, modelId, providerId, trimToLength(upstreamModel, 128));
+        // 为模型创建默认主路由
+        ModelRouteEntity route = new ModelRouteEntity();
+        route.setModelId(model.getId());
+        route.setProviderId(providerId);
+        route.setProviderTokenId(null);
+        route.setUpstreamModel(trimToLength(upstreamModel, 128));
+        route.setRouteType("PRIMARY");
+        route.setPriorityNo(100);
+        route.setStatus("ACTIVE");
+        modelRouteMapper.insert(route);
+
+        // 补齐模型与分组之间的默认绑定关系
         userModelAccessService.addModelGroupBindingWithPrices(
-                modelId,
+                model.getId(),
                 groupId,
-                billingType,
-                promptPrice,
-                cachedPromptPrice,
-                completionPrice,
-                requestPrice,
-                multiplier
+                null,
+                null,
+                null,
+                null,
+                null,
+                null
         );
-        return modelId;
+        return model.getId();
     }
 
-    private void replaceModelRoutes(Long modelId, Long providerId, String upstreamModel) {
-        jdbcTemplate.update("""
-                delete from model_routes
-                where model_id = ?
-                """, modelId);
-        jdbcTemplate.update("""
-                insert into model_routes (model_id, provider_id, provider_token_id, upstream_model, route_type, priority_no, status)
-                values (?, ?, null, ?, 'PRIMARY', 100, 'ACTIVE')
-                """, modelId, providerId, trimToLength(upstreamModel, 128));
-    }
-
-    private ProviderAccess loadProviderAccess(Long providerId) {
-        List<ProviderAccess> providers = jdbcTemplate.query("""
-                select p.id, p.provider_name, p.base_url, p.provider_type, p.timeout_ms, t.token_value_encrypted
-                from providers p
-                join provider_tokens t on t.provider_id = p.id and t.deleted = 0 and t.status = 'ACTIVE'
-                where p.id = ? and p.deleted = 0 and p.status = 'ACTIVE'
-                order by t.weight_no desc, t.id asc
-                limit 1
-                """, (rs, rowNum) -> new ProviderAccess(
-                rs.getLong("id"),
-                rs.getString("provider_name"),
-                rs.getString("base_url"),
-                rs.getString("provider_type"),
-                rs.getInt("timeout_ms"),
-                aesCryptoService.decrypt(rs.getString("token_value_encrypted"))
-        ), providerId);
-
-        if (providers.isEmpty()) {
-            throw new BusinessException("娓犻亾涓嶅瓨鍦紝鎴栬娓犻亾杩樻病鏈夊彲鐢?Token");
+    /**
+     * 同步模型和分组之间的绑定关系。
+     */
+    private void syncModelGroupBinding(Long modelId, Long bindingId, Long groupId) {
+        // 没有模型或分组时无需处理绑定关系
+        if (modelId == null || groupId == null) {
+            return;
         }
-        return providers.get(0);
+        if (bindingId == null) {
+            // 没传绑定ID时，直接补一条新绑定
+            userModelAccessService.addModelGroupBinding(modelId, groupId);
+            return;
+        }
+
+        // 如果绑定记录不存在或已不匹配，则重新创建绑定
+        ModelGroupModelEntity binding = modelGroupModelMapper.selectById(bindingId);
+        if (binding == null || !modelId.equals(binding.getModelId())) {
+            userModelAccessService.addModelGroupBinding(modelId, groupId);
+            return;
+        }
+        if (groupId.equals(binding.getGroupId())) {
+            // 分组未变化时无需更新
+            return;
+        }
+
+        if (modelGroupModelMapper.existsBinding(modelId, groupId)) {
+            // 目标分组已经有绑定时，删除旧绑定避免重复
+            modelGroupModelMapper.deleteByIdValue(bindingId);
+            return;
+        }
+
+        // 否则直接把原绑定迁移到新的分组
+        ModelGroupModelEntity updateBinding = new ModelGroupModelEntity();
+        updateBinding.setId(bindingId);
+        updateBinding.setGroupId(groupId);
+        modelGroupModelMapper.updateById(updateBinding);
     }
 
+    /**
+     * 替换模型的主路由配置。
+     */
+    private void replaceModelRoutes(Long modelId, Long providerId, String upstreamModel) {
+        // 更新模型时统一重建主路由，避免旧路由残留
+        modelRouteMapper.deleteByModelId(modelId);
+
+        ModelRouteEntity route = new ModelRouteEntity();
+        route.setModelId(modelId);
+        route.setProviderId(providerId);
+        route.setProviderTokenId(null);
+        route.setUpstreamModel(trimToLength(upstreamModel, 128));
+        route.setRouteType("PRIMARY");
+        route.setPriorityNo(100);
+        route.setStatus("ACTIVE");
+        modelRouteMapper.insert(route);
+    }
+
+    /**
+     * 读取渠道访问凭证，供远程拉取模型时使用。
+     */
+    private ProviderAccess loadProviderAccess(Long providerId) {
+        // 从联表查询结果里读取渠道和令牌信息
+        ProviderAccessView provider = modelAdminQueryMapper.selectProviderAccess(providerId);
+        if (provider == null) {
+            throw new BusinessException("Provider is missing or has no active token");
+        }
+        return new ProviderAccess(
+                provider.getId(),
+                provider.getProviderName(),
+                provider.getBaseUrl(),
+                provider.getProviderType(),
+                provider.getTimeoutMs(),
+                aesCryptoService.decrypt(provider.getTokenValueEncrypted())
+        );
+    }
+
+    /**
+     * 根据渠道协议构造模型列表请求。
+     */
     private HttpRequest buildModelListRequest(ProviderAccess provider) {
+        // 按不同供应商协议拼接模型列表接口
         HttpRequest.Builder builder = HttpRequest.newBuilder()
                 .timeout(Duration.ofMillis(provider.timeoutMs()))
                 .GET()
@@ -455,18 +452,23 @@ public class AdminModelService {
                 .build();
     }
 
+    /**
+     * 兼容不同上游返回结构，提取模型选项。
+     */
     private List<UpstreamModelOptionResponse> parseUpstreamModels(String body, ProviderAccess provider) throws Exception {
+        // 兼容不同上游返回结构，统一提取模型列表
         JsonNode root = objectMapper.readTree(body);
         JsonNode items = root.path("data");
         if (!items.isArray()) {
             items = root.path("models");
         }
         if (!items.isArray()) {
-            throw new BusinessException(400, "涓婃父娌℃湁杩斿洖鍙瘑鍒殑妯″瀷鍒楄〃");
+            throw new BusinessException(400, "Unexpected upstream model list response");
         }
 
         List<UpstreamModelOptionResponse> result = new ArrayList<>();
         for (JsonNode item : items) {
+            // 尽量优先取标准 id，没有时回退到 name
             String id = text(item, "id");
             if (id.isBlank()) {
                 id = text(item, "name");
@@ -491,41 +493,33 @@ public class AdminModelService {
         return result;
     }
 
+    /**
+     * 检查当前渠道下是否已经存在同一个上游模型绑定。
+     */
     private ExistingRouteModel findExistingRouteModel(Long providerId, String upstreamModel) {
-        List<ExistingRouteModel> models = jdbcTemplate.query("""
-                select m.id, m.model_code
-                from model_routes r
-                join models m on m.id = r.model_id
-                where r.provider_id = ? and r.upstream_model = ? and r.status = 'ACTIVE'
-                  and m.deleted = 0
-                order by m.id asc
-                limit 1
-                """, (rs, rowNum) -> new ExistingRouteModel(
-                rs.getLong("id"),
-                rs.getString("model_code")
-        ), providerId, trimToLength(upstreamModel, 128));
-        return models.isEmpty() ? null : models.get(0);
-    }
-
-    private boolean isModelBoundToGroup(Long modelId, Long groupId) {
-        Integer count = jdbcTemplate.queryForObject("""
-                select count(*)
-                from model_group_models
-                where model_id = ? and group_id = ?
-                """, Integer.class, modelId, groupId);
-        return count != null && count > 0;
-    }
-
-    private Long findModelIdByCode(String modelCode) {
-        List<Long> ids = jdbcTemplate.queryForList(
-                "select id from models where model_code = ? and deleted = 0 limit 1",
-                Long.class,
-                trimToLength(modelCode, 64)
+        ExistingRouteModelView model = modelAdminQueryMapper.selectExistingRouteModel(
+                providerId,
+                trimToLength(upstreamModel, 128)
         );
-        return ids.isEmpty() ? null : ids.get(0);
+        return model == null ? null : new ExistingRouteModel(model.getModelId(), model.getModelCode());
+    }
+
+    /**
+     * 判断模型是否已经绑定到指定分组。
+     */
+    private boolean isModelBoundToGroup(Long modelId, Long groupId) {
+        return modelGroupModelMapper.existsBinding(modelId, groupId);
+    }
+
+    /**
+     * 按模型编码查询已存在的模型主键。
+     */
+    private Long findModelIdByCode(String modelCode) {
+        return modelMapper.selectActiveIdByCode(trimToLength(modelCode, 64));
     }
 
     private String normalizeModelCode(String upstreamModel) {
+        // 把上游模型名归一化成平台内部使用的模型编码
         String normalized = upstreamModel.toLowerCase(Locale.ROOT)
                 .replaceAll("[^a-z0-9._-]+", "-")
                 .replaceAll("-{2,}", "-")
@@ -534,6 +528,9 @@ public class AdminModelService {
         return normalized.isBlank() ? "model" : normalized;
     }
 
+    /**
+     * 推导 OpenAI 兼容协议的模型列表地址。
+     */
     private String resolveOpenAiModelsEndpoint(String baseUrl) {
         if (baseUrl.endsWith("/models")) {
             return baseUrl;
@@ -544,6 +541,9 @@ public class AdminModelService {
         return baseUrl + "/v1/models";
     }
 
+    /**
+     * 推导 Anthropic 协议的模型列表地址。
+     */
     private String resolveAnthropicModelsEndpoint(String baseUrl) {
         if (baseUrl.endsWith("/v1/models")) {
             return baseUrl;
@@ -558,6 +558,7 @@ public class AdminModelService {
     }
 
     private String extractErrorMessage(String body, int statusCode) {
+        // 尽量从上游错误响应中提取更友好的报错信息
         try {
             JsonNode root = objectMapper.readTree(body);
             String errorMessage = firstNonBlank(
@@ -605,6 +606,10 @@ public class AdminModelService {
         return value.length() <= maxLength ? value : value.substring(0, maxLength);
     }
 
+    /**
+     * 渠道访问凭证快照。
+     * 封装拉取上游模型时需要的基础连接信息。
+     */
     private record ProviderAccess(
             Long id,
             String providerName,
@@ -615,6 +620,10 @@ public class AdminModelService {
     ) {
     }
 
+    /**
+     * 已存在的模型与路由绑定信息。
+     * 用于批量导入时判断是否可以复用旧模型。
+     */
     private record ExistingRouteModel(Long modelId, String modelCode) {
     }
 }

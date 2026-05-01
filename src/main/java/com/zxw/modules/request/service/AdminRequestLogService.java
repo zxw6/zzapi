@@ -3,126 +3,82 @@ package com.zxw.modules.request.service;
 import com.zxw.common.security.AdminContext;
 import com.zxw.common.security.JwtUser;
 import com.zxw.modules.request.dto.RequestLogItemResponse;
-import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.jdbc.core.RowMapper;
+import com.zxw.modules.request.dto.RequestLogPageResponse;
+import com.zxw.persistence.mapper.RequestLogQueryMapper;
+import com.zxw.persistence.model.RequestLogListView;
 import org.springframework.stereotype.Service;
 
-import java.sql.Timestamp;
+import java.math.BigDecimal;
 import java.util.List;
 
 @Service
+/**
+ * 管理端请求日志服务。
+ * 用于按权限范围分页查询最近请求记录，并转换成前端响应结构。
+ */
 public class AdminRequestLogService {
 
-    private final JdbcTemplate jdbcTemplate;
+    // 查询层 Mapper，负责按权限范围拉取请求日志视图数据
+    private final RequestLogQueryMapper requestLogQueryMapper;
 
-    public AdminRequestLogService(JdbcTemplate jdbcTemplate) {
-        this.jdbcTemplate = jdbcTemplate;
+    public AdminRequestLogService(RequestLogQueryMapper requestLogQueryMapper) {
+        this.requestLogQueryMapper = requestLogQueryMapper;
     }
 
-    public List<RequestLogItemResponse> latest(int limit) {
+    /**
+     * 分页查询最近的请求日志。
+     */
+    public RequestLogPageResponse<RequestLogItemResponse> page(int page, int pageSize) {
         JwtUser currentUser = AdminContext.require();
-        int safeLimit = Math.min(Math.max(limit, 1), 100);
-        if (!tableExists("request_logs")) {
-            return List.of();
-        }
+        int safePage = Math.max(page, 1);
+        int safePageSize = Math.min(Math.max(pageSize, 1), 100);
+        int offset = (safePage - 1) * safePageSize;
 
-        boolean hasPackageLogColumn = columnExists("request_logs", "user_package_id");
-        boolean hasCachedPromptTokens = columnExists("request_logs", "cached_prompt_tokens");
-        boolean hasPackageTables = hasPackageLogColumn
-                && tableExists("user_model_packages")
-                && tableExists("model_groups");
-        boolean hasModelMultiplier = tableExists("models") && columnExists("models", "multiplier");
+        long total = AdminContext.isAdmin()
+                ? requestLogQueryMapper.countAdmin()
+                : requestLogQueryMapper.countUser(currentUser.userId());
+        List<RequestLogListView> rows = AdminContext.isAdmin()
+                ? requestLogQueryMapper.pageAdmin(offset, safePageSize)
+                : requestLogQueryMapper.pageUser(currentUser.userId(), offset, safePageSize);
 
-        String packageNameSelect = hasPackageTables
-                ? "coalesce(g.group_name, p.package_name) as package_name"
-                : "cast(null as char) as package_name";
-        String multiplierSelect = hasModelMultiplier
-                ? "m.multiplier"
-                : "cast(1.0000 as decimal(10,4)) as multiplier";
-        String cachedPromptTokensSelect = hasCachedPromptTokens
-                ? "l.cached_prompt_tokens"
-                : "0 as cached_prompt_tokens";
+        List<RequestLogItemResponse> records = rows.stream()
+                // 统一补齐默认倍率字段，避免前端拿到空值。
+                .map(item -> new RequestLogItemResponse(
+                        item.getRequestId(),
+                        item.getUsername(),
+                        item.getModelCode(),
+                        item.getUpstreamModel(),
+                        item.getPackageName(),
+                        defaultBigDecimal(item.getMultiplier()),
+                        item.getStatusCode(),
+                        item.getLatencyMs(),
+                        item.getPromptTokens(),
+                        item.getCompletionTokens(),
+                        item.getTotalTokens(),
+                        item.getCachedPromptTokens(),
+                        item.getUserAmount(),
+                        item.getCostAmount(),
+                        item.getSuccess(),
+                        item.getCreatedAt()
+                ))
+                .toList();
 
-        String joins = """
-                from request_logs l
-                left join users u on u.id = l.user_id
-                """;
-        if (hasPackageTables) {
-            joins += """
-                    left join user_model_packages p on p.id = l.user_package_id
-                    left join model_groups g on g.id = p.group_id
-                    """;
-        }
-        if (hasModelMultiplier) {
-            joins += "left join models m on m.model_code = l.model_code and m.deleted = 0\n";
-        }
-
-        String sql = """
-                select l.request_id, u.username, l.model_code, l.upstream_model, l.status_code,
-                       %s, %s,
-                       l.latency_ms, l.prompt_tokens, l.completion_tokens, l.total_tokens, %s,
-                       l.user_amount, l.cost_amount, l.success, l.created_at
-                %s
-                %s
-                order by l.id desc
-                limit ?
-                """.formatted(
-                packageNameSelect,
-                multiplierSelect,
-                cachedPromptTokensSelect,
-                joins,
-                AdminContext.isAdmin() ? "" : "where l.user_id = ?"
+        long totalPages = total <= 0 ? 0 : (total + safePageSize - 1) / safePageSize;
+        return new RequestLogPageResponse<>(
+                safePage,
+                safePageSize,
+                total,
+                totalPages,
+                safePage > 1,
+                totalPages > safePage,
+                records
         );
-
-        if (!AdminContext.isAdmin()) {
-            return jdbcTemplate.query(sql, requestLogMapper(), currentUser.userId(), safeLimit);
-        }
-
-        return jdbcTemplate.query(sql, requestLogMapper(), safeLimit);
     }
 
-    private RowMapper<RequestLogItemResponse> requestLogMapper() {
-        return (rs, rowNum) -> {
-            Timestamp createdAt = rs.getTimestamp("created_at");
-            return new RequestLogItemResponse(
-                    rs.getString("request_id"),
-                    rs.getString("username"),
-                    rs.getString("model_code"),
-                    rs.getString("upstream_model"),
-                    rs.getString("package_name"),
-                    rs.getBigDecimal("multiplier"),
-                    rs.getInt("status_code"),
-                    rs.getInt("latency_ms"),
-                    rs.getInt("prompt_tokens"),
-                    rs.getInt("completion_tokens"),
-                    rs.getInt("total_tokens"),
-                    rs.getInt("cached_prompt_tokens"),
-                    rs.getBigDecimal("user_amount"),
-                    rs.getBigDecimal("cost_amount"),
-                    rs.getInt("success"),
-                    createdAt == null ? null : createdAt.toLocalDateTime()
-            );
-        };
-    }
-
-    private boolean tableExists(String tableName) {
-        Integer count = jdbcTemplate.queryForObject("""
-                select count(*)
-                from information_schema.tables
-                where table_schema = database()
-                  and table_name = ?
-                """, Integer.class, tableName);
-        return count != null && count > 0;
-    }
-
-    private boolean columnExists(String tableName, String columnName) {
-        Integer count = jdbcTemplate.queryForObject("""
-                select count(*)
-                from information_schema.columns
-                where table_schema = database()
-                  and table_name = ?
-                  and column_name = ?
-                """, Integer.class, tableName, columnName);
-        return count != null && count > 0;
+    /**
+     * 把空倍率值兜底为默认 1 倍。
+     */
+    private BigDecimal defaultBigDecimal(BigDecimal value) {
+        return value == null ? BigDecimal.ONE : value;
     }
 }
