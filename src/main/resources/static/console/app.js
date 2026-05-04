@@ -612,6 +612,10 @@ function buildPurchasedPackageLabel(item) {
     return `${item.groupName || item.groupCode || "濂楅"} #${item.id}`;
 }
 
+function packageTypeText(packageType) {
+    return String(packageType || "").toUpperCase() === "BALANCE" ? "余额套餐" : "额度套餐";
+}
+
 function getModelRowKey(model) {
     return `${model?.id || ""}`;
 }
@@ -1006,6 +1010,7 @@ function renderModelAccessSummary() {
                 <div class="package-plan-name">${escapeHtml(group.groupName)}</div>
                 <div class="package-plan-price">${escapeHtml(formatMoney(group.salePrice || 0))}<small> / ${escapeHtml(group.packageDays || 30)}澶?/small></div>
                 <ul class="package-plan-features">
+                    <li>套餐类型 ${escapeHtml(packageTypeText(group.packageType))}</li>
                     <li>姣忔棩棰濆害 ${escapeHtml(formatMoney(group.dailyQuota || 0))}</li>
                     <li>鏈夋晥鏈?${escapeHtml(group.packageDays || 30)} 澶?/li>
                     <li>${escapeHtml(group.modelCount || 0)} 涓ā鍨嬪彲鐢?/li>
@@ -1042,7 +1047,7 @@ function renderModelAccessSummary() {
                 <div class="package-summary-top">
                     <div>
                         <div class="package-summary-name">${escapeHtml(buildPurchasedPackageLabel(item))}</div>
-                        <div class="card-caption">${escapeHtml(item.active ? "鍙敤涓? : (item.status || "宸茶喘涔?))}</div>
+                        <div class="card-caption">${escapeHtml(packageTypeText(item.packageType))} · ${escapeHtml(item.active ? "鍙敤涓? : (item.status || "宸茶喘涔?))}</div>
                     </div>
                     ${accessStatusBadge(item.active ? "ACTIVE" : (item.status || "EXPIRED"))}
                 </div>
@@ -1157,12 +1162,21 @@ function renderOverviewCards() {
             },
             {
                 tone: "cream",
-                icon: "閽?,
-                value: `${activeKeys}/${state.keys.length || 0}`,
-                label: "API Keys",
-                subvalue: "褰撳墠璐﹀彿宸插垱寤虹殑瀵嗛挜鏁伴噺",
-                action: "绠＄悊 Key",
-                panel: "keys-panel"
+                icon: "人",
+                value: String(overview.onlineUserCount || 0),
+                label: "实时活跃人数",
+                subvalue: "最近 5 分钟内活跃的登录用户数",
+                action: "查看用户",
+                panel: "users-panel"
+            },
+            {
+                tone: "cream",
+                icon: "今",
+                value: String(overview.todayActiveUserCount || 0),
+                label: "今日使用人数",
+                subvalue: "今天至少使用过一次的总用户数",
+                action: "查看日志",
+                panel: "logs-panel"
             }
         ]
         : [
@@ -1228,6 +1242,7 @@ function renderProfileCard() {
     const lastLogin = detail.lastLoginAt ? relativeTimeFromNow(detail.lastLoginAt) : "灏氭湭鐧诲綍";
     const createdAt = detail.createdAt ? formatDateTime(detail.createdAt) : "-";
     const packageLabel = selectedPackage ? buildPurchasedPackageLabel(selectedPackage) : "鏈喘涔板椁?;
+    const packageChargeMode = selectedPackage?.packageType === "BALANCE" ? "余额扣费" : "套餐额度";
 
     elements.profileCardBody.innerHTML = `
         <div class="dashboard-user-top">
@@ -1244,7 +1259,7 @@ function renderProfileCard() {
         <div class="dashboard-user-grid">
             <div class="meta-block">
                 <span>璁¤垂浼樺厛绾?/span>
-                <strong>濂楅鎵ｈ垂</strong>
+                <strong>${escapeHtml(packageChargeMode)}</strong>
             </div>
             <div class="meta-block">
                 <span>褰撳墠濂楅</span>
@@ -1346,6 +1361,10 @@ function renderQuotaCard() {
             <div class="quota-meta">
                 <span>璐拱浠锋牸</span>
                 <strong>${escapeHtml(formatMoney(selectedPackage?.purchasePrice || 0))}</strong>
+            </div>
+            <div class="quota-meta">
+                <span>套餐类型</span>
+                <strong>${escapeHtml(packageTypeText(selectedPackage?.packageType))}</strong>
             </div>
             <div class="quota-meta">
                 <span>鍒嗙粍妯″瀷</span>
@@ -2125,7 +2144,7 @@ function renderPackagePurchaseRecords() {
         <tr>
             <td>${escapeHtml(item.userId ?? "-")}</td>
             <td>${escapeHtml(item.username || "-")}</td>
-            <td>${escapeHtml(item.groupName || item.groupCode || "-")}</td>
+            <td>${escapeHtml(item.groupName || item.groupCode || "-")}<br><span class="card-caption">${escapeHtml(packageTypeText(item.packageType))}</span></td>
             <td>${escapeHtml(formatMoney(item.purchasePrice || 0))}</td>
             <td>${escapeHtml(formatDateTime(item.startAt))}</td>
             <td>${escapeHtml(formatDateTime(item.expiresAt))}</td>
@@ -2691,6 +2710,7 @@ async function onCreatePackage(event) {
         body: {
             groupCode: String(formData.get("groupCode") || "").trim(),
             groupName: String(formData.get("groupName") || "").trim(),
+            packageType: String(formData.get("packageType") || "QUOTA").trim().toUpperCase(),
             salePrice: toNumber(formData.get("salePrice")),
             packageDays: toNumber(formData.get("packageDays")),
             dailyQuota: toNumber(formData.get("dailyQuota")),

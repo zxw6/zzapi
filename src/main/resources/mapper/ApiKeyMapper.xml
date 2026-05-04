@@ -16,6 +16,7 @@
                k.expires_at as expiresAt,
                k.user_package_id as userPackageId,
                p.package_name as packageName,
+               g.package_type as packageType,
                k.model_group_id as modelGroupId,
                g.group_code as groupCode,
                g.group_name as groupName,

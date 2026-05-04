@@ -13,6 +13,26 @@
             (select count(*) from request_logs where request_date = curdate() and user_id = #{userId}) as requestCountToday,
             coalesce((select sum(total_tokens) from request_logs where request_date = curdate() and user_id = #{userId}), 0) as totalTokensToday,
             coalesce((select sum(total_tokens) from request_logs where user_id = #{userId} and request_date &gt;= curdate() - interval 6 day), 0) as totalTokens7d,
+            case
+                when exists (
+                    select 1
+                    from users
+                    where id = #{userId}
+                      and deleted = 0
+                      and last_active_at is not null
+                      and last_active_at &gt;= now() - interval 5 minute
+                ) then 1
+                else 0
+            end as onlineUserCount,
+            case
+                when exists (
+                    select 1
+                    from request_logs
+                    where user_id = #{userId}
+                      and request_date = curdate()
+                ) then 1
+                else 0
+            end as todayActiveUserCount,
             coalesce((select sum(case when direction = 'IN' then amount else 0 end)
                       from transactions
                       where transaction_date = curdate() and user_id = #{userId}), 0) as rechargeAmountToday,
@@ -31,6 +51,15 @@
             (select count(*) from request_logs where request_date = curdate()) as requestCountToday,
             coalesce((select sum(total_tokens) from request_logs where request_date = curdate()), 0) as totalTokensToday,
             coalesce((select sum(total_tokens) from request_logs where request_date &gt;= curdate() - interval 6 day), 0) as totalTokens7d,
+            (select count(*)
+             from users
+             where deleted = 0
+               and last_active_at is not null
+               and last_active_at &gt;= now() - interval 5 minute) as onlineUserCount,
+            (select count(distinct user_id)
+             from request_logs
+             where request_date = curdate()
+               and user_id is not null) as todayActiveUserCount,
             coalesce((select sum(case when direction = 'IN' then amount else 0 end)
                       from transactions
                       where transaction_date = curdate()), 0) as rechargeAmountToday,

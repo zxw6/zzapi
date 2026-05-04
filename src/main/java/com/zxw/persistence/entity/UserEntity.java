@@ -12,43 +12,51 @@ import java.time.LocalDateTime;
 @Data
 @TableName("users")
 @ApiModel("用户实体")
-/**
- * 用户实体类。
- * 对应系统中的后台或普通用户资料。
- */
-/**
- * 用户主数据实体。
- * 保存账号资料、角色权限和状态等核心信息。
- */
 public class UserEntity {
 
     @TableId(type = IdType.AUTO)
     @ApiModelProperty("用户ID")
     private Long id;
+
     @ApiModelProperty("用户名")
     private String username;
+
     @ApiModelProperty("密码哈希")
     private String passwordHash;
+
     @ApiModelProperty("昵称")
     private String nickname;
+
     @ApiModelProperty("邮箱")
     private String email;
+
     @ApiModelProperty("手机号")
     private String phone;
+
     @ApiModelProperty("角色编码")
     private String roleCode;
+
     @ApiModelProperty("状态")
     private String status;
+
     @ApiModelProperty("备注")
     private String remark;
+
     @ApiModelProperty("删除标记")
     private Integer deleted;
+
     @ApiModelProperty("是否启用套餐限制")
     private Integer packageRestrictionEnabled;
+
     @ApiModelProperty("最后登录时间")
     private LocalDateTime lastLoginAt;
+
+    @ApiModelProperty("最后活跃时间")
+    private LocalDateTime lastActiveAt;
+
     @ApiModelProperty("创建时间")
     private LocalDateTime createdAt;
+
     @ApiModelProperty("更新时间")
     private LocalDateTime updatedAt;
 }

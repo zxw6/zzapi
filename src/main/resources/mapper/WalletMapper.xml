@@ -36,6 +36,7 @@
             total_consume = total_consume + #{amount},
             updated_at = now()
         where user_id = #{userId}
+          and balance >= #{amount}
     </update>
 
 </mapper>

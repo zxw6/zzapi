@@ -5,17 +5,11 @@ import io.swagger.annotations.ApiModelProperty;
 import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Pattern;
 
 import java.math.BigDecimal;
 
-/**
- * 新增套餐分组请求。
- */
 @ApiModel("新增套餐分组请求")
-/**
- * 新增套餐分组请求对象。
- * 用于创建一个可购买的模型套餐分组。
- */
 public record ModelGroupCreateRequest(
         @ApiModelProperty(value = "套餐分组编码", required = true)
         @NotBlank(message = "套餐编码不能为空")
@@ -23,6 +17,10 @@ public record ModelGroupCreateRequest(
         @ApiModelProperty(value = "套餐分组名称", required = true)
         @NotBlank(message = "套餐名称不能为空")
         String groupName,
+        @ApiModelProperty(value = "套餐类型: QUOTA=额度套餐, BALANCE=余额套餐", required = true)
+        @NotBlank(message = "套餐类型不能为空")
+        @Pattern(regexp = "QUOTA|BALANCE", flags = Pattern.Flag.CASE_INSENSITIVE, message = "套餐类型仅支持 QUOTA 或 BALANCE")
+        String packageType,
         @ApiModelProperty(value = "套餐售价", required = true)
         @NotNull(message = "套餐售价不能为空")
         @DecimalMin(value = "0.0000", message = "套餐售价不能小于 0")

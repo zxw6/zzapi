@@ -15,10 +15,6 @@ import java.math.BigDecimal;
 import java.util.List;
 
 @Service
-/**
- * 后台仪表盘服务。
- * 负责按当前身份组装总览、趋势和模型维度统计数据。
- */
 public class AdminDashboardService {
 
     private final DashboardQueryMapper dashboardQueryMapper;
@@ -27,9 +23,6 @@ public class AdminDashboardService {
         this.dashboardQueryMapper = dashboardQueryMapper;
     }
 
-    /**
-     * 查询仪表盘总览。
-     */
     public DashboardOverviewResponse getOverview() {
         JwtUser currentUser = AdminContext.require();
         DashboardOverviewView overview = AdminContext.isAdmin()
@@ -38,9 +31,6 @@ public class AdminDashboardService {
         return overview == null ? emptyOverview() : toOverviewResponse(overview);
     }
 
-    /**
-     * 查询最近若干天的请求趋势。
-     */
     public List<DashboardTrendPointResponse> getRequestTrend(int days) {
         JwtUser currentUser = AdminContext.require();
         int daysBack = Math.max(days - 1, 0);
@@ -59,9 +49,6 @@ public class AdminDashboardService {
                 .toList();
     }
 
-    /**
-     * 查询模型维度统计结果。
-     */
     public List<DashboardModelStatResponse> getModelStats() {
         JwtUser currentUser = AdminContext.require();
         List<DashboardModelStatView> rows = AdminContext.isAdmin()
@@ -81,9 +68,6 @@ public class AdminDashboardService {
                 .toList();
     }
 
-    /**
-     * 把数据库视图对象转换为接口返回对象。
-     */
     private DashboardOverviewResponse toOverviewResponse(DashboardOverviewView overview) {
         return new DashboardOverviewResponse(
                 defaultLong(overview.getUserCount()),
@@ -93,17 +77,18 @@ public class AdminDashboardService {
                 defaultLong(overview.getRequestCountToday()),
                 defaultLong(overview.getTotalTokensToday()),
                 defaultLong(overview.getTotalTokens7d()),
+                defaultLong(overview.getOnlineUserCount()),
+                defaultLong(overview.getTodayActiveUserCount()),
                 defaultBigDecimal(overview.getRechargeAmountToday()),
                 defaultBigDecimal(overview.getConsumeAmountToday()),
                 defaultBigDecimal(overview.getWalletBalanceTotal())
         );
     }
 
-    /**
-     * 构造空的默认总览对象。
-     */
     private DashboardOverviewResponse emptyOverview() {
         return new DashboardOverviewResponse(
+                0L,
+                0L,
                 0L,
                 0L,
                 0L,
@@ -117,16 +102,10 @@ public class AdminDashboardService {
         );
     }
 
-    /**
-     * 空 Long 值兜底成 0。
-     */
     private long defaultLong(Long value) {
         return value == null ? 0L : value;
     }
 
-    /**
-     * 空金额兜底成 0。
-     */
     private BigDecimal defaultBigDecimal(BigDecimal value) {
         return value == null ? BigDecimal.ZERO : value;
     }

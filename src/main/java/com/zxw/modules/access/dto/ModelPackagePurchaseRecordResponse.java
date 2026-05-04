@@ -7,13 +7,6 @@ import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
 @ApiModel("套餐购买记录响应")
-/**
- * 套餐购买记录响应对象。
- */
-/**
- * 套餐购买记录响应对象。
- * 用于后台查看每次购买的额度、周期和状态。
- */
 public record ModelPackagePurchaseRecordResponse(
         @ApiModelProperty("购买记录 id")
         Long id,
@@ -27,6 +20,8 @@ public record ModelPackagePurchaseRecordResponse(
         String groupCode,
         @ApiModelProperty("套餐分组名称")
         String groupName,
+        @ApiModelProperty("套餐类型: QUOTA=额度套餐, BALANCE=余额套餐")
+        String packageType,
         @ApiModelProperty("模型数量")
         Integer modelCount,
         @ApiModelProperty("购买价格")

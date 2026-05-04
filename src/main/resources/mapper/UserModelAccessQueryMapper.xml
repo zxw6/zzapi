@@ -8,6 +8,7 @@
         select g.id,
                g.group_code as groupCode,
                g.group_name as groupName,
+               g.package_type as packageType,
                g.sale_price as salePrice,
                g.package_days as packageDays,
                g.daily_quota as dailyQuota,
@@ -28,6 +29,7 @@
                p.group_id as groupId,
                g.group_code as groupCode,
                g.group_name as groupName,
+               g.package_type as packageType,
                p.expires_at as expiresAt,
                p.status,
                g.package_days as packageDays,
@@ -211,6 +213,7 @@
                p.group_id as groupId,
                g.group_code as groupCode,
                g.group_name as groupName,
+               g.package_type as packageType,
                (
                    select count(*)
                    from model_group_models mgm
@@ -241,6 +244,7 @@
                p.group_id as groupId,
                g.group_code as groupCode,
                g.group_name as groupName,
+               g.package_type as packageType,
                (
                    select count(*)
                    from model_group_models mgm

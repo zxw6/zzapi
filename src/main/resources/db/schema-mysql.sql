@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS users (
     status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE',
     package_restriction_enabled TINYINT(1) NOT NULL DEFAULT 1,
     last_login_at DATETIME NULL,
+    last_active_at DATETIME NULL,
     remark VARCHAR(255) NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -200,6 +201,7 @@ CREATE TABLE IF NOT EXISTS model_groups (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
     group_code VARCHAR(64) NOT NULL,
     group_name VARCHAR(64) NOT NULL,
+    package_type VARCHAR(32) NOT NULL DEFAULT 'QUOTA',
     sale_price DECIMAL(18, 4) NOT NULL DEFAULT 0.0000,
     package_days INT NOT NULL DEFAULT 30,
     daily_quota DECIMAL(18, 4) NOT NULL DEFAULT 0.0000,
@@ -335,6 +337,17 @@ SET @ddl = (
               'SELECT 1')
     FROM information_schema.columns
     WHERE table_schema = DATABASE() AND table_name = 'users' AND column_name = 'package_restriction_enabled'
+);
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @ddl = (
+    SELECT IF(COUNT(*) = 0,
+              'ALTER TABLE users ADD COLUMN last_active_at DATETIME NULL AFTER last_login_at',
+              'SELECT 1')
+    FROM information_schema.columns
+    WHERE table_schema = DATABASE() AND table_name = 'users' AND column_name = 'last_active_at'
 );
 PREPARE stmt FROM @ddl;
 EXECUTE stmt;

@@ -5111,11 +5111,17 @@ public class GatewayChatService {
         }
 
         if (userAmount.compareTo(BigDecimal.ZERO) > 0) {
-            boolean chargeWallet = auth.modelGroupId() == null && chargedPackageId == null;
+            String packageType = userModelAccessService.resolveGatewayPackageType(auth, route);
+            boolean chargeWallet = UserModelAccessService.PACKAGE_TYPE_BALANCE.equalsIgnoreCase(packageType)
+                    || (auth.modelGroupId() == null && chargedPackageId == null);
             if (chargeWallet) {
                 WalletEntity wallet = walletMapper.selectByUserId(auth.userId());
                 if (wallet != null) {
                     BigDecimal balanceBefore = wallet.getBalance() == null ? BigDecimal.ZERO : wallet.getBalance();
+                    if (balanceBefore.compareTo(UserModelAccessService.BALANCE_PACKAGE_CALL_MIN_BALANCE) < 0
+                            || balanceBefore.compareTo(userAmount) < 0) {
+                        throw new BusinessException(403, "当前余额不足，请先充值");
+                    }
                     int updated = walletMapper.debitBalance(auth.userId(), userAmount);
                     if (updated > 0) {
                         BigDecimal balanceAfter = balanceBefore.subtract(userAmount);
@@ -5133,6 +5139,8 @@ public class GatewayChatService {
                         transaction.setTransactionDate(requestDate);
                         transaction.setDescriptionText("模型调用扣费: " + route.modelCode());
                         transactionMapper.insert(transaction);
+                    } else {
+                        throw new BusinessException(403, "当前余额不足，请先充值");
                     }
                 }
             }

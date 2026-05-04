@@ -7,13 +7,6 @@ import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
 @ApiModel("套餐分组选项响应")
-/**
- * 模型套餐分组选项响应对象。
- */
-/**
- * 套餐分组选项响应对象。
- * 用于前端下拉或卡片中展示套餐购买选项。
- */
 public record ModelGroupOptionResponse(
         @ApiModelProperty("分组 id")
         Long id,
@@ -21,6 +14,8 @@ public record ModelGroupOptionResponse(
         String groupCode,
         @ApiModelProperty("分组名称")
         String groupName,
+        @ApiModelProperty("套餐类型: QUOTA=额度套餐, BALANCE=余额套餐")
+        String packageType,
         @ApiModelProperty("售价")
         BigDecimal salePrice,
         @ApiModelProperty("有效天数")
@@ -35,7 +30,7 @@ public record ModelGroupOptionResponse(
         Integer modelCount,
         @ApiModelProperty("是否已购买")
         boolean purchased,
-        @ApiModelProperty("是否激活中")
+        @ApiModelProperty("是否使用中")
         boolean active,
         @ApiModelProperty("过期时间")
         LocalDateTime expiresAt,

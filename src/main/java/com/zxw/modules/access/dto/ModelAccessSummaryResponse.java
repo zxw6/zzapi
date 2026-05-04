@@ -8,13 +8,6 @@ import java.time.LocalDateTime;
 import java.util.List;
 
 @ApiModel("模型套餐总览响应")
-/**
- * 模型套餐总览响应对象。
- */
-/**
- * 模型套餐总览响应对象。
- * 返回当前用户可用套餐、额度和分组选项信息。
- */
 public record ModelAccessSummaryResponse(
         @ApiModelProperty("是否开启套餐限制")
         boolean packageRestrictionEnabled,
@@ -28,6 +21,8 @@ public record ModelAccessSummaryResponse(
         String activeGroupCode,
         @ApiModelProperty("当前激活分组名称")
         String activeGroupName,
+        @ApiModelProperty("当前激活套餐类型: QUOTA=额度套餐, BALANCE=余额套餐")
+        String activePackageType,
         @ApiModelProperty("套餐价格")
         BigDecimal packagePrice,
         @ApiModelProperty("日额度")

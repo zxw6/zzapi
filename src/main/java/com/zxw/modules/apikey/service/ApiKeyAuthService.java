@@ -11,10 +11,6 @@ import java.time.LocalDateTime;
 import java.util.List;
 
 @Service
-/**
- * API Key 鉴权服务。
- * 负责根据 Bearer Token 识别调用方身份，并更新最后使用时间。
- */
 public class ApiKeyAuthService {
 
     private final ApiKeyMapper apiKeyMapper;
@@ -29,19 +25,13 @@ public class ApiKeyAuthService {
         this.userModelAccessService = userModelAccessService;
     }
 
-    /**
-     * 校验 Bearer Token 并解析成已认证的 API Key 信息。
-     */
     public AuthenticatedApiKey authenticate(String bearerToken) {
-        // 保证套餐限制相关默认数据已初始化
         userModelAccessService.initializeDefaults();
 
-        // 先做最基础的 Bearer Token 格式校验
         if (bearerToken == null || bearerToken.isBlank() || bearerToken.length() < AdminApiKeyService.ACCESS_KEY_PREFIX_LENGTH) {
             throw new BusinessException(401, "Invalid API key");
         }
 
-        // 通过访问前缀快速缩小候选集合，再逐个比对哈希
         String accessKey = bearerToken.substring(0, AdminApiKeyService.ACCESS_KEY_PREFIX_LENGTH);
         List<AuthenticatedApiKey> items = apiKeyMapper.selectAuthenticatedByAccessKey(accessKey).stream()
                 .map(item -> new AuthenticatedApiKey(
@@ -53,6 +43,7 @@ public class ApiKeyAuthService {
                         item.getStatus(),
                         item.getUserPackageId(),
                         item.getPackageName(),
+                        item.getPackageType(),
                         item.getModelGroupId(),
                         item.getGroupCode(),
                         item.getGroupName(),
@@ -66,7 +57,6 @@ public class ApiKeyAuthService {
 
         for (AuthenticatedApiKey item : items) {
             if (passwordService.matches(bearerToken, item.secretHash())) {
-                // 命中后继续校验状态与过期时间
                 if (!"ACTIVE".equals(item.status())) {
                     throw new BusinessException(403, "API key is disabled");
                 }
@@ -79,17 +69,10 @@ public class ApiKeyAuthService {
         throw new BusinessException(401, "Invalid API key");
     }
 
-    /**
-     * 更新 API Key 最近使用时间。
-     */
     public void markUsed(Long apiKeyId) {
-        // 更新 API Key 最近一次使用时间
         apiKeyMapper.updateLastUsedAt(apiKeyId, LocalDateTime.now());
     }
 
-    /**
-     * 已认证 API Key 视图对象。
-     */
     public record AuthenticatedApiKey(
             Long id,
             Long userId,
@@ -99,6 +82,7 @@ public class ApiKeyAuthService {
             String status,
             Long userPackageId,
             String userPackageName,
+            String packageType,
             Long modelGroupId,
             String modelGroupCode,
             String modelGroupName,
