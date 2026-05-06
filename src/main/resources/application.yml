@@ -68,4 +68,4 @@ app:
       resend-interval-seconds: ${VERIFICATION_CODE_RESEND_INTERVAL_SECONDS:60}
   mail:
     from: 570760960@qq.com
-    register-code-subject: AI Gateway 注册验证码
+    register-code-subject: AI LayCode 注册验证码
