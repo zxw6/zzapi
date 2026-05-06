@@ -2565,12 +2565,9 @@ async function sendRegisterCode() {
     registerCodeSentToEmail = String(data?.email || email).trim().toLowerCase();
     startRegisterCodeCooldown(60);
     if (elements.registerCodeHint) {
-        const debugSuffix = data?.code ? ` 褰撳墠楠岃瘉鐮侊細${data.code}` : "";
-        elements.registerCodeHint.textContent = `楠岃瘉鐮佸凡鍙戦€佸埌 ${registerCodeSentToEmail}锛?{data?.expireSeconds || 300} 绉掑唴鏈夋晥銆?{debugSuffix}`;
+        elements.registerCodeHint.textContent = `楠岃瘉鐮佸凡鍙戦€佸埌 ${registerCodeSentToEmail}锛?{data?.expireSeconds || 300} 绉掑唴鏈夋晥銆?`;
     }
-    showToast(data?.code
-        ? `楠岃瘉鐮佸凡鍙戦€侊紝褰撳墠楠岃瘉鐮侊細${data.code}`
-        : "楠岃瘉鐮佸凡鍙戦€侊紝璇锋鏌ラ偖绠?);
+    showToast("楠岃瘉鐮佸凡鍙戦€侊紝璇锋鏌ラ偖绠?);
 }
 
 function onRegisterEmailChange(event) {

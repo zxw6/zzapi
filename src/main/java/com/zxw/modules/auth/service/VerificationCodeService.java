@@ -15,35 +15,28 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 @Service
-/**
- * 验证码服务。
- * 优先使用 Redis 保存注册验证码，Redis 不可用时降级到进程内缓存。
- */
 public class VerificationCodeService {
 
     private static final SecureRandom SECURE_RANDOM = new SecureRandom();
     private static final Logger log = LoggerFactory.getLogger(VerificationCodeService.class);
 
     private final StringRedisTemplate stringRedisTemplate;
+    private final RegisterEmailSender registerEmailSender;
     private final long expireSeconds;
     private final long resendIntervalSeconds;
-    private final boolean returnCodeInResponse;
     private final Map<String, ExpiringValue> localRegisterCodes = new ConcurrentHashMap<>();
     private final Map<String, Long> localCooldowns = new ConcurrentHashMap<>();
 
     public VerificationCodeService(StringRedisTemplate stringRedisTemplate,
+                                   RegisterEmailSender registerEmailSender,
                                    @Value("${app.auth.verification-code.expire-seconds:300}") long expireSeconds,
-                                   @Value("${app.auth.verification-code.resend-interval-seconds:60}") long resendIntervalSeconds,
-                                   @Value("${app.auth.verification-code.return-code-in-response:true}") boolean returnCodeInResponse) {
+                                   @Value("${app.auth.verification-code.resend-interval-seconds:60}") long resendIntervalSeconds) {
         this.stringRedisTemplate = stringRedisTemplate;
+        this.registerEmailSender = registerEmailSender;
         this.expireSeconds = expireSeconds;
         this.resendIntervalSeconds = resendIntervalSeconds;
-        this.returnCodeInResponse = returnCodeInResponse;
     }
 
-    /**
-     * 发送注册验证码。
-     */
     public VerificationCodeSendResponse sendRegisterCode(String email) {
         String normalizedEmail = normalizeEmail(email);
         String cooldownKey = buildCooldownKey(normalizedEmail);
@@ -56,19 +49,13 @@ public class VerificationCodeService {
             stringRedisTemplate.opsForValue().set(buildRegisterCodeKey(normalizedEmail), code, Duration.ofSeconds(expireSeconds));
             stringRedisTemplate.opsForValue().set(cooldownKey, "1", Duration.ofSeconds(resendIntervalSeconds));
         } catch (RedisConnectionFailureException ex) {
-            // Redis 异常时降级到本地内存，保证注册流程不中断。
             saveCodeLocally(normalizedEmail, code);
         }
-        return new VerificationCodeSendResponse(
-                normalizedEmail,
-                expireSeconds,
-                returnCodeInResponse ? code : null
-        );
+
+        registerEmailSender.sendRegisterCode(normalizedEmail, code, expireSeconds);
+        return new VerificationCodeSendResponse(normalizedEmail, expireSeconds);
     }
 
-    /**
-     * 校验注册验证码。
-     */
     public void verifyRegisterCode(String email, String code) {
         String normalizedEmail = normalizeEmail(email);
         if (code == null || code.isBlank()) {
@@ -115,9 +102,6 @@ public class VerificationCodeService {
         return "auth:verify:register:cooldown:" + email;
     }
 
-    /**
-     * 使用本地缓存兜底保存验证码与冷却时间。
-     */
     private void saveCodeLocally(String email, String code) {
         cleanupLocalState();
         long now = System.currentTimeMillis();
@@ -130,9 +114,6 @@ public class VerificationCodeService {
         log.warn("Redis unavailable, falling back to in-memory verification code storage for {}", email);
     }
 
-    /**
-     * 使用本地缓存校验验证码。
-     */
     private void verifyCodeLocally(String email, String code) {
         cleanupLocalState();
         ExpiringValue cached = localRegisterCodes.get(email);
@@ -146,9 +127,6 @@ public class VerificationCodeService {
         localRegisterCodes.remove(email);
     }
 
-    /**
-     * 清理本地已过期的验证码和发送冷却记录。
-     */
     private void cleanupLocalState() {
         long now = System.currentTimeMillis();
         localRegisterCodes.entrySet().removeIf(entry -> entry.getValue().expiresAtMillis() <= now);
