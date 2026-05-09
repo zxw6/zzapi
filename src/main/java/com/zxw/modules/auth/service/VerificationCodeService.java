@@ -24,7 +24,7 @@ public class VerificationCodeService {
     private final RegisterEmailSender registerEmailSender;
     private final long expireSeconds;
     private final long resendIntervalSeconds;
-    private final Map<String, ExpiringValue> localRegisterCodes = new ConcurrentHashMap<>();
+    private final Map<String, ExpiringValue> localCodes = new ConcurrentHashMap<>();
     private final Map<String, Long> localCooldowns = new ConcurrentHashMap<>();
 
     public VerificationCodeService(StringRedisTemplate stringRedisTemplate,
@@ -39,30 +39,49 @@ public class VerificationCodeService {
 
     public VerificationCodeSendResponse sendRegisterCode(String email) {
         String normalizedEmail = normalizeEmail(email);
-        String cooldownKey = buildCooldownKey(normalizedEmail);
-        String code = generateCode();
-        try {
-            Boolean coolingDown = stringRedisTemplate.hasKey(cooldownKey);
-            if (Boolean.TRUE.equals(coolingDown)) {
-                throw new BusinessException(429, "验证码发送过于频繁，请稍后再试");
-            }
-            stringRedisTemplate.opsForValue().set(buildRegisterCodeKey(normalizedEmail), code, Duration.ofSeconds(expireSeconds));
-            stringRedisTemplate.opsForValue().set(cooldownKey, "1", Duration.ofSeconds(resendIntervalSeconds));
-        } catch (RedisConnectionFailureException ex) {
-            saveCodeLocally(normalizedEmail, code);
-        }
-
+        String code = saveCode(normalizedEmail, "register");
         registerEmailSender.sendRegisterCode(normalizedEmail, code, expireSeconds);
         return new VerificationCodeSendResponse(normalizedEmail, expireSeconds);
     }
 
     public void verifyRegisterCode(String email, String code) {
+        verifyCode(email, code, "register");
+    }
+
+    public VerificationCodeSendResponse sendPasswordResetCode(String email) {
+        String normalizedEmail = normalizeEmail(email);
+        String code = saveCode(normalizedEmail, "password-reset");
+        registerEmailSender.sendPasswordResetCode(normalizedEmail, code, expireSeconds);
+        return new VerificationCodeSendResponse(normalizedEmail, expireSeconds);
+    }
+
+    public void verifyPasswordResetCode(String email, String code) {
+        verifyCode(email, code, "password-reset");
+    }
+
+    private String saveCode(String email, String scene) {
+        String code = generateCode();
+        String cooldownKey = buildCooldownKey(scene, email);
+        try {
+            Boolean coolingDown = stringRedisTemplate.hasKey(cooldownKey);
+            if (Boolean.TRUE.equals(coolingDown)) {
+                throw new BusinessException(429, "验证码发送过于频繁，请稍后再试");
+            }
+            stringRedisTemplate.opsForValue().set(buildCodeKey(scene, email), code, Duration.ofSeconds(expireSeconds));
+            stringRedisTemplate.opsForValue().set(cooldownKey, "1", Duration.ofSeconds(resendIntervalSeconds));
+        } catch (RedisConnectionFailureException ex) {
+            saveCodeLocally(email, scene, code);
+        }
+        return code;
+    }
+
+    private void verifyCode(String email, String code, String scene) {
         String normalizedEmail = normalizeEmail(email);
         if (code == null || code.isBlank()) {
             throw new BusinessException(400, "验证码不能为空");
         }
 
-        String cacheKey = buildRegisterCodeKey(normalizedEmail);
+        String cacheKey = buildCodeKey(scene, normalizedEmail);
         try {
             String cachedCode = stringRedisTemplate.opsForValue().get(cacheKey);
             if (cachedCode == null || cachedCode.isBlank()) {
@@ -72,19 +91,18 @@ public class VerificationCodeService {
                 throw new BusinessException(400, "验证码不正确");
             }
             stringRedisTemplate.delete(cacheKey);
-            return;
         } catch (RedisConnectionFailureException ex) {
-            verifyCodeLocally(normalizedEmail, code.trim());
+            verifyCodeLocally(normalizedEmail, scene, code.trim());
         }
     }
 
     private String normalizeEmail(String email) {
         if (email == null || email.isBlank()) {
-            throw new BusinessException(400, "QQ 邮箱不能为空");
+            throw new BusinessException(400, "QQ邮箱不能为空");
         }
         String normalized = email.trim().toLowerCase();
         if (!normalized.endsWith("@qq.com")) {
-            throw new BusinessException(400, "请使用 QQ 邮箱");
+            throw new BusinessException(400, "请使用QQ邮箱");
         }
         return normalized;
     }
@@ -94,42 +112,48 @@ public class VerificationCodeService {
         return Integer.toString(code);
     }
 
-    private String buildRegisterCodeKey(String email) {
-        return "auth:verify:register:" + email;
+    private String buildCodeKey(String scene, String email) {
+        return "auth:verify:" + scene + ":" + email;
     }
 
-    private String buildCooldownKey(String email) {
-        return "auth:verify:register:cooldown:" + email;
+    private String buildCooldownKey(String scene, String email) {
+        return "auth:verify:" + scene + ":cooldown:" + email;
     }
 
-    private void saveCodeLocally(String email, String code) {
+    private String buildLocalKey(String scene, String email) {
+        return scene + ":" + email;
+    }
+
+    private void saveCodeLocally(String email, String scene, String code) {
         cleanupLocalState();
         long now = System.currentTimeMillis();
-        Long cooldownUntil = localCooldowns.get(email);
+        String localKey = buildLocalKey(scene, email);
+        Long cooldownUntil = localCooldowns.get(localKey);
         if (cooldownUntil != null && cooldownUntil > now) {
             throw new BusinessException(429, "验证码发送过于频繁，请稍后再试");
         }
-        localRegisterCodes.put(email, new ExpiringValue(code, now + Duration.ofSeconds(expireSeconds).toMillis()));
-        localCooldowns.put(email, now + Duration.ofSeconds(resendIntervalSeconds).toMillis());
-        log.warn("Redis unavailable, falling back to in-memory verification code storage for {}", email);
+        localCodes.put(localKey, new ExpiringValue(code, now + Duration.ofSeconds(expireSeconds).toMillis()));
+        localCooldowns.put(localKey, now + Duration.ofSeconds(resendIntervalSeconds).toMillis());
+        log.warn("Redis unavailable, falling back to in-memory {} verification code storage for {}", scene, email);
     }
 
-    private void verifyCodeLocally(String email, String code) {
+    private void verifyCodeLocally(String email, String scene, String code) {
         cleanupLocalState();
-        ExpiringValue cached = localRegisterCodes.get(email);
+        String localKey = buildLocalKey(scene, email);
+        ExpiringValue cached = localCodes.get(localKey);
         if (cached == null || cached.expiresAtMillis() <= System.currentTimeMillis()) {
-            localRegisterCodes.remove(email);
+            localCodes.remove(localKey);
             throw new BusinessException(400, "验证码已过期");
         }
         if (!cached.value().equals(code)) {
             throw new BusinessException(400, "验证码不正确");
         }
-        localRegisterCodes.remove(email);
+        localCodes.remove(localKey);
     }
 
     private void cleanupLocalState() {
         long now = System.currentTimeMillis();
-        localRegisterCodes.entrySet().removeIf(entry -> entry.getValue().expiresAtMillis() <= now);
+        localCodes.entrySet().removeIf(entry -> entry.getValue().expiresAtMillis() <= now);
         localCooldowns.entrySet().removeIf(entry -> entry.getValue() <= now);
     }
 

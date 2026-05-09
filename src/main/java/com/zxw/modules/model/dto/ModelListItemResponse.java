@@ -5,6 +5,7 @@ import io.swagger.annotations.ApiModelProperty;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.List;
 
 @ApiModel("模型列表项响应")
 /**
@@ -47,6 +48,8 @@ public record ModelListItemResponse(
         String groupCode,
         @ApiModelProperty("分组名称")
         String groupName,
+        @ApiModelProperty("模型关联的全部套餐组")
+        List<ModelGroupItemResponse> groups,
         @ApiModelProperty("渠道ID")
         Long providerId,
         @ApiModelProperty("渠道名称")

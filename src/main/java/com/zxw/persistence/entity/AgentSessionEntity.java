@@ -16,10 +16,7 @@ import java.time.LocalDateTime;
  * Agent 会话实体类。
  * 用于保存会话标识、摘要和最近一次响应信息。
  */
-/**
- * Agent 会话持久化对象。
- * 记录会话主键、摘要信息和最近一次响应状态。
- */
+
 public class AgentSessionEntity {
 
     @TableId(type = IdType.AUTO)

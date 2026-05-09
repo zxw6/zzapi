@@ -1,14 +1,20 @@
 package com.zxw.persistence.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.zxw.persistence.entity.ProviderTokenEntity;
 
-/**
- * 渠道令牌 Mapper。
- */
-/**
- * 渠道令牌数据访问接口。
- * 提供 ProviderTokenEntity 的基础 MyBatis-Plus 操作。
- */
+import java.time.LocalDateTime;
+
 public interface ProviderTokenMapper extends BaseMapper<ProviderTokenEntity> {
+
+    default int softDeleteByProviderId(Long providerId, LocalDateTime updatedAt) {
+        ProviderTokenEntity updateToken = new ProviderTokenEntity();
+        updateToken.setStatus("DISABLED");
+        updateToken.setDeleted(1);
+        updateToken.setUpdatedAt(updatedAt);
+        return update(updateToken, Wrappers.<ProviderTokenEntity>lambdaUpdate()
+                .eq(ProviderTokenEntity::getProviderId, providerId)
+                .eq(ProviderTokenEntity::getDeleted, 0));
+    }
 }

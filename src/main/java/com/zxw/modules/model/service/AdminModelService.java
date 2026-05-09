@@ -8,6 +8,7 @@ import com.zxw.common.security.AesCryptoService;
 import com.zxw.modules.access.service.UserModelAccessService;
 import com.zxw.modules.model.dto.ModelBatchImportRequest;
 import com.zxw.modules.model.dto.ModelBatchImportResponse;
+import com.zxw.modules.model.dto.ModelGroupItemResponse;
 import com.zxw.modules.model.dto.ModelCreateRequest;
 import com.zxw.modules.model.dto.ModelListItemResponse;
 import com.zxw.modules.model.dto.ModelUpdateRequest;
@@ -35,9 +36,11 @@ import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 
 @Service
@@ -79,31 +82,23 @@ public class AdminModelService {
      * 查询模型列表。
      */
     public List<ModelListItemResponse> listModels() {
-        // 查询模型列表并转换成前端展示结构
-        return modelAdminQueryMapper.listModels(AdminContext.isAdmin()).stream()
-                .map(item -> new ModelListItemResponse(
-                        item.getId(),
-                        item.getBindingId(),
-                        item.getModelCode(),
-                        item.getModelName(),
-                        item.getModelType(),
-                        item.getBillingType(),
-                        item.getPromptPrice(),
-                        item.getCachedPromptPrice(),
-                        item.getCompletionPrice(),
-                        item.getRequestPrice(),
-                        item.getMultiplier(),
-                        item.getIsPublic(),
-                        item.getStatus(),
-                        item.getGroupId(),
-                        item.getGroupCode(),
-                        item.getGroupName(),
-                        item.getProviderId(),
-                        item.getProviderName(),
-                        item.getProviderType(),
-                        item.getUpstreamModel(),
-                        item.getCreatedAt()
-                ))
+        // 查询模型列表并聚合同一模型关联到的多个套餐组
+        Map<Long, ModelAdminListView> uniqueModels = new LinkedHashMap<>();
+        Map<Long, List<ModelGroupItemResponse>> groupsByModelId = new LinkedHashMap<>();
+        Map<Long, Set<Long>> seenGroupIdsByModelId = new LinkedHashMap<>();
+        for (ModelAdminListView item : modelAdminQueryMapper.listModels(AdminContext.isAdmin())) {
+            uniqueModels.putIfAbsent(item.getId(), item);
+            if (item.getGroupId() == null) {
+                continue;
+            }
+            Set<Long> seenGroupIds = seenGroupIdsByModelId.computeIfAbsent(item.getId(), key -> new LinkedHashSet<>());
+            if (seenGroupIds.add(item.getGroupId())) {
+                groupsByModelId.computeIfAbsent(item.getId(), key -> new ArrayList<>())
+                        .add(new ModelGroupItemResponse(item.getGroupId(), item.getGroupCode(), item.getGroupName()));
+            }
+        }
+        return uniqueModels.values().stream()
+                .map(item -> toModelListItemResponse(item, groupsByModelId.getOrDefault(item.getId(), List.of())))
                 .toList();
     }
 
@@ -227,6 +222,7 @@ public class AdminModelService {
             String modelCode = normalizeModelCode(upstreamModel);
             Long existingModelId = findModelIdByCode(modelCode);
             if (existingModelId != null) {
+                ensurePrimaryRoute(existingModelId, request.providerId(), upstreamModel);
                 if (isModelBoundToGroup(existingModelId, request.groupId())) {
                     skippedModels.add(upstreamModel);
                     continue;
@@ -353,6 +349,33 @@ public class AdminModelService {
         return model.getId();
     }
 
+    private ModelListItemResponse toModelListItemResponse(ModelAdminListView item, List<ModelGroupItemResponse> groups) {
+        return new ModelListItemResponse(
+                item.getId(),
+                item.getBindingId(),
+                item.getModelCode(),
+                item.getModelName(),
+                item.getModelType(),
+                item.getBillingType(),
+                item.getPromptPrice(),
+                item.getCachedPromptPrice(),
+                item.getCompletionPrice(),
+                item.getRequestPrice(),
+                item.getMultiplier(),
+                item.getIsPublic(),
+                item.getStatus(),
+                item.getGroupId(),
+                item.getGroupCode(),
+                item.getGroupName(),
+                groups,
+                item.getProviderId(),
+                item.getProviderName(),
+                item.getProviderType(),
+                item.getUpstreamModel(),
+                item.getCreatedAt()
+        );
+    }
+
     /**
      * 同步模型和分组之间的绑定关系。
      */
@@ -412,6 +435,26 @@ public class AdminModelService {
     /**
      * 读取渠道访问凭证，供远程拉取模型时使用。
      */
+    private void ensurePrimaryRoute(Long modelId, Long providerId, String upstreamModel) {
+        String trimmedUpstreamModel = trimToLength(upstreamModel, 128);
+        if (modelId == null || providerId == null || trimmedUpstreamModel == null || trimmedUpstreamModel.isBlank()) {
+            return;
+        }
+        if (modelRouteMapper.existsActiveRoute(modelId, providerId, trimmedUpstreamModel)) {
+            return;
+        }
+
+        ModelRouteEntity route = new ModelRouteEntity();
+        route.setModelId(modelId);
+        route.setProviderId(providerId);
+        route.setProviderTokenId(null);
+        route.setUpstreamModel(trimmedUpstreamModel);
+        route.setRouteType("PRIMARY");
+        route.setPriorityNo(100);
+        route.setStatus("ACTIVE");
+        modelRouteMapper.insert(route);
+    }
+
     private ProviderAccess loadProviderAccess(Long providerId) {
         // 从联表查询结果里读取渠道和令牌信息
         ProviderAccessView provider = modelAdminQueryMapper.selectProviderAccess(providerId);

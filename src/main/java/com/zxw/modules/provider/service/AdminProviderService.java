@@ -8,9 +8,9 @@ import com.zxw.modules.provider.dto.ProviderCreateRequest;
 import com.zxw.modules.provider.dto.ProviderListItemResponse;
 import com.zxw.persistence.entity.ProviderEntity;
 import com.zxw.persistence.entity.ProviderTokenEntity;
+import com.zxw.persistence.mapper.ModelRouteMapper;
 import com.zxw.persistence.mapper.ProviderMapper;
 import com.zxw.persistence.mapper.ProviderTokenMapper;
-import com.zxw.persistence.model.ProviderListView;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -19,33 +19,28 @@ import java.time.LocalDateTime;
 import java.util.List;
 
 @Service
-/**
- * 渠道管理服务。
- * 负责渠道创建、状态维护以及默认令牌初始化。
- */
 public class AdminProviderService {
 
     private final ProviderMapper providerMapper;
     private final ProviderTokenMapper providerTokenMapper;
+    private final ModelRouteMapper modelRouteMapper;
     private final AesCryptoService aesCryptoService;
     private final AntigravityPresetService antigravityPresetService;
 
     public AdminProviderService(ProviderMapper providerMapper,
                                 ProviderTokenMapper providerTokenMapper,
+                                ModelRouteMapper modelRouteMapper,
                                 AesCryptoService aesCryptoService,
                                 AntigravityPresetService antigravityPresetService) {
         this.providerMapper = providerMapper;
         this.providerTokenMapper = providerTokenMapper;
+        this.modelRouteMapper = modelRouteMapper;
         this.aesCryptoService = aesCryptoService;
         this.antigravityPresetService = antigravityPresetService;
     }
 
-    /**
-     * 查询渠道列表。
-     */
     public List<ProviderListItemResponse> listProviders() {
         AdminContext.requireAdmin();
-        // 查询渠道列表并转换成前端展示结构
         return providerMapper.selectProviderList().stream()
                 .map(item -> new ProviderListItemResponse(
                         item.getId(),
@@ -63,17 +58,12 @@ public class AdminProviderService {
     }
 
     @Transactional
-    /**
-     * 创建渠道并按需初始化默认令牌。
-     */
     public void create(ProviderCreateRequest request) {
         AdminContext.requireAdmin();
-        // 渠道编码必须唯一
         if (providerMapper.existsActiveByCode(request.providerCode())) {
-            throw new BusinessException("Provider code already exists");
+            throw new BusinessException("渠道编码已存在");
         }
 
-        // 先创建渠道主记录
         ProviderEntity provider = new ProviderEntity();
         provider.setProviderCode(request.providerCode());
         provider.setProviderName(request.providerName());
@@ -86,7 +76,6 @@ public class AdminProviderService {
         providerMapper.insert(provider);
 
         if (request.tokenValue() != null && !request.tokenValue().isBlank()) {
-            // 如果传入了默认令牌，则一并创建令牌记录
             ProviderTokenEntity token = new ProviderTokenEntity();
             token.setProviderId(provider.getId());
             token.setTokenName(blankToDefault(request.tokenName(), request.providerName() + " Default Token"));
@@ -99,34 +88,38 @@ public class AdminProviderService {
             providerTokenMapper.insert(token);
         }
 
-        // Antigravity 渠道创建后需要同步预置模型
         antigravityPresetService.syncForProvider(provider.getId());
     }
 
-    /**
-     * 更新渠道启用状态。
-     */
     public void updateStatus(Long id, String status) {
         AdminContext.requireAdmin();
-        // 更新渠道启用禁用状态
         int updated = providerMapper.updateStatus(id, status, LocalDateTime.now());
         if (updated == 0) {
-            throw new BusinessException("Provider not found");
+            throw new BusinessException(404, "渠道不存在");
         }
     }
 
-    /**
-     * 空白值回退到默认值。
-     */
+    @Transactional
+    public void deleteProvider(Long id) {
+        AdminContext.requireAdmin();
+        LocalDateTime now = LocalDateTime.now();
+        if (!providerMapper.existsActiveById(id)) {
+            throw new BusinessException(404, "渠道不存在");
+        }
+
+        modelRouteMapper.deleteByProviderId(id);
+        providerTokenMapper.softDeleteByProviderId(id, now);
+        int deleted = providerMapper.softDelete(id, now);
+        if (deleted == 0) {
+            throw new BusinessException(400, "渠道删除失败");
+        }
+    }
+
     private String blankToDefault(String value, String defaultValue) {
         return value == null || value.isBlank() ? defaultValue : value;
     }
 
-    /**
-     * 去掉地址末尾的斜杠，避免后续路径拼接重复。
-     */
     private String trimEndSlash(String value) {
-        // 统一去掉结尾斜杠，避免地址拼接重复
         if (value == null) {
             return null;
         }

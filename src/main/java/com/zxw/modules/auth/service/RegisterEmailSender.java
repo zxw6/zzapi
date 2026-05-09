@@ -16,46 +16,67 @@ public class RegisterEmailSender {
 
     private final JavaMailSender javaMailSender;
     private final String fromAddress;
-    private final String subject;
+    private final String registerSubject;
+    private final String passwordResetSubject;
 
     public RegisterEmailSender(JavaMailSender javaMailSender,
                                @Value("${app.mail.from:}") String fromAddress,
-                               @Value("${app.mail.register-code-subject:AI Gateway 注册验证码}") String subject) {
+                               @Value("${app.mail.register-code-subject:AI LayCode Register Verification Code}") String registerSubject,
+                               @Value("${app.mail.password-reset-code-subject:AI LayCode Password Reset Verification Code}") String passwordResetSubject) {
         this.javaMailSender = javaMailSender;
         this.fromAddress = fromAddress == null ? "" : fromAddress.trim();
-        this.subject = subject;
+        this.registerSubject = registerSubject;
+        this.passwordResetSubject = passwordResetSubject;
     }
 
     public void sendRegisterCode(String email, String code, long expireSeconds) {
+        sendCodeEmail(email, registerSubject, buildRegisterContent(code, expireSeconds), "register");
+    }
+
+    public void sendPasswordResetCode(String email, String code, long expireSeconds) {
+        sendCodeEmail(email, passwordResetSubject, buildPasswordResetContent(code, expireSeconds), "password reset");
+    }
+
+    private void sendCodeEmail(String email, String subject, String content, String scene) {
         if (fromAddress.isBlank()) {
-            throw new BusinessException(500, "邮件发件箱未配置，请先设置 MAIL_FROM");
+            throw new BusinessException(500, "Mail sender is not configured");
         }
 
         SimpleMailMessage message = new SimpleMailMessage();
         message.setFrom(fromAddress);
         message.setTo(email);
         message.setSubject(subject);
-        message.setText(buildContent(code, expireSeconds));
+        message.setText(content);
 
         try {
             javaMailSender.send(message);
         } catch (MailException ex) {
-            log.error("Failed to send register verification code email to {}", email, ex);
-            throw new BusinessException(500, "验证码邮件发送失败，请稍后重试");
+            log.error("Failed to send {} verification code email to {}", scene, email, ex);
+            throw new BusinessException(500, "Verification code email sending failed");
         }
     }
 
-    private String buildContent(String code, long expireSeconds) {
+    private String buildRegisterContent(String code, long expireSeconds) {
         long minutes = Math.max(1, expireSeconds / 60);
         return """
-                您好，
+                Hello,
+                Your registration verification code is: %s
 
-                您本次注册的邮箱验证码为：%s
+                The code is valid for %d minutes. Please complete registration as soon as possible.
+                If this was not your action, please ignore this email.
+                AI LayCode
+                """.formatted(code, minutes);
+    }
 
-                验证码 %d 分钟内有效，请尽快完成注册。
-                如果这不是您的操作，请忽略此邮件。
+    private String buildPasswordResetContent(String code, long expireSeconds) {
+        long minutes = Math.max(1, expireSeconds / 60);
+        return """
+                Hello,
+                Your password reset verification code is: %s
 
-                AI Gateway
+                The code is valid for %d minutes. Please use it to complete your password reset.
+                If this was not your action, please ignore this email.
+                AI LayCode
                 """.formatted(code, minutes);
     }
 }

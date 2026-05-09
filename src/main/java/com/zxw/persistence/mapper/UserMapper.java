@@ -22,6 +22,13 @@ public interface UserMapper extends BaseMapper<UserEntity> {
                 .last("limit 1"));
     }
 
+    default UserEntity selectActiveByEmail(String email) {
+        return selectOne(Wrappers.<UserEntity>lambdaQuery()
+                .eq(UserEntity::getEmail, email)
+                .eq(UserEntity::getDeleted, 0)
+                .last("limit 1"));
+    }
+
     default boolean existsActiveByUsername(String username) {
         return selectCount(Wrappers.<UserEntity>lambdaQuery()
                 .eq(UserEntity::getUsername, username)

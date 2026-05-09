@@ -16,10 +16,7 @@ import java.time.LocalDateTime;
  * Agent 消息实体类。
  * 对应会话中的用户消息、模型消息和工具输出。
  */
-/**
- * Agent 消息持久化对象。
- * 用于保存会话中的用户消息、助手回复和工具输出内容。
- */
+
 public class AgentMessageEntity {
 
     @TableId(type = IdType.AUTO)

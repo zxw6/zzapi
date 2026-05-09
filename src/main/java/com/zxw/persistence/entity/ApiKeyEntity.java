@@ -17,10 +17,7 @@ import java.time.LocalDateTime;
  * API Key 实体类。
  * 对应用户创建的接口访问密钥配置。
  */
-/**
- * API Key 持久化对象。
- * 保存密钥归属、套餐绑定、额度和过期状态。
- */
+
 public class ApiKeyEntity {
 
     @TableId(type = IdType.AUTO)

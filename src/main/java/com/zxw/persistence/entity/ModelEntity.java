@@ -18,10 +18,7 @@ import java.time.LocalDateTime;
  * 模型实体类。
  * 对应平台内可对外提供的模型配置。
  */
-/**
- * 模型主数据实体。
- * 维护模型编码、计费配置和公开状态等基础信息。
- */
+
 public class ModelEntity {
 
     @TableId(type = IdType.AUTO)

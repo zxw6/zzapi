@@ -16,10 +16,7 @@ import java.time.LocalDateTime;
  * Agent 工具日志实体类。
  * 对应一次工具调用的执行记录。
  */
-/**
- * Agent 工具调用日志实体。
- * 用于跟踪工具名称、执行结果和关联会话。
- */
+
 public class AgentToolLogEntity {
 
     @TableId(type = IdType.AUTO)
