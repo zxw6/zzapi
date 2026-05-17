@@ -9,7 +9,9 @@ import com.zxw.persistence.model.ModelGroupPricingView;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 @Service
 /**
@@ -37,16 +39,12 @@ public class GatewayRouteService {
      * 按公开模型编码解析可用路由。
      */
     public RouteDefinition resolve(String modelCode) {
-        // 先按原始模型编码查路由
+        // Use exact platform model codes first. Only known Codex companion
+        // model names are allowed to resolve through compatibility aliases.
         List<RouteDefinition> routes = findRoutes(modelCode);
         if (routes.isEmpty()) {
-            // 如果主编码查不到，再尝试别名映射
-            String aliasModelCode = resolveAliasModelCode(modelCode);
-            if (aliasModelCode != null) {
-                routes = findRoutes(aliasModelCode);
-            }
+            routes = findAliasRoutes(modelCode);
         }
-
         if (routes.isEmpty()) {
             throw new BusinessException(404, "Model route not found or inactive");
         }
@@ -58,9 +56,42 @@ public class GatewayRouteService {
      */
     public List<ModelCard> listPublicModels() {
         // 返回公开且启用的模型列表
-        return modelMapper.selectPublicActiveModels()
+        return modelMapper.selectPublicResolvableModels()
                 .stream()
                 .map(model -> new ModelCard(model.getModelCode(), model.getModelName(), model.getModelType()))
+                .toList();
+    }
+
+    private List<RouteDefinition> findAliasRoutes(String modelCode) {
+        for (String candidate : resolveAliasCandidates(modelCode)) {
+            List<RouteDefinition> routes = findRoutes(candidate);
+            if (!routes.isEmpty()) {
+                return routes;
+            }
+        }
+        return List.of();
+    }
+
+    private List<String> resolveAliasCandidates(String modelCode) {
+        if (modelCode == null || modelCode.isBlank()) {
+            return List.of();
+        }
+        String trimmed = modelCode.trim();
+        String normalized = trimmed.toLowerCase(Locale.ROOT);
+        List<String> candidates = new ArrayList<>();
+
+        // Codex can issue lightweight companion requests even when the user
+        // selected GPT-5.5. Route those through the configured frontier model
+        // instead of creating noisy 404 failures.
+        if ("gpt-5.4-mini".equals(normalized) || "gpt-5.5-mini".equals(normalized)) {
+            candidates.add("gpt-5.5");
+        }
+        if (normalized.endsWith("-mini")) {
+            candidates.add(trimmed.substring(0, trimmed.length() - "-mini".length()));
+        }
+        return candidates.stream()
+                .filter(candidate -> !candidate.equalsIgnoreCase(trimmed))
+                .distinct()
                 .toList();
     }
 
@@ -138,15 +169,6 @@ public class GatewayRouteService {
                         aesCryptoService.decrypt(route.getTokenValueEncrypted())
                 ))
                 .toList();
-    }
-
-    /**
-     * 解析模型别名。
-     * 当前预留扩展点，后续如有别名表可在这里接入。
-     */
-    private String resolveAliasModelCode(String modelCode) {
-        // 预留模型别名映射能力，当前未启用
-        return null;
     }
 
     /**

@@ -13,6 +13,38 @@
         where mgm.group_id = #{groupId}
           and m.deleted = 0
           and m.status = 'ACTIVE'
+          and exists (
+              select 1
+              from model_routes r
+              join providers p on p.id = r.provider_id and p.deleted = 0 and p.status = 'ACTIVE'
+              join provider_tokens t on t.provider_id = p.id and t.deleted = 0 and t.status = 'ACTIVE'
+              where r.model_id = m.id
+                and r.status = 'ACTIVE'
+                and r.upstream_model is not null
+                and r.upstream_model &lt;&gt; ''
+          )
+        group by m.model_code, m.model_name, m.model_type
+        order by max(m.id) desc
+    </select>
+
+    <select id="selectPublicResolvableModels" resultType="com.zxw.persistence.model.ModelCardView">
+        select m.model_code as modelCode,
+               m.model_name as modelName,
+               m.model_type as modelType
+        from models m
+        where m.deleted = 0
+          and m.status = 'ACTIVE'
+          and m.is_public = 1
+          and exists (
+              select 1
+              from model_routes r
+              join providers p on p.id = r.provider_id and p.deleted = 0 and p.status = 'ACTIVE'
+              join provider_tokens t on t.provider_id = p.id and t.deleted = 0 and t.status = 'ACTIVE'
+              where r.model_id = m.id
+                and r.status = 'ACTIVE'
+                and r.upstream_model is not null
+                and r.upstream_model &lt;&gt; ''
+          )
         group by m.model_code, m.model_name, m.model_type
         order by max(m.id) desc
     </select>

@@ -20,6 +20,9 @@ public interface ModelMapper extends BaseMapper<ModelEntity> {
     // 查询某个模型分组下的启用模型列表
     List<ModelCardView> selectActiveModelsByGroup(@Param("groupId") Long groupId);
 
+    // 查询公开且具备可用路由的模型列表
+    List<ModelCardView> selectPublicResolvableModels();
+
     default boolean existsByModelCode(String modelCode) {
         // 判断模型编码是否已存在
         return selectCount(Wrappers.<ModelEntity>lambdaQuery()
