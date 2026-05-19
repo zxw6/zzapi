@@ -8,6 +8,8 @@ CREATE TABLE IF NOT EXISTS users (
     role_code VARCHAR(32) NOT NULL DEFAULT 'USER',
     status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE',
     package_restriction_enabled TINYINT(1) NOT NULL DEFAULT 1,
+    max_concurrent_requests INT NULL,
+    max_concurrent_streams INT NULL,
     last_login_at DATETIME NULL,
     last_active_at DATETIME NULL,
     remark VARCHAR(255) NULL,
@@ -337,6 +339,28 @@ SET @ddl = (
               'SELECT 1')
     FROM information_schema.columns
     WHERE table_schema = DATABASE() AND table_name = 'users' AND column_name = 'package_restriction_enabled'
+);
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @ddl = (
+    SELECT IF(COUNT(*) = 0,
+              'ALTER TABLE users ADD COLUMN max_concurrent_requests INT NULL AFTER package_restriction_enabled',
+              'SELECT 1')
+    FROM information_schema.columns
+    WHERE table_schema = DATABASE() AND table_name = 'users' AND column_name = 'max_concurrent_requests'
+);
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @ddl = (
+    SELECT IF(COUNT(*) = 0,
+              'ALTER TABLE users ADD COLUMN max_concurrent_streams INT NULL AFTER max_concurrent_requests',
+              'SELECT 1')
+    FROM information_schema.columns
+    WHERE table_schema = DATABASE() AND table_name = 'users' AND column_name = 'max_concurrent_streams'
 );
 PREPARE stmt FROM @ddl;
 EXECUTE stmt;

@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.zxw.common.exception.BusinessException;
+import com.zxw.config.GatewayUpstreamProperties;
 import com.zxw.modules.access.service.UserModelAccessService;
 import com.zxw.modules.apikey.service.ApiKeyAuthService;
 import com.zxw.persistence.entity.AgentMessageEntity;
@@ -18,12 +19,8 @@ import com.zxw.persistence.entity.WalletEntity;
 import com.zxw.persistence.mapper.AgentMessageMapper;
 import com.zxw.persistence.mapper.AgentSessionMapper;
 import com.zxw.persistence.mapper.AgentToolLogMapper;
-import com.zxw.persistence.mapper.ApiKeyMapper;
 import com.zxw.persistence.mapper.GatewayAgentQueryMapper;
 import com.zxw.persistence.mapper.ModelMapper;
-import com.zxw.persistence.mapper.RequestLogMapper;
-import com.zxw.persistence.mapper.TransactionMapper;
-import com.zxw.persistence.mapper.UsageDailyMapper;
 import com.zxw.persistence.mapper.WalletMapper;
 import jakarta.servlet.http.HttpServletRequest;
 import okhttp3.OkHttpClient;
@@ -34,12 +31,12 @@ import okhttp3.ResponseBody;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpHeaders;
-import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
+import org.springframework.web.servlet.mvc.method.annotation.ResponseBodyEmitter;
 
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
@@ -66,6 +63,8 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.Executor;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -86,6 +85,11 @@ public class GatewayChatService {
     private static final BigDecimal MAX_MIN_TOKEN_CHARGE = new BigDecimal("0.010000");
     private static final BigDecimal TOKEN_REQUEST_PRICE_RATIO = new BigDecimal("0.100000");
     private static final ZoneId APP_ZONE = ZoneId.of("Asia/Shanghai");
+    private static final int MAX_UPSTREAM_RETRIES = 2;
+    private static final long UPSTREAM_RETRY_BASE_DELAY_MS = 800L;
+    private static final int STREAM_CAPTURE_LIMIT = 1_000_000;
+    private static final long MIN_STREAM_READ_TIMEOUT_MS = 300_000L;
+    private static final String UPSTREAM_NETWORK_UNSTABLE_MESSAGE = "网络不稳定或上游响应超时，请稍后重试。";
 
     // agent 会话与工具执行相关限制，避免上下文无限膨胀。
     private static final int AGENT_MAX_STEPS = 6;
@@ -139,14 +143,15 @@ public class GatewayChatService {
     private final AgentSessionMapper agentSessionMapper;
     private final AgentMessageMapper agentMessageMapper;
     private final AgentToolLogMapper agentToolLogMapper;
-    private final RequestLogMapper requestLogMapper;
     private final WalletMapper walletMapper;
-    private final TransactionMapper transactionMapper;
-    private final ApiKeyMapper apiKeyMapper;
-    private final UsageDailyMapper usageDailyMapper;
     private final GatewayAgentQueryMapper gatewayAgentQueryMapper;
     private final ModelMapper modelMapper;
     private final ObjectMapper objectMapper;
+    private final GatewayConcurrencyLimiter gatewayConcurrencyLimiter;
+    private final RequestLogAsyncService requestLogAsyncService;
+    private final GatewayAccountingAsyncService gatewayAccountingAsyncService;
+    private final Executor gatewayStreamTaskExecutor;
+    private final GatewayUpstreamProperties gatewayUpstreamProperties;
     private final HttpClient httpClient;
     private final OkHttpClient okHttpClient;
 
@@ -156,32 +161,34 @@ public class GatewayChatService {
                               AgentSessionMapper agentSessionMapper,
                               AgentMessageMapper agentMessageMapper,
                               AgentToolLogMapper agentToolLogMapper,
-                              RequestLogMapper requestLogMapper,
                               WalletMapper walletMapper,
-                              TransactionMapper transactionMapper,
-                              ApiKeyMapper apiKeyMapper,
-                              UsageDailyMapper usageDailyMapper,
                               GatewayAgentQueryMapper gatewayAgentQueryMapper,
                               ModelMapper modelMapper,
-                              ObjectMapper objectMapper) {
+                              ObjectMapper objectMapper,
+                              GatewayConcurrencyLimiter gatewayConcurrencyLimiter,
+                              RequestLogAsyncService requestLogAsyncService,
+                              GatewayAccountingAsyncService gatewayAccountingAsyncService,
+                              @Qualifier("gatewayStreamTaskExecutor") Executor gatewayStreamTaskExecutor,
+                              GatewayUpstreamProperties gatewayUpstreamProperties,
+                              HttpClient gatewayJavaHttpClient,
+                              OkHttpClient gatewayOkHttpClient) {
         this.apiKeyAuthService = apiKeyAuthService;
         this.userModelAccessService = userModelAccessService;
         this.gatewayRouteService = gatewayRouteService;
         this.agentSessionMapper = agentSessionMapper;
         this.agentMessageMapper = agentMessageMapper;
         this.agentToolLogMapper = agentToolLogMapper;
-        this.requestLogMapper = requestLogMapper;
         this.walletMapper = walletMapper;
-        this.transactionMapper = transactionMapper;
-        this.apiKeyMapper = apiKeyMapper;
-        this.usageDailyMapper = usageDailyMapper;
         this.gatewayAgentQueryMapper = gatewayAgentQueryMapper;
         this.modelMapper = modelMapper;
         this.objectMapper = objectMapper;
-        this.httpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(20)).build();
-        this.okHttpClient = new OkHttpClient.Builder()
-                .retryOnConnectionFailure(true)
-                .build();
+        this.gatewayConcurrencyLimiter = gatewayConcurrencyLimiter;
+        this.requestLogAsyncService = requestLogAsyncService;
+        this.gatewayAccountingAsyncService = gatewayAccountingAsyncService;
+        this.gatewayStreamTaskExecutor = gatewayStreamTaskExecutor;
+        this.gatewayUpstreamProperties = gatewayUpstreamProperties;
+        this.httpClient = gatewayJavaHttpClient;
+        this.okHttpClient = gatewayOkHttpClient;
     }
 
     /**
@@ -191,9 +198,11 @@ public class GatewayChatService {
         // 先完成 API Key 鉴权与使用时间更新。
         String bearerToken = extractBearerToken(authorization);
         ApiKeyAuthService.AuthenticatedApiKey auth = apiKeyAuthService.authenticate(bearerToken);
+        GatewayConcurrencyLimiter.Permit concurrencyPermit = gatewayConcurrencyLimiter.acquireRequest(auth);
         apiKeyAuthService.markUsed(auth.id());
 
         long failureStart = System.currentTimeMillis();
+        GatewayRouteService.RouteDefinition resolvedRoute = null;
         try {
             JsonNode input = objectMapper.readTree(requestBody);
             String effectiveRequestBody = requestBody;
@@ -203,6 +212,7 @@ public class GatewayChatService {
             // 路由解析后先校验套餐是否允许访问，再叠加套餐级价格覆盖。
             userModelAccessService.validateGatewayPackageAccess(auth, route);
             route = gatewayRouteService.applyGroupPricing(route, userModelAccessService.resolveGatewayPackageGroupId(auth, route));
+            resolvedRoute = route;
             String requestId = buildRequestId();
             long startTime = System.currentTimeMillis();
 
@@ -211,7 +221,7 @@ public class GatewayChatService {
                     auth, route, requestId, requestBody, input, servletRequest, startTime, stream
             );
             if (directResponse != null) {
-                return directResponse;
+                return closeAndReturn(directResponse, concurrencyPermit);
             }
 
             // Claude 原生路由走单独分支处理。
@@ -219,7 +229,8 @@ public class GatewayChatService {
                 if (stream) {
                     throw new BusinessException(400, "Claude 路由暂不支持 stream 请求");
                 }
-                return anthropicChat(auth, route, requestId, requestBody, input, servletRequest, startTime);
+                return closeAndReturn(anthropicChat(auth, route, requestId, requestBody, input, servletRequest, startTime),
+                        concurrencyPermit);
             }
 
             boolean hasExplicitSystemPrompt = hasExplicitChatSystemPrompt(input);
@@ -235,15 +246,24 @@ public class GatewayChatService {
             String upstreamBody = objectMapper.writeValueAsString(upstreamRequest);
 
             if (stream) {
-                return streamChat(auth, route, requestId, requestBody, upstreamBody, servletRequest, startTime);
+                ResponseEntity<?> response = streamChat(auth, route, requestId, requestBody, upstreamBody,
+                        servletRequest, startTime, concurrencyPermit);
+                if (!(response.getBody() instanceof ResponseBodyEmitter)) {
+                    concurrencyPermit.close();
+                }
+                return response;
             }
-            return normalChat(auth, route, requestId, requestBody, upstreamBody, servletRequest, startTime);
+            return closeAndReturn(normalChat(auth, route, requestId, requestBody, upstreamBody, servletRequest, startTime),
+                    concurrencyPermit);
         } catch (BusinessException ex) {
-            logFailedRequest(auth, requestBody, servletRequest, failureStart, ex.getStatus(), ex.getMessage());
-            throw ex;
+            concurrencyPermit.close();
+            logFailedRequest(auth, resolvedRoute, requestBody, servletRequest, failureStart, ex.getStatus(), ex.getMessage());
+            throw new BusinessException(ex.getStatus(), toClientErrorMessage(ex.getStatus(), ex.getMessage()));
         } catch (Exception ex) {
-            logFailedRequest(auth, requestBody, servletRequest, failureStart, 500, ex.getMessage());
-            throw new BusinessException(500, "请求转发失败: " + ex.getMessage());
+            concurrencyPermit.close();
+            int status = isTimeoutException(ex) ? 504 : 500;
+            logFailedRequest(auth, resolvedRoute, requestBody, servletRequest, failureStart, status, ex.getMessage());
+            throw new BusinessException(status, toClientErrorMessage(status, "请求转发失败: " + ex.getMessage()));
         }
     }
 
@@ -253,9 +273,11 @@ public class GatewayChatService {
     public ResponseEntity<?> responses(String authorization, String requestBody, HttpServletRequest servletRequest) {
         String bearerToken = extractBearerToken(authorization);
         ApiKeyAuthService.AuthenticatedApiKey auth = apiKeyAuthService.authenticate(bearerToken);
+        GatewayConcurrencyLimiter.Permit concurrencyPermit = gatewayConcurrencyLimiter.acquireRequest(auth);
         apiKeyAuthService.markUsed(auth.id());
 
         long failureStart = System.currentTimeMillis();
+        GatewayRouteService.RouteDefinition resolvedRoute = null;
         try {
             JsonNode input = objectMapper.readTree(requestBody);
             String effectiveRequestBody = requestBody;
@@ -264,6 +286,7 @@ public class GatewayChatService {
             GatewayRouteService.RouteDefinition route = gatewayRouteService.resolve(modelCode);
             userModelAccessService.validateGatewayPackageAccess(auth, route);
             route = gatewayRouteService.applyGroupPricing(route, userModelAccessService.resolveGatewayPackageGroupId(auth, route));
+            resolvedRoute = route;
             String requestId = buildRequestId();
             long startTime = System.currentTimeMillis();
 
@@ -272,7 +295,7 @@ public class GatewayChatService {
                     auth, route, requestId, requestBody, input, servletRequest, startTime, stream
             );
             if (directResponse != null) {
-                return directResponse;
+                return closeAndReturn(directResponse, concurrencyPermit);
             }
 
             if (input instanceof ObjectNode objectInput) {
@@ -288,9 +311,11 @@ public class GatewayChatService {
             if (input instanceof ObjectNode objectInput && shouldHandleResponsesAsAgent(route.modelCode(), objectInput)) {
                 // 进入 agent 模式时，不再走普通上游转发，而是由本地工具链驱动。
                 if (stream) {
-                    return streamAgentResponses(auth, route, requestId, effectiveRequestBody, objectInput, servletRequest, startTime);
+                    return closeAndReturn(streamAgentResponses(auth, route, requestId, effectiveRequestBody, objectInput,
+                            servletRequest, startTime), concurrencyPermit);
                 }
-                return normalAgentResponses(auth, route, requestId, effectiveRequestBody, objectInput, servletRequest, startTime);
+                return closeAndReturn(normalAgentResponses(auth, route, requestId, effectiveRequestBody, objectInput,
+                        servletRequest, startTime), concurrencyPermit);
             }
 
             if (isAnthropicRoute(route)) {
@@ -302,15 +327,24 @@ public class GatewayChatService {
             String upstreamBody = objectMapper.writeValueAsString(upstreamRequest);
 
             if (stream) {
-                return streamResponses(auth, route, requestId, effectiveRequestBody, upstreamBody, servletRequest, startTime);
+                ResponseEntity<?> response = streamResponses(auth, route, requestId, effectiveRequestBody, upstreamBody,
+                        servletRequest, startTime, concurrencyPermit);
+                if (!(response.getBody() instanceof ResponseBodyEmitter)) {
+                    concurrencyPermit.close();
+                }
+                return response;
             }
-            return normalResponses(auth, route, requestId, effectiveRequestBody, upstreamBody, servletRequest, startTime);
+            return closeAndReturn(normalResponses(auth, route, requestId, effectiveRequestBody, upstreamBody, servletRequest, startTime),
+                    concurrencyPermit);
         } catch (BusinessException ex) {
-            logFailedRequest(auth, requestBody, servletRequest, failureStart, ex.getStatus(), ex.getMessage());
-            throw ex;
+            concurrencyPermit.close();
+            logFailedRequest(auth, resolvedRoute, requestBody, servletRequest, failureStart, ex.getStatus(), ex.getMessage());
+            throw new BusinessException(ex.getStatus(), toClientErrorMessage(ex.getStatus(), ex.getMessage()));
         } catch (Exception ex) {
-            logFailedRequest(auth, requestBody, servletRequest, failureStart, 500, ex.getMessage());
-            throw new BusinessException(500, "Responses 转发失败: " + ex.getMessage());
+            concurrencyPermit.close();
+            int status = isTimeoutException(ex) ? 504 : 500;
+            logFailedRequest(auth, resolvedRoute, requestBody, servletRequest, failureStart, status, ex.getMessage());
+            throw new BusinessException(status, toClientErrorMessage(status, "Responses 转发失败: " + ex.getMessage()));
         }
     }
 
@@ -320,9 +354,11 @@ public class GatewayChatService {
     public ResponseEntity<?> anthropicMessages(String authorization, String requestBody, HttpServletRequest servletRequest) {
         String bearerToken = extractBearerToken(authorization);
         ApiKeyAuthService.AuthenticatedApiKey auth = apiKeyAuthService.authenticate(bearerToken);
+        GatewayConcurrencyLimiter.Permit concurrencyPermit = gatewayConcurrencyLimiter.acquireRequest(auth);
         apiKeyAuthService.markUsed(auth.id());
 
         long failureStart = System.currentTimeMillis();
+        GatewayRouteService.RouteDefinition resolvedRoute = null;
         try {
             JsonNode input = objectMapper.readTree(requestBody);
             String modelCode = getRequiredText(input, "model");
@@ -330,12 +366,14 @@ public class GatewayChatService {
             GatewayRouteService.RouteDefinition route = gatewayRouteService.resolve(modelCode);
             userModelAccessService.validateGatewayPackageAccess(auth, route);
             route = gatewayRouteService.applyGroupPricing(route, userModelAccessService.resolveGatewayPackageGroupId(auth, route));
+            resolvedRoute = route;
             String requestId = buildRequestId();
             long startTime = System.currentTimeMillis();
 
             // Claude 原生通道直接透传，其他模型则做兼容转换。
             if (isAnthropicRoute(route)) {
-                return anthropicNativeMessages(auth, route, requestId, requestBody, input, servletRequest, startTime, stream);
+                return closeAndReturn(anthropicNativeMessages(auth, route, requestId, requestBody, input, servletRequest, startTime, stream),
+                        concurrencyPermit);
             }
 
             AnthropicMessageExecution execution = executeAnthropicCompatibleMessage(
@@ -343,27 +381,30 @@ public class GatewayChatService {
             );
 
             if (!stream) {
-                return ResponseEntity.status(execution.statusCode())
+                return closeAndReturn(ResponseEntity.status(execution.statusCode())
                         .contentType(MediaType.APPLICATION_JSON)
-                        .body(execution.body());
+                        .body(execution.body()), concurrencyPermit);
             }
 
             JsonNode anthropicJson = tryReadJson(execution.body());
             if (execution.statusCode() < 200 || execution.statusCode() >= 300 || anthropicJson == null) {
-                return ResponseEntity.status(execution.statusCode())
+                return closeAndReturn(ResponseEntity.status(execution.statusCode())
                         .contentType(MediaType.APPLICATION_JSON)
-                        .body(execution.body());
+                        .body(execution.body()), concurrencyPermit);
             }
 
-            return ResponseEntity.status(execution.statusCode())
+            return closeAndReturn(ResponseEntity.status(execution.statusCode())
                     .header(HttpHeaders.CONTENT_TYPE, "text/event-stream;charset=UTF-8")
-                    .body(buildAnthropicMessageStream(anthropicJson));
+                    .body(buildAnthropicMessageStream(anthropicJson)), concurrencyPermit);
         } catch (BusinessException ex) {
-            logFailedRequest(auth, requestBody, servletRequest, failureStart, ex.getStatus(), ex.getMessage());
-            throw ex;
+            concurrencyPermit.close();
+            logFailedRequest(auth, resolvedRoute, requestBody, servletRequest, failureStart, ex.getStatus(), ex.getMessage());
+            throw new BusinessException(ex.getStatus(), toClientErrorMessage(ex.getStatus(), ex.getMessage()));
         } catch (Exception ex) {
-            logFailedRequest(auth, requestBody, servletRequest, failureStart, 500, ex.getMessage());
-            throw new BusinessException(500, "Messages forwarding failed: " + ex.getMessage());
+            concurrencyPermit.close();
+            int status = isTimeoutException(ex) ? 504 : 500;
+            logFailedRequest(auth, resolvedRoute, requestBody, servletRequest, failureStart, status, ex.getMessage());
+            throw new BusinessException(status, toClientErrorMessage(status, "Messages forwarding failed: " + ex.getMessage()));
         }
     }
 
@@ -389,6 +430,11 @@ public class GatewayChatService {
                 ))
                 .toList();
         return Map.of("object", "list", "data", data);
+    }
+
+    private ResponseEntity<?> closeAndReturn(ResponseEntity<?> response, GatewayConcurrencyLimiter.Permit permit) {
+        permit.close();
+        return response;
     }
 
     /**
@@ -521,18 +567,16 @@ public class GatewayChatService {
                     .body(sink.fullBody());
         } catch (Exception ex) {
             long latency = System.currentTimeMillis() - startTime;
-            String errorBody = buildResponsesErrorEventStream(500, ex.getMessage());
+            int status = ex instanceof BusinessException businessException ? businessException.getStatus() : 500;
+            String clientMessage = toClientErrorMessage(status, ex.getMessage());
+            String errorBody = buildResponsesErrorEventStream(status, clientMessage);
             logAndCharge(auth, route, requestId, servletRequest, originalRequestBody, errorBody,
                     0, 0, 0, 0, BigDecimal.ZERO, BigDecimal.ZERO,
-                    (int) latency, 500, false, ex.getMessage());
+                    (int) latency, status, false, ex.getMessage());
 
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .body(objectMapper.writeValueAsString(Map.of(
-                            "success", false,
-                            "message", ex.getMessage(),
-                            "data", null
-                    )));
+            return ResponseEntity.status(status)
+                    .header(HttpHeaders.CONTENT_TYPE, "text/event-stream;charset=UTF-8")
+                    .body(errorBody);
         }
     }
 
@@ -734,44 +778,15 @@ public class GatewayChatService {
     private ResponseEntity<?> streamChat(ApiKeyAuthService.AuthenticatedApiKey auth,
                                          GatewayRouteService.RouteDefinition route,
                                          String requestId,
-                                         String originalRequestBody,
-                                         String upstreamBody,
-                                         HttpServletRequest servletRequest,
-                                         long startTime) throws Exception {
+                                          String originalRequestBody,
+                                          String upstreamBody,
+                                          HttpServletRequest servletRequest,
+                                          long startTime,
+                                          GatewayConcurrencyLimiter.Permit requestPermit) throws Exception {
         ObjectNode streamRequest = ensureChatStreamUsageIncluded((ObjectNode) objectMapper.readTree(upstreamBody));
-        UpstreamTextResponse response = executeOpenAiTextRequest(route, "/chat/completions", objectMapper.writeValueAsString(streamRequest));
-        String rawEventStreamBody = response.body();
-        String eventStreamBody = rewriteClientFacingModel(route, rawEventStreamBody);
-        int statusCode = response.statusCode();
-
-        long latency = System.currentTimeMillis() - startTime;
-        int promptTokens = 0;
-        int completionTokens = 0;
-        int totalTokens = 0;
-        int cachedPromptTokens = 0;
-        BigDecimal costAmount = BigDecimal.ZERO;
-        BigDecimal userAmount = BigDecimal.ZERO;
-        boolean success = statusCode >= 200 && statusCode < 300;
-        if (success) {
-            JsonNode chatJson = tryReadJson(buildChatCompletionFromSse(route, rawEventStreamBody));
-            UsageTotals usage = extractChatUsage(chatJson);
-            promptTokens = usage.promptTokens();
-            completionTokens = usage.completionTokens();
-            totalTokens = usage.totalTokens();
-            cachedPromptTokens = usage.cachedPromptTokens();
-            ChargeAmounts charge = calculateCharge(route, originalRequestBody,
-                    usage.promptTokens(), usage.completionTokens(), usage.totalTokens(), cachedPromptTokens, (int) latency);
-            costAmount = charge.costAmount();
-            userAmount = charge.userAmount();
-        }
-
-        logAndCharge(auth, route, requestId, servletRequest, originalRequestBody, eventStreamBody,
-                promptTokens, completionTokens, totalTokens, cachedPromptTokens, userAmount, costAmount, (int) latency,
-                statusCode, success, success ? null : "stream upstream error");
-
-        return ResponseEntity.status(statusCode)
-                .header(HttpHeaders.CONTENT_TYPE, "text/event-stream;charset=UTF-8")
-                .body(eventStreamBody);
+        return streamOpenAiEventStream(auth, route, requestId, originalRequestBody,
+                objectMapper.writeValueAsString(streamRequest), servletRequest, startTime,
+                "/chat/completions", false, requestPermit);
     }
 
     /**
@@ -780,10 +795,11 @@ public class GatewayChatService {
     private ResponseEntity<?> streamResponses(ApiKeyAuthService.AuthenticatedApiKey auth,
                                               GatewayRouteService.RouteDefinition route,
                                               String requestId,
-                                              String originalRequestBody,
-                                              String upstreamBody,
-                                              HttpServletRequest servletRequest,
-                                              long startTime) throws Exception {
+                                               String originalRequestBody,
+                                               String upstreamBody,
+                                               HttpServletRequest servletRequest,
+                                               long startTime,
+                                               GatewayConcurrencyLimiter.Permit requestPermit) throws Exception {
         if (shouldUseResponsesCompatibility(route)) {
             UpstreamTextResponse response = executeResponsesCompatibilityStream(route, upstreamBody);
             long latency = System.currentTimeMillis() - startTime;
@@ -819,39 +835,8 @@ public class GatewayChatService {
         if (shouldAggregateCodexStream(route)) {
             return streamCodexResponses(auth, route, requestId, originalRequestBody, upstreamBody, servletRequest, startTime);
         }
-        UpstreamTextResponse response = executeOpenAiTextRequest(route, "/responses", upstreamBody);
-        String rawEventStreamBody = response.body();
-        String eventStreamBody = rewriteClientFacingModel(route, rawEventStreamBody);
-        int statusCode = response.statusCode();
-
-        long latency = System.currentTimeMillis() - startTime;
-        int promptTokens = 0;
-        int completionTokens = 0;
-        int totalTokens = 0;
-        int cachedPromptTokens = 0;
-        BigDecimal costAmount = BigDecimal.ZERO;
-        BigDecimal userAmount = BigDecimal.ZERO;
-        boolean success = statusCode >= 200 && statusCode < 300;
-        if (success) {
-            JsonNode responseJson = tryReadJson(buildResponsesFromSse(route, rawEventStreamBody));
-            UsageTotals usage = extractResponsesUsage(responseJson);
-            promptTokens = usage.promptTokens();
-            completionTokens = usage.completionTokens();
-            totalTokens = usage.totalTokens();
-            cachedPromptTokens = usage.cachedPromptTokens();
-            ChargeAmounts charge = calculateCharge(route, originalRequestBody,
-                    usage.promptTokens(), usage.completionTokens(), usage.totalTokens(), cachedPromptTokens, (int) latency);
-            costAmount = charge.costAmount();
-            userAmount = charge.userAmount();
-        }
-
-        logAndCharge(auth, route, requestId, servletRequest, originalRequestBody, eventStreamBody,
-                promptTokens, completionTokens, totalTokens, cachedPromptTokens, userAmount, costAmount, (int) latency,
-                statusCode, success, success ? null : "responses upstream error");
-
-        return ResponseEntity.status(statusCode)
-                .header(HttpHeaders.CONTENT_TYPE, "text/event-stream;charset=UTF-8")
-                .body(eventStreamBody);
+        return streamOpenAiEventStream(auth, route, requestId, originalRequestBody,
+                upstreamBody, servletRequest, startTime, "/responses", true, requestPermit);
     }
 
     /**
@@ -906,12 +891,199 @@ public class GatewayChatService {
      * 执行一次原始 OpenAI 风格 HTTP 请求。
      * 这里直接返回 OkHttp Response，给上层决定如何读取文本或流。
      */
+    /**
+     * Stream upstream SSE to the client while keeping a bounded copy for logging
+     * and usage extraction. This avoids buffering the whole answer before the UI
+     * can render the first token.
+     */
+    private ResponseEntity<ResponseBodyEmitter> streamOpenAiEventStream(ApiKeyAuthService.AuthenticatedApiKey auth,
+                                                                        GatewayRouteService.RouteDefinition route,
+                                                                        String requestId,
+                                                                        String originalRequestBody,
+                                                                        String upstreamBody,
+                                                                        HttpServletRequest servletRequest,
+                                                                        long startTime,
+                                                                        String path,
+                                                                        boolean responsesProtocol,
+                                                                        GatewayConcurrencyLimiter.Permit requestPermit) {
+        ResponseBodyEmitter emitter = new ResponseBodyEmitter(gatewayConcurrencyLimiter.streamTimeoutMs());
+        GatewayConcurrencyLimiter.Permit streamPermit = gatewayConcurrencyLimiter.acquireStream(auth);
+        Runnable streamTask = () -> {
+            int statusCode = 0;
+            boolean success = false;
+            String errorMessage = null;
+            StringBuilder captured = new StringBuilder();
+            try (Response response = executeOpenAiStreamRequestWithRetry(route, path, upstreamBody)) {
+                statusCode = response.code();
+                success = statusCode >= 200 && statusCode < 300;
+                ResponseBody responseBody = response.body();
+                if (!success) {
+                    String responseText = responseBody == null ? "" : responseBody.string();
+                    captured.append(responseText);
+                    errorMessage = extractUpstreamErrorMessage(responseText);
+                    sendSseError(emitter, statusCode, errorMessage, responsesProtocol);
+                } else if (responseBody != null) {
+                    try (InputStream inputStream = responseBody.byteStream()) {
+                        byte[] buffer = new byte[8192];
+                        int read;
+                        while ((read = inputStream.read(buffer)) != -1) {
+                            byte[] chunk = java.util.Arrays.copyOf(buffer, read);
+                            emitter.send(chunk, MediaType.TEXT_EVENT_STREAM);
+                            if (captured.length() < STREAM_CAPTURE_LIMIT) {
+                                captured.append(new String(buffer, 0, read, StandardCharsets.UTF_8));
+                            }
+                        }
+                    }
+                    if (responsesProtocol && !containsResponsesCompletedEvent(captured)) {
+                        statusCode = 502;
+                        success = false;
+                        errorMessage = "upstream stream closed before response.completed";
+                        sendSseError(emitter, statusCode, errorMessage, true);
+                    }
+                }
+            } catch (Exception ex) {
+                statusCode = isTimeoutException(ex) ? 504 : 502;
+                success = false;
+                errorMessage = ex.getMessage();
+                sendSseError(emitter, statusCode, errorMessage, responsesProtocol);
+            } finally {
+                logStreamRequest(auth, route, requestId, servletRequest, originalRequestBody,
+                        captured.toString(), startTime, statusCode == 0 ? 499 : statusCode,
+                        success, errorMessage, responsesProtocol);
+                emitter.complete();
+                streamPermit.close();
+                requestPermit.close();
+            }
+        };
+
+        try {
+            gatewayStreamTaskExecutor.execute(streamTask);
+        } catch (RejectedExecutionException ex) {
+            streamPermit.close();
+            requestPermit.close();
+            throw new BusinessException(503, "Gateway streaming executor is busy");
+        }
+
+        return ResponseEntity.ok()
+                .header(HttpHeaders.CONTENT_TYPE, "text/event-stream;charset=UTF-8")
+                .body(emitter);
+    }
+
+    private void logStreamRequest(ApiKeyAuthService.AuthenticatedApiKey auth,
+                                  GatewayRouteService.RouteDefinition route,
+                                  String requestId,
+                                  HttpServletRequest servletRequest,
+                                  String originalRequestBody,
+                                  String eventStreamBody,
+                                  long startTime,
+                                  int statusCode,
+                                  boolean success,
+                                  String errorMessage,
+                                  boolean responsesProtocol) {
+        try {
+            long latency = System.currentTimeMillis() - startTime;
+            UsageTotals usage = new UsageTotals(0, 0, 0, 0);
+            if (success) {
+                JsonNode usageJson = tryReadJson(responsesProtocol
+                        ? buildResponsesFromSse(route, eventStreamBody)
+                        : buildChatCompletionFromSse(route, eventStreamBody));
+                usage = responsesProtocol ? extractResponsesUsage(usageJson) : extractChatUsage(usageJson);
+            }
+            ChargeAmounts charge = calculateCharge(route, originalRequestBody,
+                    usage.promptTokens(), usage.completionTokens(), usage.totalTokens(), usage.cachedPromptTokens(), (int) latency);
+            logAndCharge(auth, route, requestId, servletRequest, originalRequestBody, eventStreamBody,
+                    usage.promptTokens(), usage.completionTokens(), usage.totalTokens(), usage.cachedPromptTokens(),
+                    success ? charge.userAmount() : BigDecimal.ZERO,
+                    success ? charge.costAmount() : BigDecimal.ZERO,
+                    (int) latency, statusCode, success, success ? null : errorMessage);
+        } catch (Exception ex) {
+            log.warn("Failed to persist streaming request log: {}", ex.getMessage());
+        }
+    }
+
+    private boolean containsResponsesCompletedEvent(CharSequence eventStreamBody) {
+        return eventStreamBody != null && eventStreamBody.toString().contains("response.completed");
+    }
+
+    private void sendSseError(ResponseBodyEmitter emitter, int statusCode, String message, boolean responsesProtocol) {
+        String clientMessage = toClientErrorMessage(statusCode, message);
+        String eventStream;
+        try {
+            if (responsesProtocol) {
+                eventStream = buildResponsesErrorEventStream(statusCode, clientMessage);
+            } else {
+                ObjectNode error = objectMapper.createObjectNode();
+                error.put("type", "error");
+                ObjectNode payload = objectMapper.createObjectNode();
+                payload.put("message", clientMessage);
+                payload.put("status", statusCode);
+                error.set("error", payload);
+                eventStream = "data: " + objectMapper.writeValueAsString(error) + "\n\n" + "data: [DONE]\n\n";
+            }
+        } catch (Exception ignored) {
+            eventStream = "data: {\"type\":\"error\",\"error\":{\"message\":\"网络不稳定或上游响应超时，请稍后重试。\",\"status\":" + statusCode + "}}\n\n"
+                    + "data: [DONE]\n\n";
+        }
+        try {
+            emitter.send(eventStream.getBytes(StandardCharsets.UTF_8), MediaType.TEXT_EVENT_STREAM);
+        } catch (Exception ignored) {
+        }
+    }
+
+    private String toClientErrorMessage(int status, String message) {
+        if (isUpstreamNetworkError(status, message)) {
+            return UPSTREAM_NETWORK_UNSTABLE_MESSAGE;
+        }
+        return message == null || message.isBlank() ? "System error" : message;
+    }
+
+    private boolean isUpstreamNetworkError(int status, String message) {
+        if (status == 502 || status == 504) {
+            return true;
+        }
+        if (message == null || message.isBlank()) {
+            return false;
+        }
+        String lower = message.toLowerCase(Locale.ROOT);
+        return lower.contains("upstream timeout")
+                || lower.contains("upstream stream failed")
+                || lower.contains("upstream request failed")
+                || lower.contains("stream closed")
+                || lower.contains("response.completed")
+                || lower.contains("interruptedioexception")
+                || lower.contains("sockettimeoutexception")
+                || lower.contains("timeout")
+                || lower.contains("timed out")
+                || lower.contains("canceled")
+                || lower.contains("cancelled")
+                || lower.contains("connection reset")
+                || lower.contains("connection refused")
+                || lower.contains("connection aborted")
+                || lower.contains("broken pipe")
+                || lower.contains("network");
+    }
+
     private Response executeOpenAiRequest(GatewayRouteService.RouteDefinition route, String path, String body) throws Exception {
+        return executeOpenAiRequest(route, path, body, false);
+    }
+
+    private Response executeOpenAiStreamingRequest(GatewayRouteService.RouteDefinition route, String path, String body) throws Exception {
+        return executeOpenAiRequest(route, path, body, true);
+    }
+
+    private Response executeOpenAiRequest(GatewayRouteService.RouteDefinition route, String path, String body, boolean streaming) throws Exception {
+        long routeTimeoutMs = route.timeoutMs() == null || route.timeoutMs() <= 0 ? 0L : route.timeoutMs();
+        long connectTimeoutMs = resolveTimeoutMs(routeTimeoutMs, gatewayUpstreamProperties.connectTimeoutMsValue());
+        long writeTimeoutMs = resolveTimeoutMs(routeTimeoutMs, gatewayUpstreamProperties.writeTimeoutMsValue());
+        long readTimeoutMs = streaming
+                ? Math.max(resolveTimeoutMs(routeTimeoutMs, gatewayUpstreamProperties.streamReadTimeoutMsValue()), MIN_STREAM_READ_TIMEOUT_MS)
+                : resolveTimeoutMs(routeTimeoutMs, gatewayUpstreamProperties.readTimeoutMsValue());
+        long callTimeoutMs = streaming ? 0L : resolveTimeoutMs(routeTimeoutMs, gatewayUpstreamProperties.callTimeoutMsValue());
         OkHttpClient client = okHttpClient.newBuilder()
-                .connectTimeout(Duration.ofMillis(route.timeoutMs()))
-                .readTimeout(Duration.ofMillis(route.timeoutMs()))
-                .writeTimeout(Duration.ofMillis(route.timeoutMs()))
-                .callTimeout(Duration.ofMillis(route.timeoutMs()))
+                .connectTimeout(Duration.ofMillis(connectTimeoutMs))
+                .readTimeout(Duration.ofMillis(readTimeoutMs))
+                .writeTimeout(Duration.ofMillis(writeTimeoutMs))
+                .callTimeout(callTimeoutMs <= 0 ? Duration.ZERO : Duration.ofMillis(callTimeoutMs))
                 .build();
 
         Request request = new Request.Builder()
@@ -930,16 +1102,37 @@ public class GatewayChatService {
         }
     }
 
+    private long resolveTimeoutMs(long routeTimeoutMs, long configuredTimeoutMs) {
+        long timeoutMs = routeTimeoutMs > 0 ? routeTimeoutMs : configuredTimeoutMs;
+        return Math.max(1_000L, timeoutMs);
+    }
+
     /**
      * 用 OkHttp 执行文本响应请求。
      */
     private UpstreamTextResponse executeOpenAiRequestWithOkHttp(GatewayRouteService.RouteDefinition route, String path, String body) throws Exception {
-        try (Response response = executeOpenAiRequest(route, path, body)) {
-            return new UpstreamTextResponse(
-                    response.code(),
-                    response.body() == null ? "" : response.body().string()
-            );
+        Exception lastException = null;
+        for (int attempt = 0; attempt <= MAX_UPSTREAM_RETRIES; attempt++) {
+            try (Response response = executeOpenAiRequest(route, path, body)) {
+                String responseBody = response.body() == null ? "" : response.body().string();
+                UpstreamTextResponse result = new UpstreamTextResponse(response.code(), responseBody);
+                if (!shouldRetryUpstream(result.statusCode(), result.body()) || attempt == MAX_UPSTREAM_RETRIES) {
+                    return result;
+                }
+            } catch (BusinessException ex) {
+                lastException = ex;
+                if (!shouldRetryUpstream(ex.getStatus(), ex.getMessage()) || attempt == MAX_UPSTREAM_RETRIES) {
+                    throw ex;
+                }
+            } catch (Exception ex) {
+                lastException = ex;
+                if (!isTimeoutException(ex) || attempt == MAX_UPSTREAM_RETRIES) {
+                    throw ex;
+                }
+            }
+            sleepBeforeRetry(attempt);
         }
+        throw lastException == null ? new BusinessException(502, "upstream request failed") : lastException;
     }
 
     /**
@@ -947,9 +1140,82 @@ public class GatewayChatService {
      * 官方 OpenAI 域名走 PowerShell 调用，其他上游走 OkHttp。
      */
     private UpstreamTextResponse executeOpenAiTextRequest(GatewayRouteService.RouteDefinition route, String path, String body) throws Exception {
-        return isOfficialOpenAiRoute(route)
-                ? executeOpenAiRequestWithPowerShell(route, path, body)
-                : executeOpenAiRequestWithOkHttp(route, path, body);
+        return executeOpenAiRequestWithOkHttp(route, path, body);
+    }
+
+    private Response executeOpenAiStreamRequestWithRetry(GatewayRouteService.RouteDefinition route, String path, String body) throws Exception {
+        Exception lastException = null;
+        for (int attempt = 0; attempt <= MAX_UPSTREAM_RETRIES; attempt++) {
+            Response response = null;
+            try {
+                response = executeOpenAiStreamingRequest(route, path, body);
+                int statusCode = response.code();
+                if (statusCode < 400 || !isRetryableStatus(statusCode)) {
+                    return response;
+                }
+                String responseBody = response.body() == null ? "" : response.body().string();
+                response.close();
+                response = null;
+                if (!shouldRetryUpstream(statusCode, responseBody) || attempt == MAX_UPSTREAM_RETRIES) {
+                    return buildSyntheticResponse(route, path, statusCode, responseBody);
+                }
+            } catch (BusinessException ex) {
+                lastException = ex;
+                if (!shouldRetryUpstream(ex.getStatus(), ex.getMessage()) || attempt == MAX_UPSTREAM_RETRIES) {
+                    throw ex;
+                }
+            } catch (Exception ex) {
+                lastException = ex;
+                if (!isTimeoutException(ex) || attempt == MAX_UPSTREAM_RETRIES) {
+                    throw ex;
+                }
+            } finally {
+                if (response != null && response.code() >= 400 && attempt < MAX_UPSTREAM_RETRIES) {
+                    response.close();
+                }
+            }
+            sleepBeforeRetry(attempt);
+        }
+        throw lastException == null ? new BusinessException(502, "upstream stream failed") : lastException;
+    }
+
+    private Response buildSyntheticResponse(GatewayRouteService.RouteDefinition route, String path, int statusCode, String responseBody) {
+        String body = responseBody == null ? "" : responseBody;
+        return new Response.Builder()
+                .request(new Request.Builder().url(resolveOpenAiEndpoint(route.baseUrl(), path)).build())
+                .protocol(okhttp3.Protocol.HTTP_1_1)
+                .code(statusCode)
+                .message(body.isBlank() ? "upstream error" : body)
+                .body(ResponseBody.create(body, okhttp3.MediaType.parse("application/json; charset=utf-8")))
+                .build();
+    }
+
+    private boolean shouldRetryUpstream(int statusCode, String body) {
+        return isRetryableStatus(statusCode) || containsTransientUpstreamError(body);
+    }
+
+    private boolean isRetryableStatus(int statusCode) {
+        return statusCode == 408 || statusCode == 409 || statusCode == 425 || statusCode == 429 || statusCode >= 500;
+    }
+
+    private boolean containsTransientUpstreamError(String body) {
+        if (body == null || body.isBlank()) {
+            return false;
+        }
+        String lower = body.toLowerCase(Locale.ROOT);
+        return lower.contains("high demand")
+                || lower.contains("temporar")
+                || lower.contains("overload")
+                || lower.contains("rate limit")
+                || lower.contains("too many requests")
+                || lower.contains("reconnecting")
+                || lower.contains("timeout")
+                || lower.contains("try again");
+    }
+
+    private void sleepBeforeRetry(int attempt) throws InterruptedException {
+        long delayMs = UPSTREAM_RETRY_BASE_DELAY_MS * (attempt + 1);
+        Thread.sleep(delayMs);
     }
 
     /**
@@ -3098,8 +3364,9 @@ public class GatewayChatService {
         ObjectNode event = objectMapper.createObjectNode();
         event.put("type", "error");
 
+        String clientMessage = toClientErrorMessage(status, message);
         ObjectNode error = objectMapper.createObjectNode();
-        error.put("message", message == null || message.isBlank() ? "System error" : message);
+        error.put("message", clientMessage);
         error.put("type", status == 429 ? "rate_limit_error" : "server_error");
         error.put("status", status);
         event.set("error", error);
@@ -5077,38 +5344,33 @@ public class GatewayChatService {
         Long chargedPackageId = userModelAccessService.resolveGatewayPackageId(auth, route);
         LocalDate requestDate = currentDate();
         LocalDateTime createdAt = currentDateTime();
-        try {
-            requestLogMapper.insert(buildRequestLogEntity(
-                    requestId,
-                    auth == null ? null : auth.userId(),
-                    auth == null ? null : auth.id(),
-                    chargedPackageId,
-                    route.modelCode(),
-                    route.providerId(),
-                    route.providerTokenId(),
-                    route.upstreamModel(),
-                    servletRequest.getRequestURI(),
-                    servletRequest.getMethod(),
-                    extractRequestIp(servletRequest),
-                    normalizeJson(requestBody),
-                    normalizeJson(responseBody),
-                    promptTokens,
-                    completionTokens,
-                    totalTokens,
-                    cachedPromptTokens,
-                    userAmount,
-                    costAmount,
-                    latencyMs,
-                    success ? 1 : 0,
-                    statusCode,
-                    truncateForColumn(errorMessage, 500),
-                    requestDate,
-                    createdAt
-            ));
-        } catch (Exception ex) {
-            log.warn("Failed to persist request log for requestId={}, model={}: {}",
-                    requestId, route.modelCode(), ex.getMessage());
-        }
+        RequestLogEntity requestLog = buildRequestLogEntity(
+                requestId,
+                auth == null ? null : auth.userId(),
+                auth == null ? null : auth.id(),
+                chargedPackageId,
+                route.modelCode(),
+                route.providerId(),
+                route.providerTokenId(),
+                route.upstreamModel(),
+                servletRequest.getRequestURI(),
+                servletRequest.getMethod(),
+                extractRequestIp(servletRequest),
+                requestBody,
+                responseBody,
+                promptTokens,
+                completionTokens,
+                totalTokens,
+                cachedPromptTokens,
+                userAmount,
+                costAmount,
+                latencyMs,
+                success ? 1 : 0,
+                statusCode,
+                truncateForColumn(errorMessage, 500),
+                requestDate,
+                createdAt
+        );
 
         if (userAmount.compareTo(BigDecimal.ZERO) > 0) {
             String packageType = userModelAccessService.resolveGatewayPackageType(auth, route);
@@ -5138,25 +5400,30 @@ public class GatewayChatService {
                         transaction.setStatus("SUCCESS");
                         transaction.setTransactionDate(requestDate);
                         transaction.setDescriptionText("模型调用扣费: " + route.modelCode());
-                        transactionMapper.insert(transaction);
+                        gatewayAccountingAsyncService.persistConsumeTransactionAndQuota(transaction, auth.id(), userAmount);
                     } else {
                         throw new BusinessException(403, "当前余额不足，请先充值");
                     }
                 }
             }
-
-            apiKeyMapper.incrementUsedQuota(auth.id(), userAmount);
+            if (!chargeWallet) {
+                userModelAccessService.incrementGatewayPackageUsage(chargedPackageId, requestDate, userAmount);
+                gatewayAccountingAsyncService.incrementUsedQuota(auth.id(), userAmount);
+            }
         }
 
-        usageDailyMapper.upsert(
-                requestDate,
-                auth.userId(),
-                route.modelCode(),
-                route.providerId(),
-                success ? 1 : 0,
-                totalTokens,
-                userAmount,
-                costAmount
+        requestLogAsyncService.persistRequestLogAndUsage(
+                requestLog,
+                new RequestLogAsyncService.UsageDailyIncrement(
+                        requestDate,
+                        auth.userId(),
+                        route.modelCode(),
+                        route.providerId(),
+                        success ? 1 : 0,
+                        totalTokens,
+                        userAmount,
+                        costAmount
+                )
         );
     }
 
@@ -5164,14 +5431,15 @@ public class GatewayChatService {
      * 记录失败请求日志。
      */
     private void logFailedRequest(ApiKeyAuthService.AuthenticatedApiKey auth,
+                                  GatewayRouteService.RouteDefinition route,
                                   String requestBody,
                                   HttpServletRequest servletRequest,
                                   long startTime,
                                   int statusCode,
                                   String errorMessage) {
         try {
-            String modelCode = extractModelCodeFromBody(requestBody);
-            Long modelId = modelCode == null ? null : findModelIdByCode(modelCode);
+            String modelCode = route == null ? extractModelCodeFromBody(requestBody) : route.modelCode();
+            Long modelId = route == null ? modelCode == null ? null : findModelIdByCode(modelCode) : route.modelId();
             Long chargedPackageId = null;
             if (auth != null && modelId != null) {
                 if (auth.userPackageId() != null) {
@@ -5185,35 +5453,36 @@ public class GatewayChatService {
             int latencyMs = (int) Math.max(0, System.currentTimeMillis() - startTime);
             LocalDate requestDate = currentDate();
             LocalDateTime createdAt = currentDateTime();
-            requestLogMapper.insert(buildRequestLogEntity(
-                    buildRequestId(),
-                    auth == null ? null : auth.userId(),
-                    auth == null ? null : auth.id(),
-                    chargedPackageId,
-                    modelCode == null ? "-" : modelCode,
-                    null,
-                    null,
-                    null,
-                    servletRequest.getRequestURI(),
-                    servletRequest.getMethod(),
-                    extractRequestIp(servletRequest),
-                    normalizeJson(requestBody),
-                    null,
-                    0,
-                    0,
-                    0,
-                    0,
-                    BigDecimal.ZERO,
-                    BigDecimal.ZERO,
-                    latencyMs,
-                    0,
-                    statusCode,
-                    truncateForColumn(errorMessage, 500),
-                    requestDate,
-                    createdAt
-            ));
+            requestLogAsyncService.persistFailedRequestLog(buildRequestLogEntity(
+                            buildRequestId(),
+                            auth == null ? null : auth.userId(),
+                            auth == null ? null : auth.id(),
+                            chargedPackageId,
+                            modelCode == null ? "-" : modelCode,
+                            route == null ? null : route.providerId(),
+                            route == null ? null : route.providerTokenId(),
+                            route == null ? null : route.upstreamModel(),
+                            servletRequest.getRequestURI(),
+                            servletRequest.getMethod(),
+                            extractRequestIp(servletRequest),
+                            requestBody,
+                            null,
+                            0,
+                            0,
+                            0,
+                            0,
+                            BigDecimal.ZERO,
+                            BigDecimal.ZERO,
+                            latencyMs,
+                            0,
+                            statusCode,
+                            truncateForColumn(errorMessage, 500),
+                            requestDate,
+                            createdAt
+                    )
+            );
         } catch (Exception ex) {
-            log.warn("Failed to persist failed-request log: {}", ex.getMessage());
+            log.warn("Failed to enqueue failed-request log: {}", ex.getMessage());
         }
     }
 

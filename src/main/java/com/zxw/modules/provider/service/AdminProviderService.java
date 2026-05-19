@@ -3,6 +3,7 @@ package com.zxw.modules.provider.service;
 import com.zxw.common.exception.BusinessException;
 import com.zxw.common.security.AdminContext;
 import com.zxw.common.security.AesCryptoService;
+import com.zxw.modules.gateway.service.GatewayRouteService;
 import com.zxw.modules.model.service.AntigravityPresetService;
 import com.zxw.modules.provider.dto.ProviderCreateRequest;
 import com.zxw.modules.provider.dto.ProviderListItemResponse;
@@ -26,17 +27,20 @@ public class AdminProviderService {
     private final ModelRouteMapper modelRouteMapper;
     private final AesCryptoService aesCryptoService;
     private final AntigravityPresetService antigravityPresetService;
+    private final GatewayRouteService gatewayRouteService;
 
     public AdminProviderService(ProviderMapper providerMapper,
                                 ProviderTokenMapper providerTokenMapper,
                                 ModelRouteMapper modelRouteMapper,
                                 AesCryptoService aesCryptoService,
-                                AntigravityPresetService antigravityPresetService) {
+                                AntigravityPresetService antigravityPresetService,
+                                GatewayRouteService gatewayRouteService) {
         this.providerMapper = providerMapper;
         this.providerTokenMapper = providerTokenMapper;
         this.modelRouteMapper = modelRouteMapper;
         this.aesCryptoService = aesCryptoService;
         this.antigravityPresetService = antigravityPresetService;
+        this.gatewayRouteService = gatewayRouteService;
     }
 
     public List<ProviderListItemResponse> listProviders() {
@@ -61,7 +65,7 @@ public class AdminProviderService {
     public void create(ProviderCreateRequest request) {
         AdminContext.requireAdmin();
         if (providerMapper.existsActiveByCode(request.providerCode())) {
-            throw new BusinessException("渠道编码已存在");
+            throw new BusinessException("Provider code already exists");
         }
 
         ProviderEntity provider = new ProviderEntity();
@@ -89,14 +93,16 @@ public class AdminProviderService {
         }
 
         antigravityPresetService.syncForProvider(provider.getId());
+        gatewayRouteService.evictRouteCache();
     }
 
     public void updateStatus(Long id, String status) {
         AdminContext.requireAdmin();
         int updated = providerMapper.updateStatus(id, status, LocalDateTime.now());
         if (updated == 0) {
-            throw new BusinessException(404, "渠道不存在");
+            throw new BusinessException(404, "Provider does not exist");
         }
+        gatewayRouteService.evictRouteCache();
     }
 
     @Transactional
@@ -104,15 +110,16 @@ public class AdminProviderService {
         AdminContext.requireAdmin();
         LocalDateTime now = LocalDateTime.now();
         if (!providerMapper.existsActiveById(id)) {
-            throw new BusinessException(404, "渠道不存在");
+            throw new BusinessException(404, "Provider does not exist");
         }
 
         modelRouteMapper.deleteByProviderId(id);
         providerTokenMapper.softDeleteByProviderId(id, now);
         int deleted = providerMapper.softDelete(id, now);
         if (deleted == 0) {
-            throw new BusinessException(400, "渠道删除失败");
+            throw new BusinessException(400, "Provider delete failed");
         }
+        gatewayRouteService.evictRouteCache();
     }
 
     private String blankToDefault(String value, String defaultValue) {

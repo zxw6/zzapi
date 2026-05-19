@@ -48,6 +48,12 @@ public class UserEntity {
     @ApiModelProperty("是否启用套餐限制")
     private Integer packageRestrictionEnabled;
 
+    @ApiModelProperty("最大并发请求数，空或0表示使用全局默认")
+    private Integer maxConcurrentRequests;
+
+    @ApiModelProperty("最大并发流式请求数，空或0表示使用全局默认")
+    private Integer maxConcurrentStreams;
+
     @ApiModelProperty("最后登录时间")
     private LocalDateTime lastLoginAt;
 

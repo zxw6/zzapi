@@ -1,24 +1,22 @@
 package com.zxw.common.security;
 
 import com.zxw.common.exception.BusinessException;
-import com.zxw.persistence.mapper.UserMapper;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.http.HttpMethod;
 import org.springframework.stereotype.Component;
 import org.springframework.web.servlet.HandlerInterceptor;
 
-import java.time.LocalDateTime;
-
 @Component
 public class AdminAuthInterceptor implements HandlerInterceptor {
 
     private final JwtTokenService jwtTokenService;
-    private final UserMapper userMapper;
+    private final AdminActivityService adminActivityService;
 
-    public AdminAuthInterceptor(JwtTokenService jwtTokenService, UserMapper userMapper) {
+    public AdminAuthInterceptor(JwtTokenService jwtTokenService,
+                                AdminActivityService adminActivityService) {
         this.jwtTokenService = jwtTokenService;
-        this.userMapper = userMapper;
+        this.adminActivityService = adminActivityService;
     }
 
     @Override
@@ -34,7 +32,7 @@ public class AdminAuthInterceptor implements HandlerInterceptor {
 
         JwtUser jwtUser = jwtTokenService.parseToken(token.substring(7));
         AdminContext.set(jwtUser);
-        userMapper.updateLastActiveAt(jwtUser.userId(), LocalDateTime.now());
+        adminActivityService.markActive(jwtUser.userId());
         return true;
     }
 

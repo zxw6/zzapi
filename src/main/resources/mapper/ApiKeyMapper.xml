@@ -21,9 +21,11 @@
                g.group_code as groupCode,
                g.group_name as groupName,
                coalesce(w.balance, 0) as balance,
-               u.package_restriction_enabled as packageRestrictionEnabled
+               u.package_restriction_enabled as packageRestrictionEnabled,
+               u.max_concurrent_requests as maxConcurrentRequests,
+               u.max_concurrent_streams as maxConcurrentStreams
         from api_keys k
-        join users u on u.id = k.user_id and u.deleted = 0
+        join users u on u.id = k.user_id and u.deleted = 0 and u.status = 'ACTIVE'
         left join wallets w on w.user_id = u.id
         left join user_model_packages p on p.id = k.user_package_id
         left join model_groups g on g.id = k.model_group_id

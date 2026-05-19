@@ -37,18 +37,21 @@ public class AdminApiKeyService {
     private final UserMapper userMapper;
     private final PasswordService passwordService;
     private final UserModelAccessService userModelAccessService;
+    private final ApiKeyAuthCacheService apiKeyAuthCacheService;
     private final SecureRandom secureRandom = new SecureRandom();
 
     public AdminApiKeyService(ApiKeyMapper apiKeyMapper,
                               ApiKeyQueryMapper apiKeyQueryMapper,
                               UserMapper userMapper,
                               PasswordService passwordService,
-                              UserModelAccessService userModelAccessService) {
+                              UserModelAccessService userModelAccessService,
+                              ApiKeyAuthCacheService apiKeyAuthCacheService) {
         this.apiKeyMapper = apiKeyMapper;
         this.apiKeyQueryMapper = apiKeyQueryMapper;
         this.userMapper = userMapper;
         this.passwordService = passwordService;
         this.userModelAccessService = userModelAccessService;
+        this.apiKeyAuthCacheService = apiKeyAuthCacheService;
     }
 
     /**
@@ -146,6 +149,7 @@ public class AdminApiKeyService {
         if (updated == 0) {
             throw new BusinessException("API key not found");
         }
+        apiKeyAuthCacheService.evictByApiKeyId(id);
     }
 
     /**
@@ -162,6 +166,7 @@ public class AdminApiKeyService {
         if (updated == 0) {
             throw new BusinessException("API key not found");
         }
+        apiKeyAuthCacheService.evictByApiKeyId(id);
     }
 
     /**

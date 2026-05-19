@@ -4,6 +4,19 @@
         "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
 <mapper namespace="com.zxw.persistence.mapper.UserModelAccessQueryMapper">
 
+    <sql id="RoutableModelExists">
+        exists (
+            select 1
+            from model_routes r
+            join providers p on p.id = r.provider_id and p.deleted = 0 and p.status = 'ACTIVE'
+            join provider_tokens t on t.provider_id = p.id and t.deleted = 0 and t.status = 'ACTIVE'
+            where r.model_id = m.id
+              and r.status = 'ACTIVE'
+              and r.upstream_model is not null
+              and r.upstream_model &lt;&gt; ''
+        )
+    </sql>
+
     <sql id="GroupColumns">
         select g.id,
                g.group_code as groupCode,
@@ -19,7 +32,10 @@
                    select count(*)
                    from model_group_models mgm
                    join models m on m.id = mgm.model_id
-                   where mgm.group_id = g.id and m.deleted = 0 and m.status = 'ACTIVE'
+                   where mgm.group_id = g.id
+                     and m.deleted = 0
+                     and m.status = 'ACTIVE'
+                     and <include refid="RoutableModelExists"/>
                ) as modelCount
         from model_groups g
     </sql>
@@ -134,10 +150,33 @@
         where user_package_id = #{packageId}
     </select>
 
+    <select id="selectPackageUsageSummary" resultType="com.zxw.persistence.model.PackageUsageSummaryView">
+        select coalesce(sum(case when request_date = #{today} then user_amount else 0 end), 0) as dailyUsed,
+               coalesce(sum(case when request_date between #{weekStart} and #{today} then user_amount else 0 end), 0) as weeklyUsed,
+               coalesce(sum(case when request_date between #{monthStart} and #{today} then user_amount else 0 end), 0) as monthlyUsed,
+               coalesce(sum(user_amount), 0) as totalUsed
+        from request_logs
+        where user_package_id = #{packageId}
+    </select>
+
     <select id="countModelInGroup" resultType="java.lang.Integer">
         select count(*)
-        from model_group_models
-        where group_id = #{groupId} and model_id = #{modelId}
+        from model_group_models mgm
+        join models m on m.id = mgm.model_id
+        where mgm.group_id = #{groupId}
+          and mgm.model_id = #{modelId}
+          and m.deleted = 0
+          and m.status = 'ACTIVE'
+          and exists (
+              select 1
+              from model_routes r
+              join providers p on p.id = r.provider_id and p.deleted = 0 and p.status = 'ACTIVE'
+              join provider_tokens t on t.provider_id = p.id and t.deleted = 0 and t.status = 'ACTIVE'
+              where r.model_id = m.id
+                and r.status = 'ACTIVE'
+                and r.upstream_model is not null
+                and r.upstream_model &lt;&gt; ''
+          )
     </select>
 
     <select id="selectLatestActivePackageByModel" resultType="com.zxw.persistence.model.UserModelAccessPackageView">
@@ -218,7 +257,10 @@
                    select count(*)
                    from model_group_models mgm
                    join models m on m.id = mgm.model_id
-                   where mgm.group_id = g.id and m.deleted = 0 and m.status = 'ACTIVE'
+                   where mgm.group_id = g.id
+                     and m.deleted = 0
+                     and m.status = 'ACTIVE'
+                     and <include refid="RoutableModelExists"/>
                ) as modelCount,
                p.purchase_price as purchasePrice,
                p.start_at as startAt,
@@ -249,7 +291,10 @@
                    select count(*)
                    from model_group_models mgm
                    join models m on m.id = mgm.model_id
-                   where mgm.group_id = g.id and m.deleted = 0 and m.status = 'ACTIVE'
+                   where mgm.group_id = g.id
+                     and m.deleted = 0
+                     and m.status = 'ACTIVE'
+                     and <include refid="RoutableModelExists"/>
                ) as modelCount,
                p.purchase_price as purchasePrice,
                p.start_at as startAt,

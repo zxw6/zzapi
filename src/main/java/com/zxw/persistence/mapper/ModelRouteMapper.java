@@ -12,6 +12,8 @@ public interface ModelRouteMapper extends BaseMapper<ModelRouteEntity> {
 
     List<GatewayRouteRow> selectRoutesByModelCode(@Param("modelCode") String modelCode);
 
+    List<GatewayRouteRow> selectActiveRoutesByProviderId(@Param("providerId") Long providerId);
+
     default void deleteByModelId(Long modelId) {
         delete(Wrappers.<ModelRouteEntity>lambdaQuery()
                 .eq(ModelRouteEntity::getModelId, modelId));
@@ -35,5 +37,15 @@ public interface ModelRouteMapper extends BaseMapper<ModelRouteEntity> {
                 .eq(ModelRouteEntity::getUpstreamModel, upstreamModel)
                 .eq(ModelRouteEntity::getStatus, "ACTIVE"));
         return count != null && count > 0;
+    }
+
+    default int updateUpstreamModel(Long modelId, Long providerId, String oldUpstreamModel, String newUpstreamModel) {
+        return update(Wrappers.<ModelRouteEntity>lambdaUpdate()
+                .eq(ModelRouteEntity::getModelId, modelId)
+                .eq(ModelRouteEntity::getProviderId, providerId)
+                .eq(ModelRouteEntity::getUpstreamModel, oldUpstreamModel)
+                .eq(ModelRouteEntity::getRouteType, "PRIMARY")
+                .eq(ModelRouteEntity::getStatus, "ACTIVE")
+                .set(ModelRouteEntity::getUpstreamModel, newUpstreamModel));
     }
 }

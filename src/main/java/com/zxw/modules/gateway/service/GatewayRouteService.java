@@ -12,6 +12,7 @@ import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.ConcurrentHashMap;
 
 @Service
 /**
@@ -20,10 +21,14 @@ import java.util.Locale;
  */
 public class GatewayRouteService {
 
+    private static final long ROUTE_CACHE_TTL_MS = 300_000L;
+
     private final ModelMapper modelMapper;
     private final ModelRouteMapper modelRouteMapper;
     private final ModelGroupModelMapper modelGroupModelMapper;
     private final AesCryptoService aesCryptoService;
+    private final ConcurrentHashMap<String, CacheEntry<List<RouteDefinition>>> routeCache = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, CacheEntry<RoutePricing>> pricingCache = new ConcurrentHashMap<>();
 
     public GatewayRouteService(ModelMapper modelMapper,
                                ModelRouteMapper modelRouteMapper,
@@ -116,7 +121,7 @@ public class GatewayRouteService {
         if (route == null || groupId == null) {
             return route;
         }
-        ModelGroupPricingView pricing = modelGroupModelMapper.selectGroupPricing(groupId, route.modelId());
+        RoutePricing pricing = findGroupPricing(groupId, route.modelId());
         if (pricing == null) {
             // 分组没有单独配置价格时，沿用模型默认价格
             return route;
@@ -133,22 +138,32 @@ public class GatewayRouteService {
                 route.providerType(),
                 route.timeoutMs(),
                 route.upstreamModel(),
-                pricing.getBillingType(),
-                pricing.getPromptPrice(),
-                pricing.getCachedPromptPrice(),
-                pricing.getCompletionPrice(),
-                pricing.getRequestPrice(),
-                pricing.getMultiplier(),
+                pricing.billingType(),
+                pricing.promptPrice(),
+                pricing.cachedPromptPrice(),
+                pricing.completionPrice(),
+                pricing.requestPrice(),
+                pricing.multiplier(),
                 route.providerToken()
         );
+    }
+
+    public void evictRouteCache() {
+        routeCache.clear();
+        pricingCache.clear();
     }
 
     /**
      * 读取数据库候选路由并解密真实渠道令牌。
      */
     private List<RouteDefinition> findRoutes(String modelCode) {
+        String cacheKey = modelCode == null ? "" : modelCode.trim();
+        CacheEntry<List<RouteDefinition>> cached = routeCache.get(cacheKey);
+        if (cached != null && !cached.expired()) {
+            return cached.value();
+        }
         // 读取数据库路由并解密真实渠道令牌
-        return modelRouteMapper.selectRoutesByModelCode(modelCode).stream()
+        List<RouteDefinition> routes = modelRouteMapper.selectRoutesByModelCode(modelCode).stream()
                 .map(route -> new RouteDefinition(
                         route.getModelId(),
                         route.getModelCode(),
@@ -169,6 +184,43 @@ public class GatewayRouteService {
                         aesCryptoService.decrypt(route.getTokenValueEncrypted())
                 ))
                 .toList();
+        routeCache.put(cacheKey, new CacheEntry<>(routes, System.currentTimeMillis() + ROUTE_CACHE_TTL_MS));
+        return routes;
+    }
+
+    private RoutePricing findGroupPricing(Long groupId, Long modelId) {
+        String cacheKey = groupId + ":" + modelId;
+        CacheEntry<RoutePricing> cached = pricingCache.get(cacheKey);
+        if (cached != null && !cached.expired()) {
+            return cached.value();
+        }
+        ModelGroupPricingView pricing = modelGroupModelMapper.selectGroupPricing(groupId, modelId);
+        RoutePricing routePricing = pricing == null ? null : new RoutePricing(
+                pricing.getBillingType(),
+                pricing.getPromptPrice(),
+                pricing.getCachedPromptPrice(),
+                pricing.getCompletionPrice(),
+                pricing.getRequestPrice(),
+                pricing.getMultiplier()
+        );
+        pricingCache.put(cacheKey, new CacheEntry<>(routePricing, System.currentTimeMillis() + ROUTE_CACHE_TTL_MS));
+        return routePricing;
+    }
+
+    private record CacheEntry<T>(T value, long expiresAtMs) {
+        boolean expired() {
+            return System.currentTimeMillis() >= expiresAtMs;
+        }
+    }
+
+    private record RoutePricing(
+            String billingType,
+            BigDecimal promptPrice,
+            BigDecimal cachedPromptPrice,
+            BigDecimal completionPrice,
+            BigDecimal requestPrice,
+            BigDecimal multiplier
+    ) {
     }
 
     /**

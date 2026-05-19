@@ -4,6 +4,7 @@ import com.zxw.common.exception.BusinessException;
 import com.zxw.common.security.AdminContext;
 import com.zxw.common.security.JwtUser;
 import com.zxw.common.security.PasswordService;
+import com.zxw.modules.apikey.service.ApiKeyAuthCacheService;
 import com.zxw.modules.user.dto.UserCreateRequest;
 import com.zxw.modules.user.dto.UserListItemResponse;
 import com.zxw.modules.user.dto.UserUpdateRequest;
@@ -41,6 +42,7 @@ public class AdminUserService {
     private final ApiKeyMapper apiKeyMapper;
     private final UserCleanupMapper userCleanupMapper;
     private final PasswordService passwordService;
+    private final ApiKeyAuthCacheService apiKeyAuthCacheService;
 
     public AdminUserService(UserMapper userMapper,
                             UserQueryMapper userQueryMapper,
@@ -48,7 +50,8 @@ public class AdminUserService {
                             TransactionMapper transactionMapper,
                             ApiKeyMapper apiKeyMapper,
                             UserCleanupMapper userCleanupMapper,
-                            PasswordService passwordService) {
+                            PasswordService passwordService,
+                            ApiKeyAuthCacheService apiKeyAuthCacheService) {
         this.userMapper = userMapper;
         this.userQueryMapper = userQueryMapper;
         this.walletMapper = walletMapper;
@@ -56,6 +59,7 @@ public class AdminUserService {
         this.apiKeyMapper = apiKeyMapper;
         this.userCleanupMapper = userCleanupMapper;
         this.passwordService = passwordService;
+        this.apiKeyAuthCacheService = apiKeyAuthCacheService;
     }
 
     /**
@@ -110,6 +114,8 @@ public class AdminUserService {
         user.setRoleCode(roleCode);
         user.setStatus("ACTIVE");
         user.setPackageRestrictionEnabled("ADMIN".equalsIgnoreCase(roleCode) ? 0 : 1);
+        user.setMaxConcurrentRequests(normalizeConcurrencyLimit(request.maxConcurrentRequests()));
+        user.setMaxConcurrentStreams(normalizeConcurrencyLimit(request.maxConcurrentStreams()));
         userMapper.insert(user);
 
         // 再初始化钱包
@@ -170,6 +176,12 @@ public class AdminUserService {
         if (!admin && request.status() != null && !request.status().isBlank()) {
             throw new BusinessException("Normal users cannot change status");
         }
+        if (!admin && request.maxConcurrentRequests() != null) {
+            throw new BusinessException("Normal users cannot change concurrency limits");
+        }
+        if (!admin && request.maxConcurrentStreams() != null) {
+            throw new BusinessException("Normal users cannot change concurrency limits");
+        }
 
         // 按最终计算后的字段更新用户资料
         UserEntity updateUser = new UserEntity();
@@ -179,11 +191,20 @@ public class AdminUserService {
         updateUser.setRoleCode(nextRoleCode);
         updateUser.setStatus(nextStatus);
         updateUser.setUpdatedAt(LocalDateTime.now());
+        if (admin) {
+            if (request.maxConcurrentRequests() != null) {
+                updateUser.setMaxConcurrentRequests(normalizeConcurrencyLimit(request.maxConcurrentRequests()));
+            }
+            if (request.maxConcurrentStreams() != null) {
+                updateUser.setMaxConcurrentStreams(normalizeConcurrencyLimit(request.maxConcurrentStreams()));
+            }
+        }
         if (request.password() != null && !request.password().isBlank()) {
             updateUser.setPasswordHash(passwordService.encode(request.password()));
         }
 
         userMapper.updateActiveUser(targetUserId, updateUser);
+        apiKeyAuthCacheService.evictByUserId(targetUserId);
     }
 
     /**
@@ -196,6 +217,7 @@ public class AdminUserService {
         if (updated == 0) {
             throw new BusinessException("User does not exist");
         }
+        apiKeyAuthCacheService.evictByUserId(userId);
     }
 
     @Transactional
@@ -223,6 +245,7 @@ public class AdminUserService {
         transactionMapper.deleteByUserId(userId);
         userCleanupMapper.deleteUserModelPackagesByUserId(userId);
         walletMapper.deleteByUserId(userId);
+        apiKeyAuthCacheService.evictByUserId(userId);
         apiKeyMapper.deleteByUserId(userId);
         userMapper.deleteById(userId);
     }
@@ -248,6 +271,7 @@ public class AdminUserService {
         updateWallet.setTotalRecharge(wallet.getTotalRecharge().add(request.amount()));
         updateWallet.setUpdatedAt(LocalDateTime.now());
         walletMapper.updateByUserId(request.userId(), updateWallet);
+        apiKeyAuthCacheService.evictByUserId(request.userId());
 
         // 追加一条充值流水，方便后续审计
         TransactionEntity transaction = new TransactionEntity();
@@ -278,6 +302,8 @@ public class AdminUserService {
                 user.getEmail(),
                 user.getPhone(),
                 user.getBalance(),
+                zeroIfNull(user.getMaxConcurrentRequests()),
+                zeroIfNull(user.getMaxConcurrentStreams()),
                 user.getLastLoginAt(),
                 user.getCreatedAt()
         );
@@ -310,5 +336,13 @@ public class AdminUserService {
      */
     private String fallbackBlank(String candidate, String fallback) {
         return candidate == null ? fallback : candidate;
+    }
+
+    private Integer normalizeConcurrencyLimit(Integer value) {
+        return value == null || value <= 0 ? 0 : value;
+    }
+
+    private Integer zeroIfNull(Integer value) {
+        return value == null ? 0 : value;
     }
 }

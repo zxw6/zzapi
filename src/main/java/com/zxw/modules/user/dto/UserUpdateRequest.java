@@ -2,6 +2,7 @@ package com.zxw.modules.user.dto;
 
 import io.swagger.annotations.ApiModel;
 import io.swagger.annotations.ApiModelProperty;
+import jakarta.validation.constraints.Min;
 
 @ApiModel("更新用户请求")
 /**
@@ -23,6 +24,12 @@ public record UserUpdateRequest(
         @ApiModelProperty("状态")
         String status,
         @ApiModelProperty("新密码")
-        String password
+        String password,
+        @ApiModelProperty("最大并发请求数，0表示使用全局默认")
+        @Min(value = 0, message = "最大并发请求数不能小于 0")
+        Integer maxConcurrentRequests,
+        @ApiModelProperty("最大并发流式请求数，0表示使用全局默认")
+        @Min(value = 0, message = "最大并发流式请求数不能小于 0")
+        Integer maxConcurrentStreams
 ) {
 }

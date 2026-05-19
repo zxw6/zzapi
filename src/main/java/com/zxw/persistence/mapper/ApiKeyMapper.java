@@ -24,6 +24,11 @@ public interface ApiKeyMapper extends BaseMapper<ApiKeyEntity> {
     // 累加 API Key 已使用额度
     int incrementUsedQuota(@Param("apiKeyId") Long apiKeyId, @Param("amount") java.math.BigDecimal amount);
 
+    default List<ApiKeyEntity> selectByUserId(Long userId) {
+        return selectList(Wrappers.<ApiKeyEntity>lambdaQuery()
+                .eq(ApiKeyEntity::getUserId, userId));
+    }
+
     default int updateLastUsedAt(Long apiKeyId, LocalDateTime now) {
         // 更新 API Key 最近一次使用时间
         ApiKeyEntity apiKey = new ApiKeyEntity();

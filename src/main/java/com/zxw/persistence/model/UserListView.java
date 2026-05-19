@@ -24,6 +24,8 @@ public class UserListView {
     private String email;
     private String phone;
     private BigDecimal balance;
+    private Integer maxConcurrentRequests;
+    private Integer maxConcurrentStreams;
     private LocalDateTime lastLoginAt;
     private LocalDateTime createdAt;
 }

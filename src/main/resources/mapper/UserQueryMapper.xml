@@ -12,6 +12,8 @@
                u.status,
                u.email,
                u.phone,
+               u.max_concurrent_requests as maxConcurrentRequests,
+               u.max_concurrent_streams as maxConcurrentStreams,
                u.last_login_at as lastLoginAt,
                u.created_at as createdAt,
                coalesce(w.balance, 0) as balance

@@ -31,6 +31,10 @@ public record UserListItemResponse(
         String phone,
         @ApiModelProperty("余额")
         BigDecimal balance,
+        @ApiModelProperty("最大并发请求数，0表示使用全局默认")
+        Integer maxConcurrentRequests,
+        @ApiModelProperty("最大并发流式请求数，0表示使用全局默认")
+        Integer maxConcurrentStreams,
         @ApiModelProperty("最后登录时间")
         LocalDateTime lastLoginAt,
         @ApiModelProperty("创建时间")

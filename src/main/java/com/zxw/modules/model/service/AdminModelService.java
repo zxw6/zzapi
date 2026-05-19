@@ -6,11 +6,13 @@ import com.zxw.common.exception.BusinessException;
 import com.zxw.common.security.AdminContext;
 import com.zxw.common.security.AesCryptoService;
 import com.zxw.modules.access.service.UserModelAccessService;
+import com.zxw.modules.gateway.service.GatewayRouteService;
 import com.zxw.modules.model.dto.ModelBatchImportRequest;
 import com.zxw.modules.model.dto.ModelBatchImportResponse;
 import com.zxw.modules.model.dto.ModelGroupItemResponse;
 import com.zxw.modules.model.dto.ModelCreateRequest;
 import com.zxw.modules.model.dto.ModelListItemResponse;
+import com.zxw.modules.model.dto.ModelRouteRepairResponse;
 import com.zxw.modules.model.dto.ModelUpdateRequest;
 import com.zxw.modules.model.dto.UpstreamModelOptionResponse;
 import com.zxw.persistence.entity.ModelEntity;
@@ -23,6 +25,7 @@ import com.zxw.persistence.mapper.ModelRouteMapper;
 import com.zxw.persistence.model.ExistingRouteModelView;
 import com.zxw.persistence.model.ModelAdminListView;
 import com.zxw.persistence.model.ProviderAccessView;
+import com.zxw.persistence.model.GatewayRouteRow;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
@@ -60,6 +63,7 @@ public class AdminModelService {
     private final ObjectMapper objectMapper;
     private final HttpClient httpClient;
     private final UserModelAccessService userModelAccessService;
+    private final GatewayRouteService gatewayRouteService;
 
     public AdminModelService(ModelMapper modelMapper,
                              ModelRouteMapper modelRouteMapper,
@@ -67,7 +71,8 @@ public class AdminModelService {
                              ModelAdminQueryMapper modelAdminQueryMapper,
                              AesCryptoService aesCryptoService,
                              ObjectMapper objectMapper,
-                             UserModelAccessService userModelAccessService) {
+                             UserModelAccessService userModelAccessService,
+                             GatewayRouteService gatewayRouteService) {
         this.modelMapper = modelMapper;
         this.modelRouteMapper = modelRouteMapper;
         this.modelGroupModelMapper = modelGroupModelMapper;
@@ -75,6 +80,7 @@ public class AdminModelService {
         this.aesCryptoService = aesCryptoService;
         this.objectMapper = objectMapper;
         this.userModelAccessService = userModelAccessService;
+        this.gatewayRouteService = gatewayRouteService;
         this.httpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(20)).build();
     }
 
@@ -136,6 +142,8 @@ public class AdminModelService {
             throw new BusinessException("Model code already exists");
         }
 
+        String canonicalUpstreamModel = resolveCanonicalUpstreamModel(request.providerId(), request.upstreamModel());
+
         // 同时创建模型主记录、主路由以及默认分组绑定
         insertModelWithRoute(
                 request.modelCode(),
@@ -151,8 +159,9 @@ public class AdminModelService {
                 Boolean.TRUE.equals(request.isPublic()),
                 request.groupId(),
                 request.providerId(),
-                request.upstreamModel()
+                canonicalUpstreamModel
         );
+        gatewayRouteService.evictRouteCache();
     }
 
     @Transactional
@@ -161,6 +170,7 @@ public class AdminModelService {
      */
     public void update(Long id, ModelUpdateRequest request) {
         AdminContext.requireAdmin();
+        String canonicalUpstreamModel = resolveCanonicalUpstreamModel(request.providerId(), request.upstreamModel());
         // 先更新模型自身配置
         ModelEntity updateModel = new ModelEntity();
         updateModel.setModelName(trimToLength(request.modelName(), 64));
@@ -178,9 +188,10 @@ public class AdminModelService {
         }
 
         // 再同步路由、分组绑定以及分组价格继承关系
-        replaceModelRoutes(id, request.providerId(), request.upstreamModel());
+        replaceModelRoutes(id, request.providerId(), canonicalUpstreamModel);
         syncModelGroupBinding(id, request.bindingId(), request.groupId());
         userModelAccessService.clearModelGroupBindingPrices(id);
+        gatewayRouteService.evictRouteCache();
     }
 
     @Transactional
@@ -191,6 +202,7 @@ public class AdminModelService {
         AdminContext.requireAdmin();
         // 仅校验渠道可访问，不在这里直接发拉取请求
         loadProviderAccess(request.providerId());
+        Map<String, String> canonicalUpstreamModels = loadCanonicalUpstreamModelMap(request.providerId());
 
         // 去重并过滤空模型名
         Set<String> upstreamModels = new LinkedHashSet<>();
@@ -208,10 +220,16 @@ public class AdminModelService {
 
         // 逐个处理：能复用就复用，不能复用就新建
         for (String upstreamModel : upstreamModels) {
-            ExistingRouteModel existingRouteModel = findExistingRouteModel(request.providerId(), upstreamModel);
+            String canonicalUpstreamModel = findCanonicalUpstreamModel(canonicalUpstreamModels, upstreamModel);
+            if (canonicalUpstreamModel == null) {
+                skippedModels.add(upstreamModel);
+                continue;
+            }
+
+            ExistingRouteModel existingRouteModel = findExistingRouteModel(request.providerId(), canonicalUpstreamModel);
             if (existingRouteModel != null) {
                 if (isModelBoundToGroup(existingRouteModel.modelId(), request.groupId())) {
-                    skippedModels.add(upstreamModel);
+                    skippedModels.add(canonicalUpstreamModel);
                     continue;
                 }
                 userModelAccessService.addModelGroupBinding(existingRouteModel.modelId(), request.groupId());
@@ -219,12 +237,12 @@ public class AdminModelService {
                 continue;
             }
 
-            String modelCode = normalizeModelCode(upstreamModel);
+            String modelCode = normalizeModelCode(canonicalUpstreamModel);
             Long existingModelId = findModelIdByCode(modelCode);
             if (existingModelId != null) {
-                ensurePrimaryRoute(existingModelId, request.providerId(), upstreamModel);
+                ensurePrimaryRoute(existingModelId, request.providerId(), canonicalUpstreamModel);
                 if (isModelBoundToGroup(existingModelId, request.groupId())) {
-                    skippedModels.add(upstreamModel);
+                    skippedModels.add(canonicalUpstreamModel);
                     continue;
                 }
                 userModelAccessService.addModelGroupBinding(existingModelId, request.groupId());
@@ -247,17 +265,52 @@ public class AdminModelService {
                     request.isPublic() == null || request.isPublic(),
                     request.groupId(),
                     request.providerId(),
-                    upstreamModel
+                    canonicalUpstreamModel
             );
             importedModels.add(modelCode);
         }
 
+        gatewayRouteService.evictRouteCache();
         return new ModelBatchImportResponse(
                 importedModels.size(),
                 skippedModels.size(),
                 importedModels,
                 skippedModels
         );
+    }
+
+    @Transactional
+    public ModelRouteRepairResponse repairProviderRoutes(Long providerId) {
+        AdminContext.requireAdmin();
+        loadProviderAccess(providerId);
+
+        Map<String, String> canonicalByLowerCaseId = loadCanonicalUpstreamModelMap(providerId);
+
+        List<String> repairedModels = new ArrayList<>();
+        List<String> skippedModels = new ArrayList<>();
+
+        for (GatewayRouteRow route : modelRouteMapper.selectActiveRoutesByProviderId(providerId)) {
+            String current = trimToLength(route.getUpstreamModel(), 128);
+            if (current == null || current.isBlank()) {
+                skippedModels.add(route.getModelCode() + ":blank");
+                continue;
+            }
+            String canonical = canonicalByLowerCaseId.get(current.toLowerCase(Locale.ROOT));
+            if (canonical == null) {
+                skippedModels.add(route.getModelCode() + ":" + current);
+                continue;
+            }
+            if (canonical.equals(current)) {
+                continue;
+            }
+            int updated = modelRouteMapper.updateUpstreamModel(route.getModelId(), providerId, current, canonical);
+            if (updated > 0) {
+                repairedModels.add(route.getModelCode() + ":" + current + "->" + canonical);
+            }
+        }
+
+        gatewayRouteService.evictRouteCache();
+        return new ModelRouteRepairResponse(repairedModels.size(), skippedModels.size(), repairedModels, skippedModels);
     }
 
     /**
@@ -272,6 +325,7 @@ public class AdminModelService {
         if (updated == 0) {
             throw new BusinessException("Model does not exist");
         }
+        gatewayRouteService.evictRouteCache();
     }
 
     @Transactional
@@ -289,6 +343,7 @@ public class AdminModelService {
         modelRouteMapper.deleteByModelId(id);
         userModelAccessService.deleteModelBindings(id);
         modelMapper.deleteById(id);
+        gatewayRouteService.evictRouteCache();
     }
 
     /**
@@ -469,6 +524,41 @@ public class AdminModelService {
                 provider.getTimeoutMs(),
                 aesCryptoService.decrypt(provider.getTokenValueEncrypted())
         );
+    }
+
+    private String resolveCanonicalUpstreamModel(Long providerId, String upstreamModel) {
+        return resolveCanonicalUpstreamModel(loadCanonicalUpstreamModelMap(providerId), upstreamModel);
+    }
+
+    private String resolveCanonicalUpstreamModel(Map<String, String> canonicalByLowerCaseId, String upstreamModel) {
+        String normalizedUpstreamModel = trimToLength(upstreamModel, 128);
+        if (canonicalByLowerCaseId == null || normalizedUpstreamModel == null || normalizedUpstreamModel.isBlank()) {
+            throw new BusinessException("Upstream model cannot be blank");
+        }
+        String canonical = canonicalByLowerCaseId.get(normalizedUpstreamModel.toLowerCase(Locale.ROOT));
+        if (canonical != null) {
+            return canonical;
+        }
+        throw new BusinessException(400, "Upstream model not found in provider model list: " + normalizedUpstreamModel);
+    }
+
+    private String findCanonicalUpstreamModel(Map<String, String> canonicalByLowerCaseId, String upstreamModel) {
+        if (canonicalByLowerCaseId == null) {
+            return null;
+        }
+        String normalizedUpstreamModel = trimToLength(upstreamModel, 128);
+        if (normalizedUpstreamModel == null || normalizedUpstreamModel.isBlank()) {
+            return null;
+        }
+        return canonicalByLowerCaseId.get(normalizedUpstreamModel.toLowerCase(Locale.ROOT));
+    }
+
+    private Map<String, String> loadCanonicalUpstreamModelMap(Long providerId) {
+        Map<String, String> canonicalByLowerCaseId = new LinkedHashMap<>();
+        for (UpstreamModelOptionResponse option : fetchUpstreamModels(providerId)) {
+            canonicalByLowerCaseId.put(option.id().toLowerCase(Locale.ROOT), option.id());
+        }
+        return canonicalByLowerCaseId;
     }
 
     /**

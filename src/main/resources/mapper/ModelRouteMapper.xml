@@ -25,10 +25,45 @@
         from models m
         join model_routes r on r.model_id = m.id and r.status = 'ACTIVE'
         join providers p on p.id = r.provider_id and p.deleted = 0 and p.status = 'ACTIVE'
-        join provider_tokens t on t.provider_id = p.id and t.deleted = 0 and t.status = 'ACTIVE'
+        join provider_tokens t on t.provider_id = p.id
+            and t.deleted = 0
+            and t.status = 'ACTIVE'
+            and (r.provider_token_id is null or r.provider_token_id = t.id)
         where m.model_code = #{modelCode} and m.deleted = 0 and m.status = 'ACTIVE'
-        order by r.priority_no asc, t.weight_no desc, t.id asc
+        order by r.priority_no asc, case when r.provider_token_id = t.id then 0 else 1 end, t.weight_no desc, t.id asc
         limit 1
+    </select>
+
+    <select id="selectActiveRoutesByProviderId" resultType="com.zxw.persistence.model.GatewayRouteRow">
+        select m.id as modelId,
+               m.model_code as modelCode,
+               m.model_name as modelName,
+               m.billing_type as billingType,
+               m.prompt_price as promptPrice,
+               m.cached_prompt_price as cachedPromptPrice,
+               m.completion_price as completionPrice,
+               m.request_price as requestPrice,
+               m.multiplier,
+               p.id as providerId,
+               p.provider_name as providerName,
+               p.base_url as baseUrl,
+               p.provider_type as providerType,
+               p.timeout_ms as timeoutMs,
+               r.upstream_model as upstreamModel,
+               t.id as providerTokenId,
+               t.token_value_encrypted as tokenValueEncrypted
+        from model_routes r
+        join models m on m.id = r.model_id and m.deleted = 0
+        join providers p on p.id = r.provider_id and p.deleted = 0 and p.status = 'ACTIVE'
+        join provider_tokens t on t.provider_id = p.id
+            and t.deleted = 0
+            and t.status = 'ACTIVE'
+            and (r.provider_token_id is null or r.provider_token_id = t.id)
+        where r.provider_id = #{providerId}
+          and r.status = 'ACTIVE'
+          and r.route_type = 'PRIMARY'
+          and m.status = 'ACTIVE'
+        order by r.priority_no asc, t.weight_no desc, t.id asc
     </select>
 
 </mapper>

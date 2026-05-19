@@ -1,6 +1,7 @@
 package com.zxw.persistence.mapper;
 
 import com.zxw.persistence.model.ModelPackagePurchaseRecordView;
+import com.zxw.persistence.model.PackageUsageSummaryView;
 import com.zxw.persistence.model.UserModelAccessGroupView;
 import com.zxw.persistence.model.UserModelAccessPackageView;
 import com.zxw.persistence.model.WalletTransactionView;
@@ -79,6 +80,11 @@ public interface UserModelAccessQueryMapper {
      * 统计套餐累计总消费金额。
      */
     BigDecimal sumTotalUsageByPackage(@Param("packageId") Long packageId);
+
+    PackageUsageSummaryView selectPackageUsageSummary(@Param("packageId") Long packageId,
+                                                       @Param("today") LocalDate today,
+                                                       @Param("weekStart") LocalDate weekStart,
+                                                       @Param("monthStart") LocalDate monthStart);
 
     /**
      * 统计某个模型是否属于指定分组。

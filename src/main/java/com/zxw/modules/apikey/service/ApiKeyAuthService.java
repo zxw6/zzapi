@@ -16,13 +16,16 @@ public class ApiKeyAuthService {
     private final ApiKeyMapper apiKeyMapper;
     private final PasswordService passwordService;
     private final UserModelAccessService userModelAccessService;
+    private final ApiKeyAuthCacheService apiKeyAuthCacheService;
 
     public ApiKeyAuthService(ApiKeyMapper apiKeyMapper,
                              PasswordService passwordService,
-                             UserModelAccessService userModelAccessService) {
+                             UserModelAccessService userModelAccessService,
+                             ApiKeyAuthCacheService apiKeyAuthCacheService) {
         this.apiKeyMapper = apiKeyMapper;
         this.passwordService = passwordService;
         this.userModelAccessService = userModelAccessService;
+        this.apiKeyAuthCacheService = apiKeyAuthCacheService;
     }
 
     public AuthenticatedApiKey authenticate(String bearerToken) {
@@ -33,27 +36,33 @@ public class ApiKeyAuthService {
         }
 
         String accessKey = bearerToken.substring(0, AdminApiKeyService.ACCESS_KEY_PREFIX_LENGTH);
-        List<AuthenticatedApiKey> items = apiKeyMapper.selectAuthenticatedByAccessKey(accessKey).stream()
-                .map(item -> new AuthenticatedApiKey(
-                        item.getId(),
-                        item.getUserId(),
-                        item.getUsername(),
-                        item.getRoleCode(),
-                        item.getSecretHash(),
-                        item.getStatus(),
-                        item.getUserPackageId(),
-                        item.getPackageName(),
-                        item.getPackageType(),
-                        item.getModelGroupId(),
-                        item.getGroupCode(),
-                        item.getGroupName(),
-                        item.getTotalQuota(),
-                        item.getUsedQuota(),
-                        item.getExpiresAt(),
-                        item.getBalance(),
-                        item.getPackageRestrictionEnabled() != null && item.getPackageRestrictionEnabled() == 1
-                ))
-                .toList();
+        List<AuthenticatedApiKey> items = apiKeyAuthCacheService.get(accessKey);
+        if (items == null) {
+            items = apiKeyMapper.selectAuthenticatedByAccessKey(accessKey).stream()
+                    .map(item -> new AuthenticatedApiKey(
+                            item.getId(),
+                            item.getUserId(),
+                            item.getUsername(),
+                            item.getRoleCode(),
+                            item.getSecretHash(),
+                            item.getStatus(),
+                            item.getUserPackageId(),
+                            item.getPackageName(),
+                            item.getPackageType(),
+                            item.getModelGroupId(),
+                            item.getGroupCode(),
+                            item.getGroupName(),
+                            item.getTotalQuota(),
+                            item.getUsedQuota(),
+                            item.getExpiresAt(),
+                            item.getBalance(),
+                            item.getPackageRestrictionEnabled() != null && item.getPackageRestrictionEnabled() == 1,
+                            item.getMaxConcurrentRequests(),
+                            item.getMaxConcurrentStreams()
+                    ))
+                    .toList();
+            apiKeyAuthCacheService.put(accessKey, items);
+        }
 
         for (AuthenticatedApiKey item : items) {
             if (passwordService.matches(bearerToken, item.secretHash())) {
@@ -70,6 +79,9 @@ public class ApiKeyAuthService {
     }
 
     public void markUsed(Long apiKeyId) {
+        if (!apiKeyAuthCacheService.shouldUpdateLastUsedAt(apiKeyId)) {
+            return;
+        }
         apiKeyMapper.updateLastUsedAt(apiKeyId, LocalDateTime.now());
     }
 
@@ -90,7 +102,9 @@ public class ApiKeyAuthService {
             BigDecimal usedQuota,
             LocalDateTime expiresAt,
             BigDecimal balance,
-            boolean packageRestrictionEnabled
+            boolean packageRestrictionEnabled,
+            Integer maxConcurrentRequests,
+            Integer maxConcurrentStreams
     ) {
     }
 }

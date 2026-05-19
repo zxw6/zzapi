@@ -3,6 +3,7 @@ package com.zxw.modules.user.dto;
 import io.swagger.annotations.ApiModel;
 import io.swagger.annotations.ApiModelProperty;
 import jakarta.validation.constraints.DecimalMin;
+import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 
 import java.math.BigDecimal;
@@ -32,6 +33,12 @@ public record UserCreateRequest(
         String roleCode,
         @ApiModelProperty("初始余额")
         @DecimalMin(value = "0.00", message = "初始余额不能小于 0")
-        BigDecimal initialBalance
+        BigDecimal initialBalance,
+        @ApiModelProperty("最大并发请求数，0表示使用全局默认")
+        @Min(value = 0, message = "最大并发请求数不能小于 0")
+        Integer maxConcurrentRequests,
+        @ApiModelProperty("最大并发流式请求数，0表示使用全局默认")
+        @Min(value = 0, message = "最大并发流式请求数不能小于 0")
+        Integer maxConcurrentStreams
 ) {
 }

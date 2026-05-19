@@ -29,10 +29,12 @@ import com.zxw.persistence.mapper.UserModelAccessQueryMapper;
 import com.zxw.persistence.mapper.UserModelPackageMapper;
 import com.zxw.persistence.mapper.WalletMapper;
 import com.zxw.persistence.model.ModelPackagePurchaseRecordView;
+import com.zxw.persistence.model.PackageUsageSummaryView;
 import com.zxw.persistence.model.UserModelAccessGroupView;
 import com.zxw.persistence.model.UserModelAccessPackageView;
 import com.zxw.persistence.model.WalletTransactionView;
 import org.springframework.dao.DataAccessException;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -42,9 +44,11 @@ import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 @Service
 public class UserModelAccessService {
@@ -54,6 +58,11 @@ public class UserModelAccessService {
     public static final BigDecimal BALANCE_PACKAGE_PURCHASE_MIN_BALANCE = new BigDecimal("1.00");
     public static final BigDecimal BALANCE_PACKAGE_CALL_MIN_BALANCE = new BigDecimal("0.50");
 
+    private static final String EXPIRE_PACKAGES_THROTTLE_KEY = "gateway:packages:expire:lock";
+    private static final Duration EXPIRE_PACKAGES_INTERVAL = Duration.ofSeconds(60);
+    private static final long GATEWAY_ACCESS_CACHE_TTL_MS = 30_000L;
+    private static final int USAGE_AMOUNT_SCALE = 6;
+    private static final BigDecimal USAGE_AMOUNT_MULTIPLIER = new BigDecimal("1000000");
     private static final BigDecimal DEFAULT_PACKAGE_PRICE = new BigDecimal("70.0000");
     private static final int DEFAULT_PACKAGE_DAYS = 30;
     private static final BigDecimal DEFAULT_DAILY_QUOTA = new BigDecimal("60.0000");
@@ -75,6 +84,10 @@ public class UserModelAccessService {
     private final TransactionMapper transactionMapper;
     private final ApiKeyMapper apiKeyMapper;
     private final JdbcTemplate jdbcTemplate;
+    private final StringRedisTemplate stringRedisTemplate;
+    private final GatewayRouteService gatewayRouteService;
+    private final ConcurrentHashMap<String, CacheEntry<UserPackageRow>> gatewayPackageCache = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, CacheEntry<Boolean>> modelInGroupCache = new ConcurrentHashMap<>();
     private final Object defaultInitializationLock = new Object();
     private volatile boolean defaultsInitialized;
 
@@ -86,7 +99,9 @@ public class UserModelAccessService {
                                   WalletMapper walletMapper,
                                   TransactionMapper transactionMapper,
                                   ApiKeyMapper apiKeyMapper,
-                                  JdbcTemplate jdbcTemplate) {
+                                  JdbcTemplate jdbcTemplate,
+                                  StringRedisTemplate stringRedisTemplate,
+                                  GatewayRouteService gatewayRouteService) {
         this.accessQueryMapper = accessQueryMapper;
         this.userModelPackageMapper = userModelPackageMapper;
         this.modelGroupMapper = modelGroupMapper;
@@ -96,6 +111,8 @@ public class UserModelAccessService {
         this.transactionMapper = transactionMapper;
         this.apiKeyMapper = apiKeyMapper;
         this.jdbcTemplate = jdbcTemplate;
+        this.stringRedisTemplate = stringRedisTemplate;
+        this.gatewayRouteService = gatewayRouteService;
     }
 
     @Transactional
@@ -242,6 +259,7 @@ public class UserModelAccessService {
         packageEntity.setExpiresAt(expiresAt);
         packageEntity.setStatus("ACTIVE");
         userModelPackageMapper.insert(packageEntity);
+        clearGatewayAccessCache();
 
         if (PACKAGE_TYPE_BALANCE.equals(packageType)) {
             return buildSummary(userId);
@@ -287,6 +305,7 @@ public class UserModelAccessService {
         if (updated == 0) {
             throw new BusinessException(400, "套餐分组删除失败");
         }
+        clearGatewayAccessCache();
     }
 
     @Transactional
@@ -319,6 +338,7 @@ public class UserModelAccessService {
             apiKeyUpdate.eq(ApiKeyEntity::getUserId, currentUser.userId());
         }
         apiKeyMapper.update(updateApiKey, apiKeyUpdate);
+        clearGatewayAccessCache();
     }
 
     public void validateApiKeyCreationAccess(Long userId, Long modelGroupId) {
@@ -366,7 +386,8 @@ public class UserModelAccessService {
         }
 
         if (PACKAGE_TYPE_BALANCE.equals(normalizePackageType(targetPackage.packageType()))) {
-            BigDecimal currentBalance = auth.balance() == null ? BigDecimal.ZERO : auth.balance();
+            BigDecimal currentBalance = walletMapper.selectBalanceByUserId(auth.userId());
+            currentBalance = currentBalance == null ? BigDecimal.ZERO : currentBalance;
             if (currentBalance.compareTo(BALANCE_PACKAGE_CALL_MIN_BALANCE) < 0) {
                 throw new BusinessException(403, "当前余额不足，请先充值");
             }
@@ -374,14 +395,31 @@ public class UserModelAccessService {
         }
 
         LocalDate today = LocalDate.now();
-        BigDecimal usedToday = calculatePackageUsageAmount(targetPackage.id(), today, today);
-        BigDecimal usedThisWeek = calculatePackageUsageAmount(targetPackage.id(), today.minusDays(6), today);
-        BigDecimal usedThisMonth = calculatePackageUsageAmount(targetPackage.id(), today.withDayOfMonth(1), today);
-        validateQuotaLimits(targetPackage.groupName(), targetPackage.dailyQuota(), usedToday,
-                targetPackage.weeklyQuota(), usedThisWeek,
-                targetPackage.monthlyQuota(), usedThisMonth,
+        PackageUsageSnapshot usage = resolveGatewayPackageUsage(targetPackage.id(), today);
+        validateQuotaLimits(targetPackage.groupName(), targetPackage.dailyQuota(),
+                usage.dailyUsed(),
+                targetPackage.weeklyQuota(), usage.weeklyUsed(),
+                targetPackage.monthlyQuota(), usage.monthlyUsed(),
                 resolveTotalQuota(targetPackage.dailyQuota(), targetPackage.monthlyQuota(), targetPackage.packageDays()),
-                calculatePackageTotalUsageAmount(targetPackage.id()));
+                usage.totalUsed());
+    }
+
+    public void incrementGatewayPackageUsage(Long packageId, LocalDate requestDate, BigDecimal amount) {
+        if (packageId == null || requestDate == null || amount == null || amount.compareTo(BigDecimal.ZERO) <= 0) {
+            return;
+        }
+        long delta = toUsageUnits(amount);
+        if (delta <= 0) {
+            return;
+        }
+        try {
+            incrementUsageKey(gatewayUsageDailyKey(packageId, requestDate), delta, Duration.ofDays(2));
+            incrementUsageKey(gatewayUsageWeeklyKey(packageId, requestDate), delta, Duration.ofDays(2));
+            incrementUsageKey(gatewayUsageMonthlyKey(packageId, requestDate), delta, Duration.ofDays(40));
+            incrementUsageKey(gatewayUsageTotalKey(packageId), delta, Duration.ofDays(400));
+        } catch (Exception ignored) {
+            // Redis 额度计数只是快速路径，失败时仍由数据库日志作为兜底来源。
+        }
     }
 
     public List<ModelPackagePurchaseRecordResponse> listPurchaseRecords() {
@@ -486,6 +524,8 @@ public class UserModelAccessService {
                 requestPrice,
                 multiplier
         );
+        gatewayRouteService.evictRouteCache();
+        clearGatewayAccessCache();
     }
 
     public void clearModelGroupBindingPrices(Long modelId) {
@@ -493,6 +533,8 @@ public class UserModelAccessService {
             return;
         }
         accessQueryMapper.clearBindingPricingByModelId(modelId);
+        gatewayRouteService.evictRouteCache();
+        clearGatewayAccessCache();
     }
 
     public void deleteModelBindings(Long modelId) {
@@ -501,6 +543,8 @@ public class UserModelAccessService {
         }
         modelGroupModelMapper.delete(Wrappers.<ModelGroupModelEntity>lambdaQuery()
                 .eq(ModelGroupModelEntity::getModelId, modelId));
+        gatewayRouteService.evictRouteCache();
+        clearGatewayAccessCache();
     }
 
     private ModelAccessSummaryResponse buildSummary(Long userId) {
@@ -646,6 +690,102 @@ public class UserModelAccessService {
         return numberOrZero(accessQueryMapper.sumTotalUsageByPackage(packageId));
     }
 
+    private PackageUsageSnapshot resolveGatewayPackageUsage(Long packageId, LocalDate today) {
+        if (packageId == null || today == null) {
+            return PackageUsageSnapshot.ZERO;
+        }
+        try {
+            String daily = stringRedisTemplate.opsForValue().get(gatewayUsageDailyKey(packageId, today));
+            String weekly = stringRedisTemplate.opsForValue().get(gatewayUsageWeeklyKey(packageId, today));
+            String monthly = stringRedisTemplate.opsForValue().get(gatewayUsageMonthlyKey(packageId, today));
+            String total = stringRedisTemplate.opsForValue().get(gatewayUsageTotalKey(packageId));
+            if (daily != null && weekly != null && monthly != null && total != null) {
+                return new PackageUsageSnapshot(
+                        fromUsageUnits(daily),
+                        fromUsageUnits(weekly),
+                        fromUsageUnits(monthly),
+                        fromUsageUnits(total)
+                );
+            }
+        } catch (Exception ignored) {
+            return resolveGatewayPackageUsageFromDb(packageId, today);
+        }
+        PackageUsageSnapshot snapshot = resolveGatewayPackageUsageFromDb(packageId, today);
+        seedGatewayPackageUsage(packageId, today, snapshot);
+        return snapshot;
+    }
+
+    private PackageUsageSnapshot resolveGatewayPackageUsageFromDb(Long packageId, LocalDate today) {
+        PackageUsageSummaryView usage = accessQueryMapper.selectPackageUsageSummary(
+                packageId,
+                today,
+                today.minusDays(6),
+                today.withDayOfMonth(1)
+        );
+        return new PackageUsageSnapshot(
+                numberOrZero(usage == null ? null : usage.getDailyUsed()),
+                numberOrZero(usage == null ? null : usage.getWeeklyUsed()),
+                numberOrZero(usage == null ? null : usage.getMonthlyUsed()),
+                numberOrZero(usage == null ? null : usage.getTotalUsed())
+        );
+    }
+
+    private void seedGatewayPackageUsage(Long packageId, LocalDate today, PackageUsageSnapshot snapshot) {
+        try {
+            setUsageKey(gatewayUsageDailyKey(packageId, today), snapshot.dailyUsed(), Duration.ofDays(2));
+            setUsageKey(gatewayUsageWeeklyKey(packageId, today), snapshot.weeklyUsed(), Duration.ofDays(2));
+            setUsageKey(gatewayUsageMonthlyKey(packageId, today), snapshot.monthlyUsed(), Duration.ofDays(40));
+            setUsageKey(gatewayUsageTotalKey(packageId), snapshot.totalUsed(), Duration.ofDays(400));
+        } catch (Exception ignored) {
+            // Redis 涓嶅彲鐢ㄦ椂浣跨敤 DB 缁撴灉瀹屾垚鏈鏍￠獙銆
+        }
+    }
+
+    private void setUsageKey(String key, BigDecimal amount, Duration ttl) {
+        stringRedisTemplate.opsForValue().set(key, String.valueOf(toUsageUnits(amount)), ttl);
+    }
+
+    private void incrementUsageKey(String key, long delta, Duration ttl) {
+        stringRedisTemplate.opsForValue().increment(key, delta);
+        stringRedisTemplate.expire(key, ttl);
+    }
+
+    private long toUsageUnits(BigDecimal amount) {
+        if (amount == null) {
+            return 0L;
+        }
+        return amount.setScale(USAGE_AMOUNT_SCALE, RoundingMode.HALF_UP)
+                .multiply(USAGE_AMOUNT_MULTIPLIER)
+                .longValue();
+    }
+
+    private BigDecimal fromUsageUnits(String value) {
+        if (value == null || value.isBlank()) {
+            return BigDecimal.ZERO;
+        }
+        try {
+            return BigDecimal.valueOf(Long.parseLong(value), USAGE_AMOUNT_SCALE);
+        } catch (Exception ignored) {
+            return BigDecimal.ZERO;
+        }
+    }
+
+    private String gatewayUsageDailyKey(Long packageId, LocalDate date) {
+        return "gateway:usage:package:" + packageId + ":day:" + date;
+    }
+
+    private String gatewayUsageWeeklyKey(Long packageId, LocalDate date) {
+        return "gateway:usage:package:" + packageId + ":week7:" + date;
+    }
+
+    private String gatewayUsageMonthlyKey(Long packageId, LocalDate date) {
+        return "gateway:usage:package:" + packageId + ":month:" + date.getYear() + "-" + date.getMonthValue();
+    }
+
+    private String gatewayUsageTotalKey(Long packageId) {
+        return "gateway:usage:package:" + packageId + ":total";
+    }
+
     private BigDecimal resolveTotalQuota(BigDecimal dailyQuota, BigDecimal monthlyQuota, Integer packageDays) {
         if (monthlyQuota != null && monthlyQuota.compareTo(BigDecimal.ZERO) > 0) {
             return monthlyQuota;
@@ -697,6 +837,18 @@ public class UserModelAccessService {
         if (auth == null) {
             return null;
         }
+        String cacheKey = gatewayPackageCacheKey(auth, route);
+        CacheEntry<UserPackageRow> cached = gatewayPackageCache.get(cacheKey);
+        if (cached != null && !cached.expired()) {
+            return cached.value();
+        }
+        UserPackageRow resolved = resolveGatewayPackageUncached(auth, route);
+        gatewayPackageCache.put(cacheKey, new CacheEntry<>(resolved, System.currentTimeMillis() + GATEWAY_ACCESS_CACHE_TTL_MS));
+        return resolved;
+    }
+
+    private UserPackageRow resolveGatewayPackageUncached(ApiKeyAuthService.AuthenticatedApiKey auth,
+                                                         GatewayRouteService.RouteDefinition route) {
         Long routeModelId = route == null ? null : route.modelId();
         if (auth.userPackageId() != null) {
             UserPackageRow boundPackage = findPackageById(auth.userId(), auth.userPackageId());
@@ -718,8 +870,26 @@ public class UserModelAccessService {
         if (groupId == null || modelId == null) {
             return false;
         }
+        String cacheKey = groupId + ":" + modelId;
+        CacheEntry<Boolean> cached = modelInGroupCache.get(cacheKey);
+        if (cached != null && !cached.expired()) {
+            return Boolean.TRUE.equals(cached.value());
+        }
         Integer count = accessQueryMapper.countModelInGroup(groupId, modelId);
-        return count != null && count > 0;
+        boolean result = count != null && count > 0;
+        modelInGroupCache.put(cacheKey, new CacheEntry<>(result, System.currentTimeMillis() + GATEWAY_ACCESS_CACHE_TTL_MS));
+        return result;
+    }
+
+    private String gatewayPackageCacheKey(ApiKeyAuthService.AuthenticatedApiKey auth,
+                                          GatewayRouteService.RouteDefinition route) {
+        return auth.userId() + ":" + auth.id() + ":" + auth.userPackageId() + ":"
+                + auth.modelGroupId() + ":" + (route == null ? null : route.modelId());
+    }
+
+    private void clearGatewayAccessCache() {
+        gatewayPackageCache.clear();
+        modelInGroupCache.clear();
     }
 
     private WalletRow getWallet(Long userId) {
@@ -790,6 +960,7 @@ public class UserModelAccessService {
         if (updated == 0) {
             throw new BusinessException(400, "套餐修改失败");
         }
+        clearGatewayAccessCache();
         return buildSummary(AdminContext.require().userId());
     }
 
@@ -828,6 +999,10 @@ public class UserModelAccessService {
     }
 
     private void ensureModelGroupPricingSchema() {
+        ensureColumn("users", "max_concurrent_requests",
+                "ALTER TABLE users ADD COLUMN max_concurrent_requests INT NULL AFTER package_restriction_enabled");
+        ensureColumn("users", "max_concurrent_streams",
+                "ALTER TABLE users ADD COLUMN max_concurrent_streams INT NULL AFTER max_concurrent_requests");
         ensureColumn("models", "cached_prompt_price",
                 "ALTER TABLE models ADD COLUMN cached_prompt_price DECIMAL(18, 6) NOT NULL DEFAULT 0.000000 AFTER prompt_price");
         ensureColumn("model_groups", "package_type",
@@ -876,6 +1051,15 @@ public class UserModelAccessService {
     }
 
     private void expirePackages() {
+        try {
+            Boolean acquired = stringRedisTemplate.opsForValue()
+                    .setIfAbsent(EXPIRE_PACKAGES_THROTTLE_KEY, "1", EXPIRE_PACKAGES_INTERVAL);
+            if (!Boolean.TRUE.equals(acquired)) {
+                return;
+            }
+        } catch (Exception ignored) {
+            // Redis 涓嶅彲鐢ㄦ椂淇濇寔鍘熸湁 DB 鍏滃簳琛屼负
+        }
         UserModelPackageEntity updateEntity = new UserModelPackageEntity();
         updateEntity.setStatus("EXPIRED");
         updateEntity.setUpdatedAt(LocalDateTime.now());
@@ -1020,5 +1204,25 @@ public class UserModelAccessService {
         private boolean active() {
             return "ACTIVE".equalsIgnoreCase(status) && expiresAt != null && expiresAt.isAfter(LocalDateTime.now());
         }
+    }
+
+    private record CacheEntry<T>(T value, long expiresAtMs) {
+        boolean expired() {
+            return System.currentTimeMillis() >= expiresAtMs;
+        }
+    }
+
+    private record PackageUsageSnapshot(
+            BigDecimal dailyUsed,
+            BigDecimal weeklyUsed,
+            BigDecimal monthlyUsed,
+            BigDecimal totalUsed
+    ) {
+        private static final PackageUsageSnapshot ZERO = new PackageUsageSnapshot(
+                BigDecimal.ZERO,
+                BigDecimal.ZERO,
+                BigDecimal.ZERO,
+                BigDecimal.ZERO
+        );
     }
 }

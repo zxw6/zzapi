@@ -13,6 +13,7 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
 import java.time.Instant;
+import java.util.Locale;
 import java.util.UUID;
 
 @RestControllerAdvice
@@ -21,6 +22,8 @@ import java.util.UUID;
  * 负责把业务异常、参数校验异常和系统异常统一转换成标准响应。
  */
 public class GlobalExceptionHandler {
+
+    private static final String UPSTREAM_NETWORK_UNSTABLE_MESSAGE = "网络不稳定或上游响应超时，请稍后重试。";
 
     private final ObjectMapper objectMapper;
 
@@ -77,11 +80,12 @@ public class GlobalExceptionHandler {
      */
     private ResponseEntity<?> buildErrorResponse(int status, String message, HttpServletRequest request) {
         // 对 SSE 请求和普通 JSON 请求分别返回不同格式的错误体
-        ApiResponse<Void> payload = ApiResponse.fail(message);
+        String clientMessage = toClientErrorMessage(status, message);
+        ApiResponse<Void> payload = ApiResponse.fail(clientMessage);
         if (acceptsEventStream(request)) {
             return ResponseEntity.status(status)
                     .contentType(MediaType.TEXT_EVENT_STREAM)
-                    .body(buildEventStreamErrorBody(status, message));
+                    .body(buildEventStreamErrorBody(status, clientMessage));
         }
         return ResponseEntity.status(status)
                 .contentType(MediaType.APPLICATION_JSON)
@@ -91,6 +95,39 @@ public class GlobalExceptionHandler {
     /**
      * 判断当前请求是否期望 SSE 响应。
      */
+    private String toClientErrorMessage(int status, String message) {
+        if (isUpstreamNetworkError(status, message)) {
+            return UPSTREAM_NETWORK_UNSTABLE_MESSAGE;
+        }
+        return message == null || message.isBlank() ? "System error" : message;
+    }
+
+    private boolean isUpstreamNetworkError(int status, String message) {
+        if (status == 502 || status == 504) {
+            return true;
+        }
+        if (message == null || message.isBlank()) {
+            return false;
+        }
+        String lower = message.toLowerCase(Locale.ROOT);
+        return lower.contains("upstream timeout")
+                || lower.contains("upstream stream failed")
+                || lower.contains("upstream request failed")
+                || lower.contains("stream closed")
+                || lower.contains("response.completed")
+                || lower.contains("interruptedioexception")
+                || lower.contains("sockettimeoutexception")
+                || lower.contains("timeout")
+                || lower.contains("timed out")
+                || lower.contains("canceled")
+                || lower.contains("cancelled")
+                || lower.contains("connection reset")
+                || lower.contains("connection refused")
+                || lower.contains("connection aborted")
+                || lower.contains("broken pipe")
+                || lower.contains("network");
+    }
+
     private boolean acceptsEventStream(HttpServletRequest request) {
         // 根据 Accept 头判断是否是事件流请求
         String accept = request == null ? null : request.getHeader("Accept");

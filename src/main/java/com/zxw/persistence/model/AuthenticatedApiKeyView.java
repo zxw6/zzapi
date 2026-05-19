@@ -25,4 +25,6 @@ public class AuthenticatedApiKeyView {
     private LocalDateTime expiresAt;
     private BigDecimal balance;
     private Integer packageRestrictionEnabled;
+    private Integer maxConcurrentRequests;
+    private Integer maxConcurrentStreams;
 }
