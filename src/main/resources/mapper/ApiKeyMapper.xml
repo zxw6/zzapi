@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.zxw.persistence.mapper.ApiKeyMapper">
+
+    <select id="selectAuthenticatedByAccessKey" resultType="com.zxw.persistence.model.AuthenticatedApiKeyView">
+        select k.id,
+               k.user_id as userId,
+               u.username,
+               u.role_code as roleCode,
+               k.secret_hash as secretHash,
+               k.status,
+               k.total_quota as totalQuota,
+               k.used_quota as usedQuota,
+               k.expires_at as expiresAt,
+               k.user_package_id as userPackageId,
+               p.package_name as packageName,
+               g.package_type as packageType,
+               k.model_group_id as modelGroupId,
+               g.group_code as groupCode,
+               g.group_name as groupName,
+               coalesce(w.balance, 0) as balance,
+               u.package_restriction_enabled as packageRestrictionEnabled,
+               u.max_concurrent_requests as maxConcurrentRequests,
+               u.max_concurrent_streams as maxConcurrentStreams
+        from api_keys k
+        join users u on u.id = k.user_id and u.deleted = 0 and u.status = 'ACTIVE'
+        left join wallets w on w.user_id = u.id
+        left join user_model_packages p on p.id = k.user_package_id
+        left join model_groups g on g.id = k.model_group_id
+        where k.access_key = #{accessKey} and k.deleted = 0
+    </select>
+
+    <update id="incrementUsedQuota">
+        update api_keys
+        set used_quota = used_quota + #{amount},
+            updated_at = now()
+        where id = #{apiKeyId}
+    </update>
+
+</mapper>

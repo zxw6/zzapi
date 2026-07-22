@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.zxw.persistence.mapper.UserCleanupMapper">
+
+    <delete id="deleteAgentToolLogsByUserId">
+        delete from agent_tool_logs
+        where session_id in (select id from agent_sessions where user_id = #{userId})
+    </delete>
+
+    <delete id="deleteAgentMessagesByUserId">
+        delete from agent_messages
+        where session_id in (select id from agent_sessions where user_id = #{userId})
+    </delete>
+
+    <delete id="deleteAgentSessionsByUserId">
+        delete from agent_sessions
+        where user_id = #{userId}
+    </delete>
+
+    <delete id="deleteRequestLogsByUserId">
+        delete from request_logs
+        where user_id = #{userId}
+    </delete>
+
+    <delete id="deleteUsageDailyByUserId">
+        delete from usage_daily
+        where user_id = #{userId}
+    </delete>
+
+    <delete id="deletePackageUsageDailyByUserId">
+        delete from package_usage_daily
+        where user_id = #{userId}
+    </delete>
+
+    <delete id="deleteUserModelPackagesByUserId">
+        delete from user_model_packages
+        where user_id = #{userId}
+    </delete>
+
+</mapper>

@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.zxw.persistence.mapper.ModelGroupModelMapper">
+
+    <select id="selectGroupPricing" resultType="com.zxw.persistence.model.ModelGroupPricingView">
+        select coalesce(mgm.billing_type, m.billing_type) as billingType,
+               coalesce(mgm.prompt_price, m.prompt_price) as promptPrice,
+               coalesce(mgm.cached_prompt_price, m.cached_prompt_price) as cachedPromptPrice,
+               coalesce(mgm.completion_price, m.completion_price) as completionPrice,
+               coalesce(mgm.request_price, m.request_price) as requestPrice,
+               coalesce(mgm.multiplier, m.multiplier) as multiplier
+        from model_group_models mgm
+        join models m on m.id = mgm.model_id
+        where mgm.group_id = #{groupId} and mgm.model_id = #{modelId}
+        limit 1
+    </select>
+
+    <insert id="insertIgnoreBinding">
+        insert ignore into model_group_models (group_id, model_id)
+        values (#{groupId}, #{modelId})
+    </insert>
+
+</mapper>

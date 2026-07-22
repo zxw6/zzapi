@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.zxw.persistence.mapper.WalletMapper">
+
+    <select id="selectBalanceByUserId" resultType="java.math.BigDecimal">
+        select coalesce(balance, 0)
+        from wallets
+        where user_id = #{userId}
+    </select>
+
+    <select id="selectByUserId" resultType="com.zxw.persistence.entity.WalletEntity">
+        select id,
+               user_id as userId,
+               balance,
+               frozen_balance as frozenBalance,
+               total_recharge as totalRecharge,
+               total_consume as totalConsume,
+               created_at as createdAt,
+               updated_at as updatedAt
+        from wallets
+        where user_id = #{userId}
+        limit 1
+    </select>
+
+    <insert id="insertDefaultWallet">
+        insert into wallets (user_id, balance, frozen_balance, total_recharge, total_consume)
+        values (#{userId}, 0, 0, 0, 0)
+        on duplicate key update user_id = values(user_id)
+    </insert>
+
+    <update id="debitBalance">
+        update wallets
+        set balance = balance - #{amount},
+            total_consume = total_consume + #{amount},
+            updated_at = now()
+        where user_id = #{userId}
+          and balance >= #{amount}
+    </update>
+
+</mapper>

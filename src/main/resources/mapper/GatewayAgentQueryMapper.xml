@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.zxw.persistence.mapper.GatewayAgentQueryMapper">
+
+    <select id="selectSessionByResponse" resultType="com.zxw.persistence.entity.AgentSessionEntity">
+        select s.id,
+               s.session_key as sessionKey,
+               s.user_id as userId,
+               s.api_key_id as apiKeyId,
+               s.model_code as modelCode,
+               s.workspace_root as workspaceRoot,
+               s.summary_text as summaryText,
+               s.summary_message_id as summaryMessageId,
+               s.last_response_id as lastResponseId,
+               s.created_at as createdAt,
+               s.updated_at as updatedAt
+        from agent_sessions s
+        join agent_messages m on m.session_id = s.id
+        where m.response_id = #{responseId} and s.user_id = #{userId}
+        order by s.id desc
+        limit 1
+    </select>
+
+    <select id="selectBoundPackageIdForModel" resultType="java.lang.Long">
+        select p.id
+        from user_model_packages p
+        join model_groups g on g.id = p.group_id
+        join model_group_models mgm on mgm.group_id = p.group_id
+        where p.id = #{packageId}
+          and p.user_id = #{userId}
+          and p.status = 'ACTIVE'
+          and (upper(g.package_type) = 'BALANCE' or p.expires_at &gt; now())
+          and mgm.model_id = #{modelId}
+        limit 1
+    </select>
+
+    <select id="selectFirstActivePackageIdByGroupAndModel" resultType="java.lang.Long">
+        select p.id
+        from user_model_packages p
+        join model_groups g on g.id = p.group_id
+        join model_group_models mgm on mgm.group_id = p.group_id
+        where p.user_id = #{userId}
+          and p.group_id = #{groupId}
+          and p.status = 'ACTIVE'
+          and (upper(g.package_type) = 'BALANCE' or p.expires_at &gt; now())
+          and mgm.model_id = #{modelId}
+        order by p.id asc
+        limit 1
+    </select>
+
+</mapper>

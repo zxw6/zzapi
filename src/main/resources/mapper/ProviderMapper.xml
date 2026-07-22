@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.zxw.persistence.mapper.ProviderMapper">
+
+    <select id="selectProviderList" resultType="com.zxw.persistence.model.ProviderListView">
+        select p.id,
+               p.provider_code as providerCode,
+               p.provider_name as providerName,
+               p.base_url as baseUrl,
+               p.provider_type as providerType,
+               p.status,
+               p.priority_no as priorityNo,
+               p.timeout_ms as timeoutMs,
+               p.created_at as createdAt,
+               (
+                   select count(*)
+                   from provider_tokens t
+                   where t.provider_id = p.id and t.deleted = 0
+               ) as tokenCount
+        from providers p
+        where p.deleted = 0
+        order by p.priority_no asc, p.id desc
+    </select>
+
+</mapper>

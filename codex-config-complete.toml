@@ -1,0 +1,54 @@
+# Codex global configuration template for a Responses-compatible relay.
+
+model_provider = "custom"
+model = "gpt-5.6-sol"
+model_reasoning_effort = "medium"
+disable_response_storage = true
+
+# Recommended: work automatically inside the opened project, and ask before
+# accessing protected locations or performing higher-risk operations.
+approval_policy = "on-request"
+sandbox_mode = "workspace-write"
+
+[windows]
+sandbox = "unelevated"
+
+[model_providers.custom]
+name = "zxw"
+base_url = "http://www.zlapi.online/api"
+wire_api = "responses"
+env_key = "ZLAPI_API_KEY"
+
+[projects.'G:\project-ai\Test']
+trust_level = "trusted"
+
+# These MCP packages were confirmed to start successfully in your Codex log.
+[mcp_servers.context7]
+type = "stdio"
+command = "cmd"
+args = ["/c", "npx", "-y", "@upstash/context7-mcp"]
+startup_timeout_sec = 120
+
+[mcp_servers.memory]
+type = "stdio"
+command = "cmd"
+args = ["/c", "npx", "-y", "@modelcontextprotocol/server-memory"]
+startup_timeout_sec = 120
+
+[mcp_servers.sequential-thinking]
+type = "stdio"
+command = "cmd"
+args = ["/c", "npx", "-y", "@modelcontextprotocol/server-sequential-thinking"]
+startup_timeout_sec = 120
+
+# Do not add @modelcontextprotocol/server-time: that npm package returns 404.
+# Codex can obtain local time through PowerShell Get-Date.
+
+[features]
+js_repl = false
+
+[desktop]
+followUpQueueMode = "queue"
+
+[shell_environment_policy]
+inherit = "all"

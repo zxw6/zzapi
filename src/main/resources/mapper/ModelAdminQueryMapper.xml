@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.zxw.persistence.mapper.ModelAdminQueryMapper">
+
+    <select id="listModels" resultType="com.zxw.persistence.model.ModelAdminListView">
+        select m.id,
+               mgm.id as bindingId,
+               m.model_code as modelCode,
+               m.model_name as modelName,
+               m.model_type as modelType,
+               coalesce(mgm.billing_type, m.billing_type) as billingType,
+               coalesce(mgm.prompt_price, m.prompt_price) as promptPrice,
+               coalesce(mgm.cached_prompt_price, m.cached_prompt_price) as cachedPromptPrice,
+               coalesce(mgm.completion_price, m.completion_price) as completionPrice,
+               coalesce(mgm.request_price, m.request_price) as requestPrice,
+               coalesce(mgm.multiplier, m.multiplier) as multiplier,
+               m.is_public as isPublic,
+               m.status,
+               m.created_at as createdAt,
+               g.id as groupId,
+               g.group_code as groupCode,
+               g.group_name as groupName,
+               p.id as providerId,
+               p.provider_name as providerName,
+               p.provider_type as providerType,
+               r.upstream_model as upstreamModel
+        from models m
+        left join model_group_models mgm on mgm.model_id = m.id
+        left join model_groups g on g.id = mgm.group_id and g.status = 'ACTIVE'
+        left join model_routes r on r.model_id = m.id and r.status = 'ACTIVE'
+        left join providers p on p.id = r.provider_id
+        <choose>
+            <when test="admin">
+                where m.deleted = 0
+            </when>
+            <otherwise>
+                where m.deleted = 0 and m.status = 'ACTIVE' and m.is_public = 1
+            </otherwise>
+        </choose>
+        order by g.id asc, m.id desc
+    </select>
+
+    <select id="selectProviderAccess" resultType="com.zxw.persistence.model.ProviderAccessView">
+        select p.id,
+               p.provider_name as providerName,
+               p.base_url as baseUrl,
+               p.provider_type as providerType,
+               p.timeout_ms as timeoutMs,
+               t.token_value_encrypted as tokenValueEncrypted
+        from providers p
+        join provider_tokens t on t.provider_id = p.id and t.deleted = 0 and t.status = 'ACTIVE'
+        where p.id = #{providerId} and p.deleted = 0 and p.status = 'ACTIVE'
+        order by t.weight_no desc, t.id asc
+        limit 1
+    </select>
+
+    <select id="selectExistingRouteModel" resultType="com.zxw.persistence.model.ExistingRouteModelView">
+        select m.id as modelId, m.model_code as modelCode
+        from model_routes r
+        join models m on m.id = r.model_id
+        where r.provider_id = #{providerId}
+          and r.upstream_model = #{upstreamModel}
+          and r.status = 'ACTIVE'
+          and m.deleted = 0
+        order by m.id asc
+        limit 1
+    </select>
+
+</mapper>

@@ -1,0 +1,1067 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>zxw - AI getaway controller</title>
+    <link rel="stylesheet" href="/console/styles.css">
+</head>
+<body>
+
+<section id="login-panel" class="panel auth-screen">
+    <div class="auth-copy">
+        <a class="brand-lockup" href="#">
+            <span class="brand-star">Z</span>
+            <span>
+                <strong>zxw</strong>
+                <small>AI getaway controller</small>
+            </span>
+        </a>
+
+        <div class="auth-copy-inner">
+            <h1>把 AI 网关放进一个更聪明的控制中心</h1>
+            <p>用统一控制台管理用户、API 密钥、模型、上游渠道、余额和请求日志。普通用户只能看到自己的数据，管理员可以查看全站概览并维护全部配置。</p>
+
+            <div class="auth-feature-list">
+                <div class="auth-feature-card">
+                    <span class="feature-icon">01</span>
+                    <div>
+                        <strong>仪表盘总览</strong>
+                        <p>余额、Token 消耗、密钥数量和最近使用情况一屏查看。</p>
+                    </div>
+                </div>
+                <div class="auth-feature-card">
+                    <span class="feature-icon">02</span>
+                    <div>
+                        <strong>用户数据隔离</strong>
+                        <p>每个用户只能看到自己的余额、自己的密钥和自己的请求日志。</p>
+                    </div>
+                </div>
+                <div class="auth-feature-card">
+                    <span class="feature-icon">03</span>
+                    <div>
+                        <strong>标准接口兼容</strong>
+                        <p>支持 `/v1/models`、`/v1/chat/completions`、`/v1/messages` 等常见接口。</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="auth-card-wrap">
+        <form id="login-form" class="auth-card">
+            <div class="card-topline">登录中心</div>
+            <h2>欢迎回来</h2>
+            <p class="card-copy">请输入你的用户名或 QQ 邮箱，以及密码登录控制台。</p>
+
+            <label>
+                <span>用户名或 QQ 邮箱</span>
+                <input type="text" name="username" placeholder="请输入用户名或 QQ 邮箱" required>
+            </label>
+            <label>
+                <span>密码</span>
+                <input type="password" name="password" placeholder="请输入密码" required>
+            </label>
+            <input type="hidden" name="captchaId">
+            <label>
+                <span>图形验证码</span>
+                <input type="text" name="captchaCode" placeholder="请输入图形验证码" maxlength="4" autocomplete="off" required>
+            </label>
+            <div class="register-code-actions">
+                <img id="login-captcha-image" class="login-captcha-image" alt="图形验证码">
+                <button id="refresh-login-captcha-button" type="button" class="secondary-button">刷新验证码</button>
+            </div>
+            <div id="login-captcha-hint" class="card-caption">点击图片或按钮可刷新图形验证码。</div>
+
+            <div class="auth-actions">
+                <button id="login-submit-button" type="submit" class="primary-button">登录</button>
+                <button id="open-register-button" type="button" class="secondary-button">注册</button>
+            </div>
+
+            <div class="auth-note">
+                <strong>注册说明</strong>
+                <p>点击注册按钮后会弹出注册窗口，QQ 邮箱必填，注册成功后会自动登录。</p>
+            </div>
+        </form>
+    </div>
+</section>
+
+<div id="register-modal" class="modal hidden">
+    <div class="modal-backdrop" data-close-register="true"></div>
+    <div class="modal-card">
+        <button id="close-register-button" type="button" class="modal-close" aria-label="关闭注册">&times;</button>
+        <form id="register-form" class="modal-form">
+            <div class="card-topline">创建账户</div>
+            <h2>注册 zxw 用户</h2>
+            <p class="card-copy">注册成功后会自动进入个人控制台，请使用 QQ 邮箱完成注册。</p>
+
+            <label>
+                <span>用户名</span>
+                <input type="text" name="username" placeholder="请输入用户名" required>
+            </label>
+            <label>
+                <span>密码</span>
+                <input type="password" name="password" placeholder="请输入密码" required>
+            </label>
+            <label>
+                <span>昵称</span>
+                <input type="text" name="nickname" placeholder="可选">
+            </label>
+            <label>
+                <span>QQ 邮箱</span>
+                <input type="email" name="email" placeholder="例如 123456@qq.com" required>
+            </label>
+            <div class="span-two register-code-actions">
+                <button id="send-register-code-button" type="button" class="secondary-button">发送验证码</button>
+                <span id="register-code-hint" class="card-caption">验证码将发送到你的 QQ 邮箱，5 分钟内有效。</span>
+            </div>
+            <label>
+                <span>验证码</span>
+                <input type="text" name="verificationCode" placeholder="请输入 6 位验证码" inputmode="numeric" maxlength="6" required>
+            </label>
+            <label class="span-two">
+                <span>手机号</span>
+                <input type="text" name="phone" placeholder="可选">
+            </label>
+
+            <button type="submit" class="primary-button wide-button">注册并登录</button>
+        </form>
+    </div>
+</div>
+
+<div id="user-detail-modal" class="modal hidden">
+    <div class="modal-backdrop" data-close-user-detail="true"></div>
+    <div class="modal-card">
+        <button id="close-user-detail-button" type="button" class="modal-close" aria-label="关闭用户详情">&times;</button>
+        <form id="user-detail-form" class="modal-form">
+            <input type="hidden" name="id">
+            <div class="card-topline">用户详情</div>
+            <h2 id="user-detail-title">查看用户资料</h2>
+            <p class="card-copy" id="user-detail-copy">这里可以查看用户资料，并按权限进行编辑。</p>
+
+            <label>
+                <span>用户名</span>
+                <input type="text" name="username" readonly>
+            </label>
+            <label>
+                <span>余额</span>
+                <input type="text" name="balance" readonly>
+            </label>
+            <label>
+                <span>昵称</span>
+                <input type="text" name="nickname" placeholder="可选">
+            </label>
+            <label>
+                <span>邮箱</span>
+                <input type="text" name="email" placeholder="例如 123456@qq.com">
+            </label>
+            <label>
+                <span>手机号</span>
+                <input type="text" name="phone" placeholder="可选">
+            </label>
+            <label>
+                <span>新密码</span>
+                <input type="password" name="password" placeholder="不修改就留空">
+            </label>
+            <label class="admin-only-user-detail">
+                <span>角色</span>
+                <select name="roleCode">
+                    <option value="USER">普通用户</option>
+                    <option value="ADMIN">管理员</option>
+                </select>
+            </label>
+            <label class="admin-only-user-detail">
+                <span>状态</span>
+                <select name="status">
+                    <option value="ACTIVE">启用</option>
+                    <option value="DISABLED">禁用</option>
+                </select>
+            </label>
+
+            <button id="save-user-detail-button" type="submit" class="primary-button wide-button">保存修改</button>
+        </form>
+    </div>
+</div>
+
+<section id="app-panel" class="panel hidden app-shell">
+    <aside class="sidebar">
+        <div class="sidebar-top">
+            <a class="brand-lockup" href="#">
+                <span class="brand-star">Z</span>
+                <span>
+                    <strong>zxw</strong>
+                    <small>AI getaway controller</small>
+                </span>
+            </a>
+        </div>
+
+        <div class="nav-section">
+            <div class="nav-section-title">概览</div>
+            <button class="menu-item active" data-panel="overview-panel">
+                <span class="menu-icon">O</span>
+                <span>仪表盘</span>
+            </button>
+        </div>
+
+        <div class="nav-section">
+            <div class="nav-section-title">接口</div>
+            <button class="menu-item" data-panel="keys-panel">
+                <span class="menu-icon">K</span>
+                <span id="keys-menu-label">API 密钥</span>
+            </button>
+            <button class="menu-item" data-panel="billing-panel">
+                <span class="menu-icon">B</span>
+                <span>用量账单</span>
+            </button>
+            <button class="menu-item" data-panel="logs-panel">
+                <span class="menu-icon">L</span>
+                <span>请求日志</span>
+            </button>
+            <button class="menu-item" data-panel="models-panel">
+                <span class="menu-icon">M</span>
+                <span id="models-menu-label">套餐中心</span>
+            </button>
+            <button class="menu-item" data-panel="docs-panel">
+                <span class="menu-icon">H</span>
+                <span>使用教程</span>
+            </button>
+            <button class="menu-item admin-only" data-panel="providers-panel">
+                <span class="menu-icon">P</span>
+                <span>渠道管理</span>
+            </button>
+        </div>
+
+        <div class="nav-section">
+            <div class="nav-section-title">账户</div>
+            <button class="menu-item" data-panel="users-panel" id="users-menu-item">
+                <span class="menu-icon">U</span>
+                <span>个人中心</span>
+            </button>
+        </div>
+
+        <div class="sidebar-footer">
+            <div class="account-avatar" id="account-avatar">Z</div>
+            <div class="account-meta">
+                <div id="current-user" class="account-name">未登录</div>
+                <div id="current-user-email" class="account-email">请先登录控制台</div>
+                <div id="current-balance" class="account-balance">余额: $0.00</div>
+            </div>
+        </div>
+    </aside>
+
+    <main class="content-shell">
+        <header class="content-header">
+            <div>
+                <div class="eyebrow">AI getaway controller</div>
+                <h1 id="page-title">仪表盘</h1>
+                <p id="page-subtitle">查看账户概览、余额和请求趋势。</p>
+            </div>
+            <div class="header-actions">
+                <button id="refresh-all-button" class="secondary-button" type="button">刷新数据</button>
+                <button id="logout-button" class="primary-button" type="button">退出登录</button>
+            </div>
+        </header>
+
+        <section id="overview-panel" class="view-panel active">
+            <div class="dashboard-welcome">
+                <div>
+                    <h2 id="dashboard-greeting">你好，欢迎回来</h2>
+                    <p id="dashboard-greeting-copy">以下是你今天的 API 使用概况。</p>
+                </div>
+                <button class="primary-button dashboard-cta-button" type="button" data-open-panel="models-panel">查看套餐</button>
+            </div>
+
+            <div class="metrics-grid metrics-grid-home" id="overview-cards"></div>
+
+            <div class="dashboard-spotlight-grid">
+                <article class="surface-card dashboard-profile-card">
+                    <div class="section-head section-head-tight">
+                        <div>
+                            <h3>用户信息</h3>
+                            <div class="card-caption">查看当前账号资料与购买能力</div>
+                        </div>
+                    </div>
+                    <div id="profile-card-body" class="profile-card-body"></div>
+                </article>
+
+                <article class="surface-card dashboard-package-card">
+                    <div class="section-head section-head-tight">
+                        <div>
+                            <h3 id="quota-card-title">套餐额度</h3>
+                            <div class="card-caption">已购买分组的每日、每周、每月消耗情况</div>
+                        </div>
+                        <span id="quota-status-badge"></span>
+                    </div>
+                    <div class="dashboard-package-toolbar">
+                        <label class="dashboard-package-select-wrap">
+                            <span>套餐分组</span>
+                            <select id="dashboard-package-select"></select>
+                        </label>
+                        <button class="secondary-button" type="button" data-open-panel="models-panel">进入套餐中心</button>
+                    </div>
+                    <div id="quota-card-body" class="quota-card-body"></div>
+                </article>
+            </div>
+
+            <div class="dashboard-home-grid dashboard-home-grid-bottom">
+                <article class="surface-card analytics-card analytics-card-wide">
+                    <div class="section-head">
+                        <div>
+                            <h3>近 7 天请求趋势</h3>
+                            <div class="card-caption">每日 API 调用量统计</div>
+                        </div>
+                        <span id="trend-summary" class="card-caption">暂无数据</span>
+                    </div>
+                    <div id="trend-chart" class="line-chart-shell"></div>
+                </article>
+
+                <article class="surface-card analytics-card">
+                    <div class="section-head">
+                        <div>
+                            <h3>快速操作</h3>
+                            <div class="card-caption">创建 Key、查看账单、复制接入地址</div>
+                        </div>
+                    </div>
+                    <div class="endpoint-card">
+                        <div id="overview-endpoint-url" class="endpoint-url">http://localhost:9988/v1</div>
+                        <button class="mini-button" type="button" data-copy-endpoint="true">复制</button>
+                    </div>
+                    <div class="action-stack dashboard-action-stack">
+                        <button class="ghost-action-button" type="button" data-open-panel="keys-panel">创建 API Key</button>
+                        <button class="ghost-action-button" type="button" data-open-panel="billing-panel">查看用量账单</button>
+                        <button class="ghost-action-button" type="button" data-open-panel="docs-panel">查看接入文档</button>
+                    </div>
+                </article>
+            </div>
+        </section>
+
+        <section id="billing-panel" class="view-panel">
+            <div class="dashboard-welcome billing-welcome">
+                <div>
+                    <h2>用量 &amp; 账单</h2>
+                    <p>查看使用统计与费用明细。</p>
+                </div>
+            </div>
+
+            <div class="billing-summary-grid" id="billing-summary-cards"></div>
+
+            <div class="billing-tab-row">
+                <button class="billing-tab active" type="button">用量统计</button>
+                <button class="billing-tab" type="button" data-open-panel="logs-panel">账单明细</button>
+                <button class="billing-tab" type="button" data-open-panel="users-panel">账户资料</button>
+            </div>
+
+            <div class="dashboard-home-grid">
+                <article class="surface-card analytics-card analytics-card-wide">
+                    <div class="section-head">
+                        <div>
+                            <h3>费用趋势</h3>
+                            <div class="card-caption">近 7 天 API 调用费用</div>
+                        </div>
+                        <span id="billing-trend-summary" class="card-caption">暂无数据</span>
+                    </div>
+                    <div id="billing-trend-chart" class="line-chart-shell"></div>
+                </article>
+
+                <article class="surface-card analytics-card">
+                    <div class="section-head">
+                        <div>
+                            <h3>按模型分布</h3>
+                            <div class="card-caption">费用和 Token 主要消耗来源</div>
+                        </div>
+                    </div>
+                    <div id="billing-model-usage" class="model-usage-list"></div>
+                </article>
+            </div>
+
+            <div class="surface-card table-shell billing-model-stats-shell">
+                <div class="section-head billing-model-stats-head">
+                    <div>
+                        <h3>对外模型统计</h3>
+                        <div class="card-caption">这里按你的公开模型名统计，例如 `gpt-5.4`、`gpt-5.5`、`gpt-5.3-codex`，不是按上游真实模型名统计。</div>
+                    </div>
+                </div>
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                        <tr>
+                            <th>对外模型</th>
+                            <th>请求次数</th>
+                            <th>Token 数量</th>
+                            <th>平均延迟</th>
+                            <th>总延迟</th>
+                            <th>成功率</th>
+                        </tr>
+                        </thead>
+                        <tbody id="billing-model-stats-table"></tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+
+        <section id="docs-panel" class="view-panel">
+            <div class="panel-stack">
+                <article class="surface-card guide-hero-card">
+                    <div class="section-head">
+                        <div>
+                            <h3>Codex 使用教程</h3>
+                            <div class="card-caption">按下面步骤完成安装、验证和配置后，就可以直接启动使用。</div>
+                        </div>
+                        <span class="soft-badge">5 分钟上手</span>
+                    </div>
+                    <div class="guide-step-list">
+                        <div class="setup-item">
+                            <span>1</span>
+                            <div>
+                                <strong>安装 Node.js</strong>
+                                <p>访问 Node.js 官网安装最新 LTS 版本，安装过程一直点击“下一步（Next）”即可。</p>
+                            </div>
+                        </div>
+                        <div class="setup-item">
+                            <span>2</span>
+                            <div>
+                                <strong>安装 Codex</strong>
+                                <p>打开终端执行 `npm install -g @openai/codex`，安装完成后再用 `codex --version` 验证。</p>
+                            </div>
+                        </div>
+                        <div class="setup-item">
+                            <span>3</span>
+                            <div>
+                                <strong>配置 `.codex`</strong>
+                                <p>在用户目录下创建 `.codex`，并在其中配置 `auth.json` 与 `config.toml` 两个文件。</p>
+                            </div>
+                        </div>
+                    </div>
+                </article>
+
+                <div class="overview-grid guide-grid">
+                    <article class="surface-card">
+                        <div class="section-head">
+                            <h3>安装与验证</h3>
+                            <span class="card-caption">先把基础环境安装好</span>
+                        </div>
+                        <div class="guide-field-list">
+                            <div class="guide-field-item">
+                                <strong>1. 安装 Node.js</strong>
+                                <p>直接访问 <a href="https://nodejs.org/zh-cn" target="_blank" rel="noreferrer">Node.js 官网</a> 下载并安装最新 LTS 版本。</p>
+                            </div>
+                            <div class="guide-field-item">
+                                <strong>2. 安装 Codex</strong>
+                                <pre class="guide-code">npm install -g @openai/codex</pre>
+                            </div>
+                            <div class="guide-field-item">
+                                <strong>3. 验证安装</strong>
+                                <pre class="guide-code">codex --version</pre>
+                            </div>
+                        </div>
+                    </article>
+
+                    <article class="surface-card">
+                        <div class="section-head">
+                            <h3>配置文件位置</h3>
+                            <span class="card-caption">在当前用户目录中配置 `.codex`</span>
+                        </div>
+                        <p class="guide-paragraph">进入当前用户目录下的 `.codex` 文件夹中。</p>
+                        <p class="guide-paragraph">Windows 常见路径示例：</p>
+                        <pre class="guide-code">C:\Users\你的用户名\.codex</pre>
+                        <p class="guide-paragraph">如果没有 `.codex` 文件夹，请手动创建该文件夹。</p>
+                        <p class="guide-paragraph">然后在 `.codex` 文件夹中创建以下两个文件：</p>
+                        <ul class="guide-bullet-list">
+                            <li><code>config.toml</code></li>
+                            <li><code>auth.json</code></li>
+                        </ul>
+                        <p class="guide-paragraph">如果这两个文件已经存在，就直接修改即可，不需要重复创建。</p>
+                    </article>
+                </div>
+
+                <div class="overview-grid guide-grid">
+                    <article class="surface-card">
+                        <div class="section-head">
+                            <h3><code>auth.json</code> 配置</h3>
+                            <span class="card-caption">先写鉴权令牌</span>
+                        </div>
+                        <p class="guide-paragraph">将下面内容写入 <code>auth.json</code>：</p>
+                        <pre class="guide-code">{"OPENAI_API_KEY": "xxx"}</pre>
+                        <div class="notice-box guide-notice">
+                            请将 <code>xxx</code> 替换成创建 API Key 时一次性返回的完整明文密钥，通常形如 <code>sk-live-...</code>。
+                            不要填写密钥列表中展示的短前缀或掩码值；如果完整密钥已经丢失，请重新创建一个新的 Key。
+                        </div>
+                    </article>
+
+                    <article class="surface-card">
+                        <div class="section-head">
+                            <h3><code>config.toml</code> 配置</h3>
+                            <span class="card-caption">直接粘贴下面内容即可</span>
+                        </div>
+                        <pre class="guide-code">model_provider = "zxw"
+model = "gpt-5.4"
+model_reasoning_effort = "high"
+disable_response_storage = true
+service_tier = "fast"
+
+approval_policy = "on-request"
+sandbox_mode = "workspace-write"
+
+[model_providers.zxw]
+name = "zxw"
+base_url = "http://127.0.0.1:9988/v1"
+wire_api = "responses"
+requires_openai_auth = true
+
+[mcp_servers]
+
+[mcp_servers.memory]
+type = "stdio"
+command = "cmd"
+args = ["/c", "npx", "-y", "@modelcontextprotocol/server-memory"]
+
+[mcp_servers.sequential-thinking]
+type = "stdio"
+command = "cmd"
+args = ["/c", "npx", "-y", "@modelcontextprotocol/server-sequential-thinking"]
+
+[mcp_servers.time]
+type = "stdio"
+command = "cmd"
+args = ["/c", "npx", "-y", "@modelcontextprotocol/server-time"]
+
+[mcp_servers.context7]
+type = "stdio"
+command = "cmd"
+args = ["/c", "npx", "-y", "@upstash/context7-mcp"]
+
+[mcp_servers.fetch]
+type = "stdio"
+command = "uvx"
+args = ["mcp-server-fetch"]
+
+[sandbox_workspace_write]
+network_access = false
+writable_roots = [
+]
+
+[windows]
+sandbox = "elevated"</pre>
+                    </article>
+                </div>
+
+                <div class="overview-grid guide-grid">
+                    <article class="surface-card">
+                        <div class="section-head">
+                            <h3>参数说明</h3>
+                            <span class="card-caption">重点看这几个配置项</span>
+                        </div>
+                        <div class="guide-field-list">
+                            <div class="guide-field-item">
+                                <strong>model_reasoning_effort</strong>
+                                <p>可选值为 <code>high</code>、<code>medium</code>、<code>low</code>，分别表示模型思考强度为高、中、低。</p>
+                            </div>
+                            <div class="guide-field-item">
+                                <strong>base_url</strong>
+                                <p>请记得根据自己的实际情况替换为正确的服务地址。</p>
+                            </div>
+                            <div class="guide-field-item">
+                                <strong>auth.json</strong>
+                                <p>这里的令牌要和你自己的实际使用令牌保持一致。</p>
+                            </div>
+                        </div>
+                    </article>
+
+                    <article class="surface-card">
+                        <div class="section-head">
+                            <h3>启动使用</h3>
+                            <span class="card-caption">配置完成后直接启动</span>
+                        </div>
+                        <p class="guide-paragraph">配置完成后，重新打开终端，直接运行：</p>
+                        <pre class="guide-code">codex</pre>
+                        <p class="guide-paragraph">如果配置没有问题，Codex 就可以正常启动并连接到你配置的模型服务。</p>
+                    </article>
+
+                    <article class="surface-card">
+                        <div class="section-head">
+                            <h3>常见问题</h3>
+                            <span class="card-caption">遇到报错先检查这里</span>
+                        </div>
+                        <ul class="guide-bullet-list">
+                            <li>如果终端提示找不到 <code>codex</code>，请重新执行 <code>npm install -g @openai/codex</code>。</li>
+                            <li>如果 <code>codex --version</code> 没有输出版本号，请先检查 <code>node -v</code> 和 <code>npm -v</code> 是否正常。</li>
+                            <li>如果没有 <code>.codex</code> 文件夹，可以手动创建，不影响使用。</li>
+                            <li>只要 <code>.codex</code> 目录下最终包含 <code>config.toml</code> 和 <code>auth.json</code> 即可。</li>
+                        </ul>
+                    </article>
+                </div>
+            </div>
+        </section>
+
+        <section id="users-panel" class="view-panel">
+            <div class="panel-stack">
+                <div class="surface-card">
+                    <div class="section-head">
+                        <h3 id="users-panel-title">个人中心</h3>
+                        <button class="secondary-button" data-refresh="users" type="button">刷新</button>
+                    </div>
+
+                    <form id="user-form" class="form-grid three-col admin-only">
+                        <label><span>用户名</span><input type="text" name="username" required></label>
+                        <label><span>密码</span><input type="text" name="password" required></label>
+                        <label><span>昵称</span><input type="text" name="nickname"></label>
+                        <label><span>邮箱</span><input type="text" name="email"></label>
+                        <label><span>手机号</span><input type="text" name="phone"></label>
+                        <label>
+                            <span>角色</span>
+                            <select name="roleCode">
+                                <option value="USER">普通用户</option>
+                                <option value="ADMIN">管理员</option>
+                            </select>
+                        </label>
+                        <label><span>初始余额</span><input type="number" name="initialBalance" step="0.01" value="0"></label>
+                        <button type="submit" class="primary-button align-end">创建用户</button>
+                    </form>
+
+                    <form id="recharge-form" class="form-grid four-col admin-only compact-gap">
+                        <label><span>用户 ID</span><input type="number" name="userId" required></label>
+                        <label><span>充值金额</span><input type="number" name="amount" step="0.01" required></label>
+                        <label><span>备注</span><input type="text" name="remark" placeholder="后台充值"></label>
+                        <button type="submit" class="primary-button align-end">钱包充值</button>
+                    </form>
+                </div>
+
+                <div class="surface-card table-shell">
+                    <div class="table-wrap">
+                        <table>
+                            <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>用户名</th>
+                                <th>角色</th>
+                                <th>状态</th>
+                                <th>余额</th>
+                                <th>邮箱</th>
+                                <th>操作</th>
+                            </tr>
+                            </thead>
+                            <tbody id="users-table"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section id="keys-panel" class="view-panel">
+            <div class="panel-stack">
+                <div class="surface-card">
+                    <div class="section-head">
+                        <div>
+                            <h3 id="keys-panel-title">API 密钥管理</h3>
+                            <div id="keys-panel-subtitle" class="card-caption">已创建 0 个 API 密钥</div>
+                        </div>
+                        <div class="header-actions">
+                            <button id="toggle-key-create-button" type="button" class="primary-button">创建密钥</button>
+                            <button class="secondary-button" data-refresh="keys" type="button">刷新</button>
+                        </div>
+                    </div>
+
+                    <div class="key-summary-shell">
+                        <div class="key-summary-icon">K</div>
+                        <div>
+                            <div class="key-summary-title">API 密钥管理</div>
+                            <div class="card-caption">创建和管理你的 API 访问密钥</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="key-create-box" class="surface-card hidden">
+                    <div class="section-head">
+                        <h3>创建新的 API 密钥</h3>
+                        <span class="card-caption">明文密钥只会显示一次，请立即保存</span>
+                    </div>
+
+                    <form id="key-form" class="form-grid three-col key-create-form">
+                        <label id="key-user-id-row"><span>用户 ID</span><input type="number" name="userId" required></label>
+                        <label class="span-two"><span>名称</span><input type="text" name="name" placeholder="例如：My Production Key" required></label>
+                        <label class="span-two"><span>描述</span><textarea name="remark" rows="4" placeholder="可选：添加描述信息"></textarea></label>
+                        <div class="span-two key-group-picker-shell">
+                            <div class="key-group-picker-head">
+                                <div>
+                                    <div class="key-group-picker-title">分组选择</div>
+                                    <div id="key-group-hint" class="card-caption">请先购买套餐，然后选择一个已购买且有效的分组来创建 Key。</div>
+                                </div>
+                            </div>
+                            <div id="key-group-options" class="key-group-options"></div>
+                        </div>
+                        <label><span>过期时间</span><input type="text" name="expiresAt" placeholder="2026-12-31 23:59:59"></label>
+                        <div class="key-create-submit-row">
+                            <button type="button" class="secondary-button" id="close-key-create-button">取消</button>
+                            <button type="submit" class="primary-button">确认创建</button>
+                        </div>
+                    </form>
+
+                    <div id="plain-key-box" class="notice-box hidden"></div>
+                </div>
+
+                <div class="surface-card">
+                    <div class="section-head">
+                        <div>
+                            <h3>API 密钥列表</h3>
+                            <div class="card-caption">管理当前账户可用的密钥</div>
+                        </div>
+                    </div>
+                    <div id="keys-list" class="keys-list"></div>
+                    <div id="keys-empty" class="empty-state hidden">当前还没有 API 密钥，先点击上面的“创建密钥”。</div>
+                    <div class="table-shell hidden">
+                        <div class="table-wrap">
+                            <table>
+                                <thead>
+                                <tr>
+                                    <th>ID</th>
+                                    <th>用户</th>
+                                    <th>名称</th>
+                                    <th>前缀</th>
+                                    <th>状态</th>
+                                    <th>操作</th>
+                                </tr>
+                                </thead>
+                                <tbody id="keys-table"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section id="providers-panel" class="view-panel">
+            <div class="panel-stack admin-only">
+                <div class="surface-card">
+                    <div class="section-head">
+                        <h3>创建渠道</h3>
+                        <button class="secondary-button" data-refresh="providers" type="button">刷新</button>
+                    </div>
+
+                    <form id="provider-form" class="form-grid three-col">
+                        <label><span>渠道编码</span><input type="text" name="providerCode" required></label>
+                        <label><span>渠道名称</span><input type="text" name="providerName" required></label>
+                        <label><span>基础地址</span><input type="text" name="baseUrl" required></label>
+                        <label>
+                            <span>渠道类型</span>
+                            <select name="providerType">
+                                <option value="OPENAI_COMPATIBLE">OpenAI 兼容</option>
+                                <option value="ANTHROPIC">Anthropic</option>
+                            </select>
+                        </label>
+                        <label><span>优先级</span><input type="number" name="priorityNo" value="100"></label>
+                        <label><span>超时毫秒</span><input type="number" name="timeoutMs" value="60000"></label>
+                        <label><span>令牌名称</span><input type="text" name="tokenName" placeholder="默认令牌"></label>
+                        <label class="span-two"><span>令牌值</span><input type="text" name="tokenValue" required></label>
+                        <button type="submit" class="primary-button">创建渠道</button>
+                    </form>
+                </div>
+
+                <div class="surface-card table-shell">
+                    <div class="table-wrap">
+                        <table>
+                            <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>渠道编码</th>
+                                <th>渠道名称</th>
+                                <th>基础地址</th>
+                                <th>类型</th>
+                                <th>令牌数</th>
+                                <th>状态</th>
+                                <th>操作</th>
+                            </tr>
+                            </thead>
+                            <tbody id="providers-table"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section id="models-panel" class="view-panel">
+            <div class="panel-stack">
+                <div class="surface-card">
+                    <div class="section-head">
+                        <div>
+                            <h3 id="models-panel-title">套餐中心</h3>
+                            <div class="card-caption">选择适合您的套餐分组，购买后即可在对应分组下创建 API Key。</div>
+                        </div>
+                        <div class="models-market-headline">
+                            <div id="package-balance-pill" class="package-balance-pill">当前余额: $0.00</div>
+                            <button id="toggle-package-create-button" class="primary-button admin-only" type="button">新增套餐</button>
+                            <button class="secondary-button" data-refresh="models" type="button">刷新</button>
+                        </div>
+                    </div>
+
+                    <div id="package-create-box" class="surface-card hidden admin-only">
+                        <div class="section-head">
+                            <div>
+                                <h3>新增套餐</h3>
+                                <div class="card-caption">创建新的套餐分组，后续模型和 API Key 都会绑定到这个套餐。</div>
+                            </div>
+                        </div>
+                        <form id="package-form" class="form-grid three-col">
+                            <label><span>套餐编码</span><input type="text" name="groupCode" placeholder="例如 codex-pro" required></label>
+                            <label><span>套餐名称</span><input type="text" name="groupName" placeholder="例如 Codex Pro 套餐" required></label>
+                            <label>
+                                <span>套餐类型</span>
+                                <select name="packageType" required>
+                                    <option value="QUOTA">额度套餐</option>
+                                    <option value="BALANCE">余额套餐</option>
+                                </select>
+                            </label>
+                            <label><span>售价</span><input type="number" name="salePrice" step="0.0001" value="70" required></label>
+                            <label><span>有效天数</span><input type="number" name="packageDays" value="30" required></label>
+                            <label><span>日额度</span><input type="number" name="dailyQuota" step="0.0001" value="60" required></label>
+                            <label><span>周额度</span><input type="number" name="weeklyQuota" step="0.0001" value="420" required></label>
+                            <label><span>月额度</span><input type="number" name="monthlyQuota" step="0.0001" value="1800" required></label>
+                            <label class="span-two"><span>备注</span><input type="text" name="remark" placeholder="例如 仅开放 Codex 系列模型"></label>
+                            <div class="form-actions span-three">
+                                <button id="package-submit-button" type="submit" class="primary-button">创建套餐</button>
+                                <button id="close-package-create-button" type="button" class="secondary-button">取消</button>
+                            </div>
+                        </form>
+                    </div>
+
+                    <div class="package-center-shell">
+                        <div class="package-center-head">
+                            <div>
+                                <div class="package-center-title">套餐中心</div>
+                                <div class="card-caption">钱包余额用于购买套餐。上方套餐卡片和已购摘要只显示当前账号自己的套餐；管理员如需查看全站谁购买了什么套餐，请看下方购买记录表。</div>
+                            </div>
+                        </div>
+                        <div id="package-card-grid" class="package-card-grid"></div>
+                        <div id="model-package-summary" class="key-package-summary"></div>
+                    </div>
+
+                    <div class="section-head package-model-head">
+                        <div>
+                            <h3>模型价格预览</h3>
+                            <div class="card-caption">下面展示当前系统模型与价格。这里不再按分组展示，管理员仍可继续新增模型。</div>
+                        </div>
+                        <span id="models-market-meta" class="card-caption">0 个模型可用</span>
+                    </div>
+
+                    <div class="models-market-layout">
+                        <div>
+                            <div id="models-card-grid" class="models-card-grid plaza-grid"></div>
+                            <div id="models-empty" class="empty-state hidden">当前还没有可展示的模型，请先由管理员创建并公开模型。</div>
+                        </div>
+                        <aside class="model-detail-panel">
+                            <div id="model-detail-badge" class="provider-pill">模型</div>
+                            <h3 id="model-detail-title">暂未选择模型</h3>
+                            <p id="model-detail-desc" class="model-detail-desc">点击左侧模型卡片，这里会显示模型详情与价格。</p>
+
+                            <div class="model-detail-block">
+                                <div class="model-detail-subtitle">规格参数</div>
+                                <div id="model-detail-specs" class="model-detail-specs"></div>
+                            </div>
+
+                            <div class="model-detail-block">
+                                <div class="model-detail-subtitle">计费标准</div>
+                                <div id="model-detail-pricing" class="model-detail-pricing"></div>
+                            </div>
+
+                            <div class="model-detail-block">
+                                <div class="model-detail-subtitle">模型标识符</div>
+                                <div id="model-detail-code" class="model-detail-code">-</div>
+                            </div>
+
+                            <div class="model-detail-actions">
+                                <button class="primary-button wide-button" type="button" data-open-panel="docs-panel">立即使用</button>
+                            </div>
+                        </aside>
+                    </div>
+                </div>
+
+                <div class="surface-card admin-only">
+                    <div class="section-head">
+                        <h3>从上游批量导入模型</h3>
+                        <div class="import-actions">
+                            <button id="fetch-upstream-models-button" type="button" class="secondary-button">读取上游模型</button>
+                            <button id="toggle-all-upstream-models-button" type="button" class="secondary-button">全选 / 反选</button>
+                            <button id="import-upstream-models-button" type="button" class="primary-button">批量导入</button>
+                        </div>
+                    </div>
+                    <p class="import-helper">先选择套餐，再选择渠道并读取上游模型，勾选允许该套餐使用的模型后批量导入。导入时会自动使用该模型已定义好的价格。</p>
+                    <div class="form-grid three-col">
+                        <label><span>套餐分组</span><select id="import-group-select"></select></label>
+                        <label><span>渠道</span><select id="import-provider-select"></select></label>
+                    </div>
+                    <div class="form-grid two-col compact-gap">
+                        <label><span>是否公开</span><select id="import-is-public"><option value="true">公开</option><option value="false">不公开</option></select></label>
+                    </div>
+                    <div id="upstream-models-box" class="upstream-models-box"></div>
+                    <div id="import-result-box" class="notice-box hidden"></div>
+                </div>
+
+                <div class="surface-card admin-only">
+                    <div class="section-head">
+                        <div>
+                            <h3 id="model-form-title">手动创建模型</h3>
+                            <div id="model-form-caption" class="card-caption">管理员可以在这里新增模型并统一维护价格，普通用户只能使用已公开模型。</div>
+                        </div>
+                    </div>
+
+                    <form id="model-form" class="form-grid three-col">
+                        <label><span>模型编码</span><input type="text" name="modelCode" required></label>
+                        <label><span>模型名称</span><input type="text" name="modelName" required></label>
+                        <label><span>套餐分组</span><select name="groupId" required></select></label>
+                        <label>
+                            <span>模型类型</span>
+                            <select name="modelType">
+                                <option value="CHAT">对话</option>
+                                <option value="IMAGE">图片</option>
+                            </select>
+                        </label>
+                        <label>
+                            <span>计费方式</span>
+                            <select name="billingType">
+                                <option value="TOKEN">Token</option>
+                                <option value="REQUEST">按请求</option>
+                            </select>
+                        </label>
+                        <label><span>输入价格</span><input type="number" name="promptPrice" step="0.000001" value="0"></label>
+                        <label><span>缓存读取价格</span><input type="number" name="cachedPromptPrice" step="0.000001" value="0"></label>
+                        <label><span>输出价格</span><input type="number" name="completionPrice" step="0.000001" value="0"></label>
+                        <label><span>单次最低扣费</span><input type="number" name="requestPrice" step="0.000001" value="0.07"></label>
+                        <label><span>倍率</span><input type="number" name="multiplier" step="0.0001" value="1"></label>
+                        <label>
+                            <span>是否公开</span>
+                            <select name="isPublic">
+                                <option value="true">公开</option>
+                                <option value="false">不公开</option>
+                            </select>
+                        </label>
+                        <label><span>渠道 ID</span><input type="number" name="providerId"></label>
+                        <label class="span-two"><span>上游模型</span><input type="text" name="upstreamModel"></label>
+                        <div class="form-actions span-three">
+                            <button id="model-submit-button" type="submit" class="primary-button">创建模型</button>
+                            <button id="model-cancel-edit-button" type="button" class="secondary-button hidden">取消编辑</button>
+                        </div>
+                    </form>
+                </div>
+
+                <div class="surface-card table-shell admin-only">
+                    <div class="table-wrap">
+                        <table>
+                            <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>模型</th>
+                                <th>套餐</th>
+                                <th>输入价格</th>
+                                <th>缓存读取价格</th>
+                                <th>输出价格</th>
+                                <th>最低扣费</th>
+                                <th>倍率</th>
+                                <th>类型</th>
+                                <th>渠道</th>
+                                <th>上游模型</th>
+                                <th>状态</th>
+                                <th>操作</th>
+                            </tr>
+                            </thead>
+                            <tbody id="models-table"></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="surface-card table-shell">
+                    <div class="section-head">
+                        <div>
+                            <h3>套餐购买记录</h3>
+                            <div class="card-caption">普通用户只显示自己的购买记录；管理员会在这里看到全站购买记录，并明确显示用户 ID、用户名和套餐归属。</div>
+                        </div>
+                    </div>
+                    <div class="table-wrap">
+                        <table>
+                            <thead>
+                            <tr>
+                                <th>用户 ID</th>
+                                <th>用户名</th>
+                                <th>套餐</th>
+                                <th>价格</th>
+                                <th>开始时间</th>
+                                <th>到期时间</th>
+                                <th>使用状态</th>
+                                <th>创建时间</th>
+                                <th>操作</th>
+                            </tr>
+                            </thead>
+                            <tbody id="package-purchases-table"></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="surface-card table-shell">
+                    <div class="section-head">
+                        <div>
+                            <h3>余额流水</h3>
+                            <div class="card-caption">显示充值、套餐购买和模型消费等钱包变动记录。</div>
+                        </div>
+                    </div>
+                    <div class="table-wrap">
+                        <table>
+                            <thead>
+                            <tr>
+                                <th>用户</th>
+                                <th>流水类型</th>
+                                <th>方向</th>
+                                <th>金额</th>
+                                <th>变动前</th>
+                                <th>变动后</th>
+                                <th>说明</th>
+                                <th>时间</th>
+                            </tr>
+                            </thead>
+                            <tbody id="wallet-transactions-table"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section id="logs-panel" class="view-panel">
+            <div class="panel-stack">
+                <div class="surface-card table-shell">
+                    <div class="section-head">
+                        <h3>请求日志</h3>
+                        <button class="secondary-button" data-refresh="logs" type="button">刷新</button>
+                    </div>
+                    <div class="table-wrap">
+                        <table>
+                            <thead>
+                            <tr>
+                                <th>用户</th>
+                                <th>模型</th>
+                                <th>套餐分组</th>
+                                <th>倍率</th>
+                                <th>耗时</th>
+                                <th>Token 用量(输入/输出)</th>
+                                <th>缓存读取</th>
+                                <th>费用</th>
+                                <th>状态</th>
+                                <th>时间</th>
+                            </tr>
+                            </thead>
+                            <tbody id="logs-table"></tbody>
+                        </table>
+                    </div>
+                    <div class="table-pagination">
+                        <button id="logs-prev-page-button" class="secondary-button" type="button">上一页</button>
+                        <span id="logs-pagination-meta" class="card-caption">第 1 页</span>
+                        <button id="logs-next-page-button" class="secondary-button" type="button">下一页</button>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+    </main>
+</section>
+
+<div id="toast" class="toast hidden"></div>
+
+<script src="/console/app.js"></script>
+</body>
+</html>

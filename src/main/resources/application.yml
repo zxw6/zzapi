@@ -1,0 +1,93 @@
+spring:
+  application:
+    name: ai-gateway
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: ${DB_URL:jdbc:mysql://localhost:3306/zhongzhuan?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai}
+    username: ${DB_USERNAME:root}
+    password: ${DB_PASSWORD:}
+    hikari:
+      connection-init-sql: "SET time_zone = '+08:00'"
+  jackson:
+    time-zone: Asia/Shanghai
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      database: ${REDIS_DATABASE:0}
+      timeout: ${REDIS_TIMEOUT:5s}
+  mail:
+    host: smtp.qq.com
+    port: 465
+    username: ${MAIL_USERNAME:}
+    password: ${MAIL_PASSWORD:}
+    protocol: smtp
+    default-encoding: UTF-8
+    properties:
+      mail:
+        smtp:
+          auth: true
+          starttls:
+            enable: false
+          ssl:
+            enable: true
+          connectiontimeout: 5000
+          timeout: 5000
+          writetimeout: 5000
+  sql:
+    init:
+      mode: never
+#      schema-locations: classpath:db/schema-mysql.sql
+
+server:
+  port: 9988
+  servlet:
+    encoding:
+      charset: UTF-8
+      enabled: true
+      force: true
+
+gateway:
+  concurrency:
+    max-global-requests: ${GATEWAY_MAX_GLOBAL_REQUESTS:200}
+    max-global-streams: ${GATEWAY_MAX_GLOBAL_STREAMS:50}
+    max-user-requests: ${GATEWAY_MAX_USER_REQUESTS:20}
+    max-api-key-requests: ${GATEWAY_MAX_API_KEY_REQUESTS:10}
+    max-session-requests: ${GATEWAY_MAX_SESSION_REQUESTS:1}
+    stream:
+      core-threads: ${GATEWAY_STREAM_CORE_THREADS:16}
+      max-threads: ${GATEWAY_STREAM_MAX_THREADS:64}
+      queue-capacity: ${GATEWAY_STREAM_QUEUE_CAPACITY:200}
+      timeout-ms: ${GATEWAY_STREAM_TIMEOUT_MS:300000}
+  upstream:
+    connect-timeout-ms: ${GATEWAY_UPSTREAM_CONNECT_TIMEOUT_MS:20000}
+    read-timeout-ms: ${GATEWAY_UPSTREAM_READ_TIMEOUT_MS:60000}
+    write-timeout-ms: ${GATEWAY_UPSTREAM_WRITE_TIMEOUT_MS:60000}
+    call-timeout-ms: ${GATEWAY_UPSTREAM_CALL_TIMEOUT_MS:60000}
+    stream-read-timeout-ms: ${GATEWAY_UPSTREAM_STREAM_READ_TIMEOUT_MS:300000}
+    max-requests: ${GATEWAY_UPSTREAM_MAX_REQUESTS:256}
+    max-requests-per-host: ${GATEWAY_UPSTREAM_MAX_REQUESTS_PER_HOST:64}
+    max-idle-connections: ${GATEWAY_UPSTREAM_MAX_IDLE_CONNECTIONS:64}
+    keep-alive-seconds: ${GATEWAY_UPSTREAM_KEEP_ALIVE_SECONDS:300}
+    retry-on-connection-failure: ${GATEWAY_UPSTREAM_RETRY_ON_CONNECTION_FAILURE:true}
+  security:
+    jwt-secret: ${JWT_SECRET:please-change-this-jwt-secret-32-chars-min}
+    jwt-expire-minutes: ${JWT_EXPIRE_MINUTES:720}
+    crypto-secret: ${CRYPTO_SECRET:change-me-16-key}
+  cors:
+    allowed-origin-patterns: ${CORS_ALLOWED_ORIGIN_PATTERNS:*}
+    allowed-methods: ${CORS_ALLOWED_METHODS:GET,POST,PUT,PATCH,DELETE,OPTIONS,HEAD}
+    allowed-headers: ${CORS_ALLOWED_HEADERS:*}
+    exposed-headers: ${CORS_EXPOSED_HEADERS:}
+    allow-credentials: ${CORS_ALLOW_CREDENTIALS:true}
+    max-age: ${CORS_MAX_AGE:3600}
+
+app:
+  auth:
+    verification-code:
+      expire-seconds: ${VERIFICATION_CODE_EXPIRE_SECONDS:300}
+      resend-interval-seconds: ${VERIFICATION_CODE_RESEND_INTERVAL_SECONDS:60}
+  mail:
+    from: ${MAIL_FROM:${MAIL_USERNAME:}}
+    register-code-subject: AI LayCode 注册验证码

@@ -1,0 +1,291 @@
+项目接口统计
+生成时间: 2026-04-16
+项目位置: e:\project-ai\Test
+服务默认端口: 9988
+配置文件: src/main/resources/application.yml
+
+一、统计说明
+1. 逻辑接口数: 36 个
+2. 按实际可访问 URL 统计: 41 条
+3. /admin/* 为后台管理接口
+   除 /admin/auth/login、/admin/auth/register、/admin/system/health、/admin/system/sse-protocol 外，其他 /admin/* 默认需要 Authorization: Bearer <JWT>
+4. /v1/*、/models、/responses、/messages 等为网关对外接口
+   通常使用 Authorization: Bearer <API_KEY>
+   /v1/messages、/messages、/v1/v1/messages 也支持 x-api-key: <API_KEY>
+
+二、后台管理接口（/admin/*）
+
+[认证模块] 前缀: /admin/auth
+1. POST /admin/auth/login
+   作用: 后台登录
+   请求体: username, password
+   返回: ApiResponse<AdminLoginResponse>
+
+2. POST /admin/auth/register
+   作用: 普通用户注册并自动登录
+   请求体: username, password, nickname, email, phone
+   说明: email 限定为 QQ 邮箱
+   返回: ApiResponse<AdminLoginResponse>
+
+3. GET /admin/auth/me
+   作用: 获取当前登录用户信息
+   请求参数: 无
+   返回: ApiResponse<AdminLoginResponse>
+
+[用户模块] 前缀: /admin/users
+4. GET /admin/users
+   作用: 获取用户列表
+   请求参数: 无
+   返回: ApiResponse<List<UserListItemResponse>>
+
+5. GET /admin/users/{userId}
+   作用: 获取单个用户详情
+   路径参数: userId
+   返回: ApiResponse<UserListItemResponse>
+
+6. POST /admin/users
+   作用: 创建用户
+   请求体: username, password, nickname, email, phone, roleCode, initialBalance
+   返回: ApiResponse<Void>
+
+7. PUT /admin/users/{userId}
+   作用: 更新用户资料
+   路径参数: userId
+   请求体: nickname, email, phone, roleCode, status, password
+   返回: ApiResponse<Void>
+
+8. PUT /admin/users/{userId}/status
+   作用: 修改用户状态
+   路径参数: userId
+   请求体: status
+   返回: ApiResponse<Void>
+
+9. DELETE /admin/users/{userId}
+   作用: 删除用户
+   路径参数: userId
+   返回: ApiResponse<Void>
+
+10. POST /admin/users/recharge
+    作用: 给用户钱包充值
+    请求体: userId, amount, remark
+    返回: ApiResponse<Void>
+
+[API Key 模块] 前缀: /admin/api-keys
+11. GET /admin/api-keys
+    作用: 获取 API Key 列表
+    请求参数: 无
+    返回: ApiResponse<List<ApiKeyListItemResponse>>
+
+12. POST /admin/api-keys
+    作用: 创建 API Key
+    请求体: userId, name, modelGroupId, expiresAt, remark
+    返回: ApiResponse<ApiKeyCreateResponse>
+    说明: plainTextKey 仅创建时返回一次
+
+13. PUT /admin/api-keys/{id}/status
+    作用: 修改 API Key 状态
+    路径参数: id
+    请求体: status
+    返回: ApiResponse<Void>
+
+[渠道模块] 前缀: /admin/providers
+14. GET /admin/providers
+    作用: 获取渠道列表
+    请求参数: 无
+    返回: ApiResponse<List<ProviderListItemResponse>>
+
+15. POST /admin/providers
+    作用: 创建渠道与默认 token
+    请求体: providerCode, providerName, baseUrl, providerType, priorityNo, timeoutMs, remark, tokenName, tokenValue, weightNo, rpmLimit, tpmLimit
+    返回: ApiResponse<Void>
+
+16. PUT /admin/providers/{id}/status
+    作用: 修改渠道状态
+    路径参数: id
+    请求体: status
+    返回: ApiResponse<Void>
+
+[模型模块] 前缀: /admin/models
+17. GET /admin/models
+    作用: 获取模型列表
+    请求参数: 无
+    返回: ApiResponse<List<ModelListItemResponse>>
+
+18. GET /admin/models/upstream
+    作用: 拉取指定渠道的上游模型
+    查询参数: providerId
+    返回: ApiResponse<List<UpstreamModelOptionResponse>>
+
+19. POST /admin/models
+    作用: 创建模型
+    请求体: modelCode, modelName, modelType, billingType, promptPrice, completionPrice, requestPrice, imagePrice, multiplier, isPublic, providerId, upstreamModel
+    返回: ApiResponse<Void>
+
+20. PUT /admin/models/{id}
+    作用: 更新模型
+    路径参数: id
+    请求体: modelName, modelType, billingType, promptPrice, completionPrice, multiplier, isPublic, providerId, upstreamModel
+    返回: ApiResponse<Void>
+
+21. DELETE /admin/models/{id}
+    作用: 删除模型
+    路径参数: id
+    返回: ApiResponse<Void>
+
+22. POST /admin/models/import
+    作用: 批量导入上游模型
+    请求体: providerId, upstreamModels, promptPrice, completionPrice, multiplier, isPublic
+    返回: ApiResponse<ModelBatchImportResponse>
+
+23. PUT /admin/models/{id}/status
+    作用: 修改模型状态
+    路径参数: id
+    请求体: status
+    返回: ApiResponse<Void>
+
+[请求日志模块] 前缀: /admin/request-logs
+24. GET /admin/request-logs
+    作用: 获取最近请求日志
+    查询参数: limit，默认 20，范围 1~100
+    返回: ApiResponse<List<RequestLogItemResponse>>
+
+[仪表盘模块] 前缀: /admin/dashboard
+25. GET /admin/dashboard/overview
+    作用: 获取概览统计
+    请求参数: 无
+    返回: ApiResponse<DashboardOverviewResponse>
+
+26. GET /admin/dashboard/trend
+    作用: 获取趋势数据
+    查询参数: days，默认 7，范围 1~30
+    返回: ApiResponse<List<DashboardTrendPointResponse>>
+
+27. GET /admin/dashboard/model-stats
+    作用: 获取模型统计
+    请求参数: 无
+    返回: ApiResponse<List<DashboardModelStatResponse>>
+
+[系统模块] 前缀: /admin/system
+28. GET /admin/system/health
+    作用: 健康检查
+    请求参数: 无
+    返回: ApiResponse<Map<String, Object>>
+
+29. GET /admin/system/sse-protocol
+    作用: 返回 SSE 协议说明
+    请求参数: 无
+    返回: ApiResponse<Map<String, Object>>
+
+[套餐/模型访问模块] 前缀: /admin/model-access
+30. GET /admin/model-access/summary
+    作用: 获取当前用户套餐摘要、分组和额度信息
+    请求参数: 无
+    返回: ApiResponse<ModelAccessSummaryResponse>
+
+31. POST /admin/model-access/purchase
+    作用: 购买模型套餐
+    请求体: groupId
+    返回: ApiResponse<ModelAccessSummaryResponse>
+
+32. DELETE /admin/model-access/{groupId}
+    作用: 删除或停用当前用户已购套餐分组
+    路径参数: groupId
+    返回: ApiResponse<Void>
+
+三、网关对外接口
+
+[模型列表]
+33. GET /v1/models
+    作用: 获取可用模型列表
+    鉴权: 通常使用 API Key
+    返回: JSON
+
+34. GET /models
+    作用: /v1/models 的兼容别名
+    鉴权: 通常使用 API Key
+    返回: JSON
+
+[OpenAI Chat Completions]
+35. POST /v1/chat/completions
+    作用: OpenAI Chat Completions 兼容接口
+    请求头: Authorization: Bearer <API_KEY>
+    请求体: 原始 JSON 字符串
+    返回: 普通 JSON 或 SSE
+
+36. POST /chat/completions
+    作用: /v1/chat/completions 的兼容别名
+    请求头: Authorization: Bearer <API_KEY>
+    请求体: 原始 JSON 字符串
+    返回: 普通 JSON 或 SSE
+
+[OpenAI Responses]
+37. POST /v1/responses
+    作用: OpenAI Responses 接口
+    请求头: Authorization: Bearer <API_KEY>
+    请求体: 原始 JSON 字符串
+    返回: 普通 JSON 或 SSE
+
+38. POST /responses
+    作用: /v1/responses 的兼容别名
+    请求头: Authorization: Bearer <API_KEY>
+    请求体: 原始 JSON 字符串
+    返回: 普通 JSON 或 SSE
+
+[Anthropic Messages]
+39. POST /v1/messages
+    作用: Anthropic Messages 接口
+    请求头: Authorization: Bearer <API_KEY> 或 x-api-key: <API_KEY>
+    请求体: 原始 JSON 字符串
+    返回: 普通 JSON 或 SSE
+
+40. POST /messages
+    作用: /v1/messages 的兼容别名
+    请求头: Authorization: Bearer <API_KEY> 或 x-api-key: <API_KEY>
+    请求体: 原始 JSON 字符串
+    返回: 普通 JSON 或 SSE
+
+41. POST /v1/v1/messages
+    作用: 重复前缀场景兼容别名
+    请求头: Authorization: Bearer <API_KEY> 或 x-api-key: <API_KEY>
+    请求体: 原始 JSON 字符串
+    返回: 普通 JSON 或 SSE
+
+四、主要请求/响应结构
+1. 后台统一返回结构
+   ApiResponse<T> = { success, message, data }
+
+2. 登录/注册返回
+   AdminLoginResponse = token, userId, username, nickname, roleCode, balance
+
+3. 用户列表返回
+   UserListItemResponse = id, username, nickname, roleCode, status, email, phone, balance, lastLoginAt, createdAt
+
+4. API Key 列表返回
+   ApiKeyListItemResponse = id, userId, username, name, accessKey, status, modelGroupId, modelGroupName, totalQuota, usedQuota, expiresAt, lastUsedAt, createdAt
+
+5. 渠道列表返回
+   ProviderListItemResponse = id, providerCode, providerName, baseUrl, providerType, status, priorityNo, timeoutMs, tokenCount, createdAt
+
+6. 模型列表返回
+   ModelListItemResponse = 见 src/main/java/com/zxw/modules/model/dto/ModelListItemResponse.java
+
+7. 套餐摘要返回
+   ModelAccessSummaryResponse = 见 src/main/java/com/zxw/modules/access/dto/ModelAccessSummaryResponse.java
+
+五、这次核对结果
+1. 旧版统计文件漏了 1 个逻辑接口:
+   DELETE /admin/model-access/{groupId}
+2. 因此总数从 35 个逻辑接口修正为 36 个
+3. 实际可访问 URL 总数从 40 条修正为 41 条
+
+六、接口来源文件
+1. src/main/java/com/zxw/modules/auth/controller/AdminAuthController.java
+2. src/main/java/com/zxw/modules/user/controller/AdminUserController.java
+3. src/main/java/com/zxw/modules/apikey/controller/AdminApiKeyController.java
+4. src/main/java/com/zxw/modules/provider/controller/AdminProviderController.java
+5. src/main/java/com/zxw/modules/model/controller/AdminModelController.java
+6. src/main/java/com/zxw/modules/request/controller/AdminRequestLogController.java
+7. src/main/java/com/zxw/modules/dashboard/controller/AdminDashboardController.java
+8. src/main/java/com/zxw/modules/system/controller/AdminSystemController.java
+9. src/main/java/com/zxw/modules/access/controller/AdminModelAccessController.java
+10. src/main/java/com/zxw/modules/gateway/controller/GatewayChatController.java
