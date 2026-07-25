@@ -13,6 +13,7 @@
                m.multiplier as multiplier,
                l.status_code as statusCode,
                l.latency_ms as latencyMs,
+               l.first_token_latency_ms as firstTokenLatencyMs,
                l.prompt_tokens as promptTokens,
                l.completion_tokens as completionTokens,
                l.total_tokens as totalTokens,

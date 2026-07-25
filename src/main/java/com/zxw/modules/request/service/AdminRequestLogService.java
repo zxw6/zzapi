@@ -4,30 +4,27 @@ import com.zxw.common.security.AdminContext;
 import com.zxw.common.security.JwtUser;
 import com.zxw.modules.request.dto.RequestLogItemResponse;
 import com.zxw.modules.request.dto.RequestLogPageResponse;
+import com.zxw.persistence.mapper.RequestLogMapper;
 import com.zxw.persistence.mapper.RequestLogQueryMapper;
 import com.zxw.persistence.model.RequestLogListView;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.util.List;
 
 @Service
-/**
- * 管理端请求日志服务。
- * 用于按权限范围分页查询最近请求记录，并转换成前端响应结构。
- */
 public class AdminRequestLogService {
 
-    // 查询层 Mapper，负责按权限范围拉取请求日志视图数据
     private final RequestLogQueryMapper requestLogQueryMapper;
+    private final RequestLogMapper requestLogMapper;
 
-    public AdminRequestLogService(RequestLogQueryMapper requestLogQueryMapper) {
+    public AdminRequestLogService(RequestLogQueryMapper requestLogQueryMapper,
+                                  RequestLogMapper requestLogMapper) {
         this.requestLogQueryMapper = requestLogQueryMapper;
+        this.requestLogMapper = requestLogMapper;
     }
 
-    /**
-     * 分页查询最近的请求日志。
-     */
     public RequestLogPageResponse<RequestLogItemResponse> page(int page, int pageSize) {
         JwtUser currentUser = AdminContext.require();
         int safePage = Math.max(page, 1);
@@ -42,7 +39,6 @@ public class AdminRequestLogService {
                 : requestLogQueryMapper.pageUser(currentUser.userId(), offset, safePageSize);
 
         List<RequestLogItemResponse> records = rows.stream()
-                // 统一补齐默认倍率字段，避免前端拿到空值。
                 .map(item -> new RequestLogItemResponse(
                         item.getRequestId(),
                         item.getUsername(),
@@ -52,6 +48,7 @@ public class AdminRequestLogService {
                         defaultBigDecimal(item.getMultiplier()),
                         item.getStatusCode(),
                         item.getLatencyMs(),
+                        item.getFirstTokenLatencyMs(),
                         item.getPromptTokens(),
                         item.getCompletionTokens(),
                         item.getTotalTokens(),
@@ -75,9 +72,15 @@ public class AdminRequestLogService {
         );
     }
 
-    /**
-     * 把空倍率值兜底为默认 1 倍。
-     */
+    @Transactional
+    public int clear(Long userId) {
+        JwtUser currentUser = AdminContext.require();
+        if (AdminContext.isAdmin()) {
+            return userId == null ? requestLogMapper.deleteAllLogs() : requestLogMapper.deleteByUserId(userId);
+        }
+        return requestLogMapper.deleteByUserId(currentUser.userId());
+    }
+
     private BigDecimal defaultBigDecimal(BigDecimal value) {
         return value == null ? BigDecimal.ONE : value;
     }

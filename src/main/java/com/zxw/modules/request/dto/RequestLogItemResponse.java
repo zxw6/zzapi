@@ -31,6 +31,8 @@ public record RequestLogItemResponse(
         Integer statusCode,
         @ApiModelProperty("耗时毫秒")
         Integer latencyMs,
+        @ApiModelProperty("First token latency ms")
+        Integer firstTokenLatencyMs,
         @ApiModelProperty("输入 token")
         Integer promptTokens,
         @ApiModelProperty("输出 token")

@@ -69,6 +69,9 @@ public interface UserModelAccessQueryMapper {
                                       @Param("startDate") LocalDate startDate,
                                       @Param("endDate") LocalDate endDate);
 
+    BigDecimal sumTotalUsageByUserAndGroup(@Param("userId") Long userId,
+                                           @Param("groupId") Long groupId);
+
     /**
      * 统计套餐在指定时间段内的消费金额。
      */
@@ -104,6 +107,7 @@ public interface UserModelAccessQueryMapper {
                                @Param("billingType") String billingType,
                                @Param("promptPrice") BigDecimal promptPrice,
                                @Param("cachedPromptPrice") BigDecimal cachedPromptPrice,
+                               @Param("cacheWritePromptPrice") BigDecimal cacheWritePromptPrice,
                                @Param("completionPrice") BigDecimal completionPrice,
                                @Param("requestPrice") BigDecimal requestPrice,
                                @Param("multiplier") BigDecimal multiplier);
@@ -116,6 +120,7 @@ public interface UserModelAccessQueryMapper {
                              @Param("billingType") String billingType,
                              @Param("promptPrice") BigDecimal promptPrice,
                              @Param("cachedPromptPrice") BigDecimal cachedPromptPrice,
+                             @Param("cacheWritePromptPrice") BigDecimal cacheWritePromptPrice,
                              @Param("completionPrice") BigDecimal completionPrice,
                              @Param("requestPrice") BigDecimal requestPrice,
                              @Param("multiplier") BigDecimal multiplier);

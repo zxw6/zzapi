@@ -67,6 +67,8 @@ public class RequestLogEntity {
     private BigDecimal costAmount;
     @ApiModelProperty("耗时毫秒")
     private Integer latencyMs;
+    @ApiModelProperty("First token latency ms")
+    private Integer firstTokenLatencyMs;
     @ApiModelProperty("是否成功")
     private Integer success;
     @ApiModelProperty("状态码")

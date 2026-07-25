@@ -7,17 +7,22 @@ import com.zxw.persistence.entity.RequestLogEntity;
 import java.time.LocalDateTime;
 
 /**
- * 请求日志 Mapper。
- */
-/**
- * 请求日志数据访问接口。
- * 用于维护调用日志的清理和基础持久化能力。
+ * Request log mapper.
  */
 public interface RequestLogMapper extends BaseMapper<RequestLogEntity> {
 
     default int deleteOlderThan(LocalDateTime cutoff) {
-        // 删除早于指定时间的请求日志
         return delete(Wrappers.<RequestLogEntity>lambdaQuery()
                 .lt(RequestLogEntity::getCreatedAt, cutoff));
+    }
+
+    default int deleteByUserId(Long userId) {
+        return delete(Wrappers.<RequestLogEntity>lambdaQuery()
+                .eq(RequestLogEntity::getUserId, userId));
+    }
+
+    default int deleteAllLogs() {
+        return delete(Wrappers.<RequestLogEntity>lambdaQuery()
+                .isNotNull(RequestLogEntity::getId));
     }
 }

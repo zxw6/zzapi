@@ -13,6 +13,7 @@
                coalesce(mgm.billing_type, m.billing_type) as billingType,
                coalesce(mgm.prompt_price, m.prompt_price) as promptPrice,
                coalesce(mgm.cached_prompt_price, m.cached_prompt_price) as cachedPromptPrice,
+               coalesce(mgm.cache_write_prompt_price, m.cache_write_prompt_price) as cacheWritePromptPrice,
                coalesce(mgm.completion_price, m.completion_price) as completionPrice,
                coalesce(mgm.request_price, m.request_price) as requestPrice,
                coalesce(mgm.multiplier, m.multiplier) as multiplier,

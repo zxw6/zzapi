@@ -35,6 +35,8 @@ public class ModelGroupModelEntity {
     private BigDecimal promptPrice;
     @ApiModelProperty("缓存输入价格")
     private BigDecimal cachedPromptPrice;
+    @ApiModelProperty("缓存写入价格")
+    private BigDecimal cacheWritePromptPrice;
     @ApiModelProperty("输出价格")
     private BigDecimal completionPrice;
     @ApiModelProperty("按次价格")

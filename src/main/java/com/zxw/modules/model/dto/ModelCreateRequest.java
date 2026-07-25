@@ -33,6 +33,9 @@ public record ModelCreateRequest(
         @ApiModelProperty("缓存输入价格")
         @DecimalMin(value = "0.000000", message = "cached prompt price must be greater than or equal to 0")
         BigDecimal cachedPromptPrice,
+        @ApiModelProperty("缓存写入价格")
+        @DecimalMin(value = "0.000000", message = "cache write prompt price must be greater than or equal to 0")
+        BigDecimal cacheWritePromptPrice,
         @ApiModelProperty("输出价格")
         @DecimalMin(value = "0.000000", message = "completion 单价不能小于 0")
         BigDecimal completionPrice,

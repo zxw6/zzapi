@@ -63,6 +63,19 @@ public class GatewayChatController {
         return gatewayChatService.responses(resolveAuthorization(authorization, null), body, request);
     }
 
+    @PostMapping({"/v1/images/generations", "/images/generations"})
+    @ApiOperation("OpenAI Images Generations")
+    /**
+     * 处理 OpenAI Images Generations 请求。
+     */
+    public ResponseEntity<?> imageGenerations(@RequestHeader(value = "Authorization", required = false) String authorization,
+                                              @RequestHeader(value = "x-api-key", required = false) String xApiKey,
+                                              @RequestBody String body,
+                                              HttpServletRequest request) {
+        // 兼容 OpenAI images generations 协议
+        return gatewayChatService.imageGenerations(resolveAuthorization(authorization, xApiKey), body, request);
+    }
+
     @PostMapping({"/v1/messages", "/messages", "/v1/v1/messages"})
     @ApiOperation("Anthropic Messages")
     /**

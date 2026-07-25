@@ -24,6 +24,7 @@ public class RequestLogListView {
     private BigDecimal multiplier;
     private Integer statusCode;
     private Integer latencyMs;
+    private Integer firstTokenLatencyMs;
     private Integer promptTokens;
     private Integer completionTokens;
     private Integer totalTokens;

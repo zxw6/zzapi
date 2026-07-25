@@ -33,6 +33,9 @@ public record ModelBatchImportRequest(
         @ApiModelProperty("缓存输入价格")
         @DecimalMin(value = "0.000000", message = "缓存输入价格不能小于 0")
         BigDecimal cachedPromptPrice,
+        @ApiModelProperty("缓存写入价格")
+        @DecimalMin(value = "0.000000", message = "缓存写入价格不能小于 0")
+        BigDecimal cacheWritePromptPrice,
         @ApiModelProperty("输出价格")
         @DecimalMin(value = "0.000000", message = "输出价格不能小于 0")
         BigDecimal completionPrice,

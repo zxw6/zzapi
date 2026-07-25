@@ -24,6 +24,7 @@ public class ModelAdminListView {
     private String billingType;
     private BigDecimal promptPrice;
     private BigDecimal cachedPromptPrice;
+    private BigDecimal cacheWritePromptPrice;
     private BigDecimal completionPrice;
     private BigDecimal requestPrice;
     private BigDecimal multiplier;

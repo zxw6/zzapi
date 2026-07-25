@@ -26,11 +26,12 @@
     <select id="selectBoundPackageIdForModel" resultType="java.lang.Long">
         select p.id
         from user_model_packages p
+        join model_groups g on g.id = p.group_id
         join model_group_models mgm on mgm.group_id = p.group_id
         where p.id = #{packageId}
           and p.user_id = #{userId}
           and p.status = 'ACTIVE'
-          and p.expires_at &gt; now()
+          and (upper(g.package_type) = 'BALANCE' or p.expires_at &gt; now())
           and mgm.model_id = #{modelId}
         limit 1
     </select>
@@ -38,11 +39,12 @@
     <select id="selectFirstActivePackageIdByGroupAndModel" resultType="java.lang.Long">
         select p.id
         from user_model_packages p
+        join model_groups g on g.id = p.group_id
         join model_group_models mgm on mgm.group_id = p.group_id
         where p.user_id = #{userId}
           and p.group_id = #{groupId}
           and p.status = 'ACTIVE'
-          and p.expires_at &gt; now()
+          and (upper(g.package_type) = 'BALANCE' or p.expires_at &gt; now())
           and mgm.model_id = #{modelId}
         order by p.id asc
         limit 1

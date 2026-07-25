@@ -5,6 +5,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.zxw.common.api.ApiResponse;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.ConstraintViolationException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -23,6 +25,7 @@ import java.util.UUID;
  */
 public class GlobalExceptionHandler {
 
+    private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
     private static final String UPSTREAM_NETWORK_UNSTABLE_MESSAGE = "网络不稳定或上游响应超时，请稍后重试。";
 
     private final ObjectMapper objectMapper;
@@ -68,6 +71,7 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(Exception.class)
     public ResponseEntity<?> handleOther(Exception ex, HttpServletRequest request) {
         // 兜底处理未捕获异常，避免直接把堆栈暴露给前端
+        log.error("Unhandled request exception: {} {}", request.getMethod(), request.getRequestURI(), ex);
         return buildErrorResponse(
                 HttpStatus.INTERNAL_SERVER_ERROR.value(),
                 ex.getMessage() == null ? "System error" : ex.getMessage(),

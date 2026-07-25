@@ -73,7 +73,7 @@ public class AdminModelAccessController {
      */
     @PostMapping("/purchase")
     @ApiOperation("购买套餐")
-    public ApiResponse<ModelAccessSummaryResponse> purchase(@Valid @RequestBody PurchaseModelPackageRequest request) {
+    public ApiResponse<List<ModelPackagePurchaseRecordResponse>> purchase(@Valid @RequestBody PurchaseModelPackageRequest request) {
         // 购买指定模型套餐
         return ApiResponse.ok("套餐购买成功", userModelAccessService.purchase(request));
     }

@@ -4,8 +4,11 @@ import com.zxw.common.security.AdminAuthInterceptor;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.web.servlet.config.annotation.CorsRegistry;
 import org.springframework.web.servlet.config.annotation.InterceptorRegistry;
+import org.springframework.web.servlet.config.annotation.ResourceHandlerRegistry;
 import org.springframework.web.servlet.config.annotation.ViewControllerRegistry;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
+
+import java.nio.file.Path;
 
 @Configuration
 /**
@@ -52,6 +55,18 @@ public class WebMvcConfig implements WebMvcConfigurer {
         if (!gatewayCorsProperties.exposedHeaders().isEmpty()) {
             cors.exposedHeaders(gatewayCorsProperties.exposedHeaders().toArray(String[]::new));
         }
+    }
+
+    @Override
+    public void addResourceHandlers(ResourceHandlerRegistry registry) {
+        String generatedImagesLocation = Path.of("generated-images").toAbsolutePath().normalize().toUri().toString();
+        String tempGeneratedImagesLocation = Path.of(System.getProperty("java.io.tmpdir"), "zzapi-generated-images")
+                .toAbsolutePath()
+                .normalize()
+                .toUri()
+                .toString();
+        registry.addResourceHandler("/generated-images/**")
+                .addResourceLocations(generatedImagesLocation, tempGeneratedImagesLocation);
     }
 
     @Override

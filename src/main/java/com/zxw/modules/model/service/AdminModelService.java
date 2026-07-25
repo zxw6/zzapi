@@ -152,6 +152,7 @@ public class AdminModelService {
                 blankToDefault(request.billingType(), "TOKEN"),
                 numberOrZero(request.promptPrice()),
                 numberOrZero(request.cachedPromptPrice()),
+                numberOrZero(request.cacheWritePromptPrice()),
                 numberOrZero(request.completionPrice()),
                 request.requestPrice() == null ? DEFAULT_REQUEST_PRICE : numberOrZero(request.requestPrice()),
                 numberOrZero(request.imagePrice()),
@@ -178,6 +179,7 @@ public class AdminModelService {
         updateModel.setBillingType(blankToDefault(request.billingType(), "TOKEN"));
         updateModel.setPromptPrice(numberOrZero(request.promptPrice()));
         updateModel.setCachedPromptPrice(numberOrZero(request.cachedPromptPrice()));
+        updateModel.setCacheWritePromptPrice(numberOrZero(request.cacheWritePromptPrice()));
         updateModel.setCompletionPrice(numberOrZero(request.completionPrice()));
         updateModel.setRequestPrice(request.requestPrice() == null ? DEFAULT_REQUEST_PRICE : numberOrZero(request.requestPrice()));
         updateModel.setMultiplier(request.multiplier() == null ? BigDecimal.ONE : request.multiplier());
@@ -256,12 +258,13 @@ public class AdminModelService {
                     modelName,
                     "CHAT",
                     "TOKEN",
-                    BigDecimal.ZERO,
-                    BigDecimal.ZERO,
-                    BigDecimal.ZERO,
+                    numberOrZero(request.promptPrice()),
+                    numberOrZero(request.cachedPromptPrice()),
+                    numberOrZero(request.cacheWritePromptPrice()),
+                    numberOrZero(request.completionPrice()),
                     DEFAULT_REQUEST_PRICE,
                     BigDecimal.ZERO,
-                    BigDecimal.ONE,
+                    request.multiplier() == null ? BigDecimal.ONE : request.multiplier(),
                     request.isPublic() == null || request.isPublic(),
                     request.groupId(),
                     request.providerId(),
@@ -355,6 +358,7 @@ public class AdminModelService {
                                       String billingType,
                                       BigDecimal promptPrice,
                                       BigDecimal cachedPromptPrice,
+                                      BigDecimal cacheWritePromptPrice,
                                       BigDecimal completionPrice,
                                       BigDecimal requestPrice,
                                       BigDecimal imagePrice,
@@ -371,6 +375,7 @@ public class AdminModelService {
         model.setBillingType(billingType);
         model.setPromptPrice(promptPrice);
         model.setCachedPromptPrice(cachedPromptPrice);
+        model.setCacheWritePromptPrice(cacheWritePromptPrice);
         model.setCompletionPrice(completionPrice);
         model.setRequestPrice(requestPrice);
         model.setImagePrice(imagePrice);
@@ -399,6 +404,7 @@ public class AdminModelService {
                 null,
                 null,
                 null,
+                null,
                 null
         );
         return model.getId();
@@ -414,6 +420,7 @@ public class AdminModelService {
                 item.getBillingType(),
                 item.getPromptPrice(),
                 item.getCachedPromptPrice(),
+                item.getCacheWritePromptPrice(),
                 item.getCompletionPrice(),
                 item.getRequestPrice(),
                 item.getMultiplier(),
@@ -456,17 +463,7 @@ public class AdminModelService {
             return;
         }
 
-        if (modelGroupModelMapper.existsBinding(modelId, groupId)) {
-            // 目标分组已经有绑定时，删除旧绑定避免重复
-            modelGroupModelMapper.deleteByIdValue(bindingId);
-            return;
-        }
-
-        // 否则直接把原绑定迁移到新的分组
-        ModelGroupModelEntity updateBinding = new ModelGroupModelEntity();
-        updateBinding.setId(bindingId);
-        updateBinding.setGroupId(groupId);
-        modelGroupModelMapper.updateById(updateBinding);
+        userModelAccessService.addModelGroupBinding(modelId, groupId);
     }
 
     /**

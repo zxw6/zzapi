@@ -32,6 +32,8 @@ public record ModelListItemResponse(
         BigDecimal promptPrice,
         @ApiModelProperty("缓存输入价格")
         BigDecimal cachedPromptPrice,
+        @ApiModelProperty("缓存写入价格")
+        BigDecimal cacheWritePromptPrice,
         @ApiModelProperty("输出价格")
         BigDecimal completionPrice,
         @ApiModelProperty("请求价格")
