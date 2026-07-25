@@ -39,6 +39,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.servlet.mvc.method.annotation.ResponseBodyEmitter;
 
 import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.math.BigDecimal;
@@ -58,6 +59,7 @@ import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -102,6 +104,8 @@ public class GatewayChatService {
     private static final int SIMPLE_QUERY_INPUT_ITEM_THRESHOLD = 24;
     private static final int SIMPLE_QUERY_INPUT_CHAR_THRESHOLD = 20000;
     private static final DateTimeFormatter DIRECT_TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+    private static final String DEFAULT_IMAGE_GENERATION_MODEL = "gpt-image-2";
+    private static final int MIN_IMAGE_GENERATION_TIMEOUT_MS = 240_000;
     // 默认注入给 IDE/Agent 模式模型的系统提示词。
     private static final String DEFAULT_IDE_AGENT_INSTRUCTIONS = """
             你是一个高级工程代理，不是普通聊天助手。你的目标不是只回答问题，而是接手任务、推进任务、完成任务。
@@ -236,6 +240,7 @@ public class GatewayChatService {
             boolean hasExplicitSystemPrompt = hasExplicitChatSystemPrompt(input);
             ObjectNode upstreamRequest = input.deepCopy();
             upstreamRequest.put("model", route.upstreamModel());
+            applyCurrentTimeContextToChat(upstreamRequest);
             // 统一补齐 IDE/助手模式默认提示词与模型身份文案。
             boolean injectedIdePrompt = applyDefaultIdeInstructionsToChat(upstreamRequest, route.modelCode(), hasExplicitSystemPrompt);
             if (!injectedIdePrompt && !hasExplicitSystemPrompt) {
@@ -301,6 +306,7 @@ public class GatewayChatService {
             if (input instanceof ObjectNode objectInput) {
                 // Responses 协议会统一注入默认指令，并对简单输入做轻量优化。
                 applyDefaultIdeInstructionsToResponses(objectInput, route.modelCode());
+                applyCurrentTimeContextToResponses(objectInput);
                 ObjectNode optimizedInput = optimizeResponsesInputForSimpleQuery(objectInput, route.modelCode());
                 if (optimizedInput != objectInput) {
                     input = optimizedInput;
@@ -308,7 +314,9 @@ public class GatewayChatService {
                 }
             }
 
-            if (input instanceof ObjectNode objectInput && shouldHandleResponsesAsAgent(route.modelCode(), objectInput)) {
+            if (input instanceof ObjectNode objectInput
+                    && !shouldKeepNativeResponsesRouting(route)
+                    && shouldHandleResponsesAsAgent(route.modelCode(), objectInput)) {
                 // 进入 agent 模式时，不再走普通上游转发，而是由本地工具链驱动。
                 if (stream) {
                     return closeAndReturn(streamAgentResponses(auth, route, requestId, effectiveRequestBody, objectInput,
@@ -409,6 +417,78 @@ public class GatewayChatService {
     }
 
     /**
+     * OpenAI Images Generations 协议入口。
+     */
+    public ResponseEntity<?> imageGenerations(String authorization, String requestBody, HttpServletRequest servletRequest) {
+        String bearerToken = extractBearerToken(authorization);
+        ApiKeyAuthService.AuthenticatedApiKey auth = apiKeyAuthService.authenticate(bearerToken);
+        GatewayConcurrencyLimiter.Permit concurrencyPermit = gatewayConcurrencyLimiter.acquireRequest(auth);
+        apiKeyAuthService.markUsed(auth.id());
+
+        long failureStart = System.currentTimeMillis();
+        GatewayRouteService.RouteDefinition resolvedRoute = null;
+        try {
+            JsonNode input = objectMapper.readTree(requestBody);
+            String modelCode = getRequiredText(input, "model");
+            String prompt = input.path("prompt").asText("");
+            if (prompt.isBlank()) {
+                throw new BusinessException(400, "缺少参数: prompt");
+            }
+
+            GatewayRouteService.RouteDefinition clientRoute = gatewayRouteService.resolve(modelCode);
+            userModelAccessService.validateGatewayPackageAccess(auth, clientRoute);
+            clientRoute = gatewayRouteService.applyGroupPricing(clientRoute, userModelAccessService.resolveGatewayPackageGroupId(auth, clientRoute));
+
+            GatewayRouteService.RouteDefinition executionRoute = withImageGenerationTimeout(
+                    resolveImageGenerationExecutionRoute(auth, clientRoute)
+            );
+            GatewayRouteService.RouteDefinition route = buildClientVisibleImageRoute(clientRoute, executionRoute);
+            resolvedRoute = route;
+
+            String requestId = buildRequestId();
+            long startTime = System.currentTimeMillis();
+
+            ObjectNode upstreamRequest = input.deepCopy();
+            upstreamRequest.put("model", executionRoute.upstreamModel());
+            String upstreamBody = objectMapper.writeValueAsString(upstreamRequest);
+
+            UpstreamTextResponse response = executeOpenAiTextRequest(executionRoute, "/images/generations", upstreamBody);
+            long latency = System.currentTimeMillis() - startTime;
+            String responseBody = rewriteClientFacingModel(
+                    route,
+                    normalizeUpstreamResponseBody(route, response.statusCode(), response.body())
+            );
+            if (response.statusCode() >= 200 && response.statusCode() < 300) {
+                responseBody = convertImageBase64ToUrls(responseBody, servletRequest);
+            }
+            String logResponseBody = summarizeImageResponseForLog(responseBody);
+            boolean success = response.statusCode() >= 200 && response.statusCode() < 300;
+            ChargeAmounts charge = success
+                    ? calculateRequestCharge(route)
+                    : new ChargeAmounts(BigDecimal.ZERO, BigDecimal.ZERO);
+
+            logAndCharge(auth, route, requestId, servletRequest, requestBody, logResponseBody,
+                    0, 0, 0, 0, charge.userAmount(), charge.costAmount(),
+                    (int) latency, response.statusCode(), success, success ? null : responseBody);
+
+            return ResponseEntity.status(response.statusCode())
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body(responseBody);
+        } catch (BusinessException ex) {
+            concurrencyPermit.close();
+            logFailedRequest(auth, resolvedRoute, requestBody, servletRequest, failureStart, ex.getStatus(), ex.getMessage());
+            throw new BusinessException(ex.getStatus(), toClientErrorMessage(ex.getStatus(), ex.getMessage()));
+        } catch (Exception ex) {
+            concurrencyPermit.close();
+            int status = isTimeoutException(ex) ? 504 : 500;
+            logFailedRequest(auth, resolvedRoute, requestBody, servletRequest, failureStart, status, ex.getMessage());
+            throw new BusinessException(status, toClientErrorMessage(status, "Images forwarding failed: " + ex.getMessage()));
+        } finally {
+            concurrencyPermit.close();
+        }
+    }
+
+    /**
      * 查询当前可见模型列表。
      * 未登录返回公共模型，带 API Key 时按当前套餐分组过滤。
      */
@@ -449,9 +529,6 @@ public class GatewayChatService {
                                                                   HttpServletRequest servletRequest,
                                                                   long startTime,
                                                                   boolean stream) throws Exception {
-        if (shouldUseAgentMode(route.modelCode())) {
-            return null;
-        }
         String latestUser = extractLatestUserTextFromChat(input);
         String directAnswer = buildSimpleDirectAnswer(latestUser);
         if (directAnswer == null) {
@@ -487,9 +564,6 @@ public class GatewayChatService {
                                                                HttpServletRequest servletRequest,
                                                                long startTime,
                                                                boolean stream) throws Exception {
-        if (input instanceof ObjectNode objectInput && shouldBypassDirectResponsesShortcut(route.modelCode(), objectInput)) {
-            return null;
-        }
         String latestUser = extractLatestUserTextFromResponses(input);
         String directAnswer = buildSimpleDirectAnswer(latestUser);
         if (directAnswer != null) {
@@ -509,6 +583,10 @@ public class GatewayChatService {
             return ResponseEntity.ok()
                     .contentType(MediaType.APPLICATION_JSON)
                     .body(responseBody);
+        }
+
+        if (input instanceof ObjectNode objectInput && shouldBypassDirectResponsesShortcut(route.modelCode(), objectInput)) {
+            return null;
         }
 
         return null;
@@ -602,12 +680,13 @@ public class GatewayChatService {
                     .contentType(MediaType.APPLICATION_JSON)
                     .body("{\"error\":{\"message\":\"上游响应格式无效\",\"type\":\"server_error\"}}");
         }
-        JsonNode usage = responseJson == null ? null : responseJson.path("usage");
-        int promptTokens = usage == null ? 0 : usage.path("input_tokens").asInt(0);
-        int completionTokens = usage == null ? 0 : usage.path("output_tokens").asInt(0);
-        int totalTokens = promptTokens + completionTokens;
+        UsageTotals usage = extractAnthropicUsage(responseJson);
+        int promptTokens = usage.promptTokens();
+        int completionTokens = usage.completionTokens();
+        int totalTokens = usage.totalTokens();
         ChargeAmounts charge = calculateCharge(route, originalRequestBody,
-                promptTokens, completionTokens, totalTokens, 0, (int) latency);
+                promptTokens, completionTokens, totalTokens, usage.cachedPromptTokens(),
+                usage.cacheWritePromptTokens(), (int) latency);
 
         boolean success = response.statusCode() >= 200 && response.statusCode() < 300;
         String responseBody = success && responseJson != null
@@ -615,7 +694,7 @@ public class GatewayChatService {
                 : response.body();
 
         logAndCharge(auth, route, requestId, servletRequest, originalRequestBody, responseBody,
-                promptTokens, completionTokens, totalTokens, 0, charge.userAmount(), charge.costAmount(),
+                promptTokens, completionTokens, totalTokens, usage.cachedPromptTokens(), charge.userAmount(), charge.costAmount(),
                 (int) latency, response.statusCode(), success, success ? null : response.body());
 
         return ResponseEntity.status(response.statusCode())
@@ -644,7 +723,7 @@ public class GatewayChatService {
         int completionTokens = usage.completionTokens();
         int totalTokens = usage.totalTokens();
         ChargeAmounts charge = calculateCharge(route, originalRequestBody,
-                promptTokens, completionTokens, totalTokens, usage.cachedPromptTokens(), (int) latency);
+                promptTokens, completionTokens, totalTokens, usage.cachedPromptTokens(), usage.cacheWritePromptTokens(), (int) latency);
 
         boolean success = response.statusCode() >= 200 && response.statusCode() < 300;
         logAndCharge(auth, route, requestId, servletRequest, originalRequestBody, response.body(),
@@ -681,7 +760,7 @@ public class GatewayChatService {
         int completionTokens = usage.completionTokens();
         int totalTokens = usage.totalTokens();
         ChargeAmounts charge = calculateCharge(route, originalRequestBody,
-                promptTokens, completionTokens, totalTokens, usage.cachedPromptTokens(), (int) latency);
+                promptTokens, completionTokens, totalTokens, usage.cachedPromptTokens(), usage.cacheWritePromptTokens(), (int) latency);
 
         boolean success = response.statusCode() >= 200 && response.statusCode() < 300;
         String clientBody = success && openAiJson != null
@@ -720,12 +799,16 @@ public class GatewayChatService {
         int completionTokens = usage.completionTokens();
         int totalTokens = usage.totalTokens();
         ChargeAmounts charge = calculateCharge(route, originalRequestBody,
-                promptTokens, completionTokens, totalTokens, usage.cachedPromptTokens(), (int) latency);
+                promptTokens, completionTokens, totalTokens, usage.cachedPromptTokens(), usage.cacheWritePromptTokens(), (int) latency);
 
         boolean success = response.statusCode() >= 200 && response.statusCode() < 300;
-        logAndCharge(auth, route, requestId, servletRequest, originalRequestBody, responseBody,
+        if (success) {
+            responseBody = convertImageBase64ToUrls(responseBody, servletRequest);
+        }
+        String logResponseBody = summarizeImageResponseForLog(responseBody);
+        logAndCharge(auth, route, requestId, servletRequest, originalRequestBody, logResponseBody,
                 promptTokens, completionTokens, totalTokens, usage.cachedPromptTokens(), charge.userAmount(), charge.costAmount(),
-                (int) latency, response.statusCode(), success, success ? null : responseBody);
+                (int) latency, response.statusCode(), success, success ? null : logResponseBody);
 
         return ResponseEntity.status(response.statusCode())
                 .contentType(MediaType.APPLICATION_JSON)
@@ -759,12 +842,16 @@ public class GatewayChatService {
         int completionTokens = usage.completionTokens();
         int totalTokens = usage.totalTokens();
         ChargeAmounts charge = calculateCharge(route, originalRequestBody,
-                promptTokens, completionTokens, totalTokens, usage.cachedPromptTokens(), (int) latency);
+                promptTokens, completionTokens, totalTokens, usage.cachedPromptTokens(), usage.cacheWritePromptTokens(), (int) latency);
 
         boolean success = response.statusCode() >= 200 && response.statusCode() < 300;
-        logAndCharge(auth, route, requestId, servletRequest, originalRequestBody, responseBody,
+        if (success) {
+            responseBody = convertImageBase64ToUrls(responseBody, servletRequest);
+        }
+        String logResponseBody = summarizeImageResponseForLog(responseBody);
+        logAndCharge(auth, route, requestId, servletRequest, originalRequestBody, logResponseBody,
                 promptTokens, completionTokens, totalTokens, usage.cachedPromptTokens(), charge.userAmount(), charge.costAmount(),
-                (int) latency, response.statusCode(), success, success ? null : responseBody);
+                (int) latency, response.statusCode(), success, success ? null : logResponseBody);
 
         return ResponseEntity.status(response.statusCode())
                 .contentType(MediaType.APPLICATION_JSON)
@@ -819,7 +906,8 @@ public class GatewayChatService {
                 totalTokens = usage.totalTokens();
                 cachedPromptTokens = usage.cachedPromptTokens();
                 ChargeAmounts charge = calculateCharge(route, originalRequestBody,
-                        usage.promptTokens(), usage.completionTokens(), usage.totalTokens(), cachedPromptTokens, (int) latency);
+                        usage.promptTokens(), usage.completionTokens(), usage.totalTokens(), cachedPromptTokens,
+                        usage.cacheWritePromptTokens(), (int) latency);
                 costAmount = charge.costAmount();
                 userAmount = charge.userAmount();
             }
@@ -871,7 +959,8 @@ public class GatewayChatService {
                 totalTokens = usage.totalTokens();
                 cachedPromptTokens = usage.cachedPromptTokens();
                 ChargeAmounts charge = calculateCharge(route, originalRequestBody,
-                        promptTokens, completionTokens, totalTokens, cachedPromptTokens, (int) latency);
+                        promptTokens, completionTokens, totalTokens, cachedPromptTokens,
+                        usage.cacheWritePromptTokens(), (int) latency);
                 costAmount = charge.costAmount();
                 userAmount = charge.userAmount();
                 clientBody = buildResponsesEventStreamFromChatCompletion(chatJson, route.modelCode());
@@ -908,6 +997,7 @@ public class GatewayChatService {
                                                                         GatewayConcurrencyLimiter.Permit requestPermit) {
         ResponseBodyEmitter emitter = new ResponseBodyEmitter(gatewayConcurrencyLimiter.streamTimeoutMs());
         GatewayConcurrencyLimiter.Permit streamPermit = gatewayConcurrencyLimiter.acquireStream(auth);
+        final int[] firstTokenLatencyMs = {-1};
         Runnable streamTask = () -> {
             int statusCode = 0;
             boolean success = false;
@@ -932,6 +1022,9 @@ public class GatewayChatService {
                             if (captured.length() < STREAM_CAPTURE_LIMIT) {
                                 captured.append(new String(buffer, 0, read, StandardCharsets.UTF_8));
                             }
+                            if (firstTokenLatencyMs[0] < 0 && containsFirstTokenSignal(captured)) {
+                                firstTokenLatencyMs[0] = (int) Math.max(0, System.currentTimeMillis() - startTime);
+                            }
                         }
                     }
                     if (responsesProtocol && !containsResponsesCompletedEvent(captured)) {
@@ -949,7 +1042,7 @@ public class GatewayChatService {
             } finally {
                 logStreamRequest(auth, route, requestId, servletRequest, originalRequestBody,
                         captured.toString(), startTime, statusCode == 0 ? 499 : statusCode,
-                        success, errorMessage, responsesProtocol);
+                        success, errorMessage, responsesProtocol, firstTokenLatencyMs[0]);
                 emitter.complete();
                 streamPermit.close();
                 requestPermit.close();
@@ -979,10 +1072,14 @@ public class GatewayChatService {
                                   int statusCode,
                                   boolean success,
                                   String errorMessage,
-                                  boolean responsesProtocol) {
+                                  boolean responsesProtocol,
+                                  int firstTokenLatencyMs) {
         try {
             long latency = System.currentTimeMillis() - startTime;
-            UsageTotals usage = new UsageTotals(0, 0, 0, 0);
+            int effectiveFirstTokenLatencyMs = success
+                    ? (firstTokenLatencyMs >= 0 ? firstTokenLatencyMs : (int) latency)
+                    : 0;
+            UsageTotals usage = new UsageTotals(0, 0, 0, 0, 0);
             if (success) {
                 JsonNode usageJson = tryReadJson(responsesProtocol
                         ? buildResponsesFromSse(route, eventStreamBody)
@@ -990,12 +1087,14 @@ public class GatewayChatService {
                 usage = responsesProtocol ? extractResponsesUsage(usageJson) : extractChatUsage(usageJson);
             }
             ChargeAmounts charge = calculateCharge(route, originalRequestBody,
-                    usage.promptTokens(), usage.completionTokens(), usage.totalTokens(), usage.cachedPromptTokens(), (int) latency);
+                    usage.promptTokens(), usage.completionTokens(), usage.totalTokens(), usage.cachedPromptTokens(),
+                    usage.cacheWritePromptTokens(), (int) latency);
             logAndCharge(auth, route, requestId, servletRequest, originalRequestBody, eventStreamBody,
                     usage.promptTokens(), usage.completionTokens(), usage.totalTokens(), usage.cachedPromptTokens(),
                     success ? charge.userAmount() : BigDecimal.ZERO,
                     success ? charge.costAmount() : BigDecimal.ZERO,
-                    (int) latency, statusCode, success, success ? null : errorMessage);
+                    (int) latency, effectiveFirstTokenLatencyMs,
+                    statusCode, success, success ? null : errorMessage);
         } catch (Exception ex) {
             log.warn("Failed to persist streaming request log: {}", ex.getMessage());
         }
@@ -1003,6 +1102,16 @@ public class GatewayChatService {
 
     private boolean containsResponsesCompletedEvent(CharSequence eventStreamBody) {
         return eventStreamBody != null && eventStreamBody.toString().contains("response.completed");
+    }
+
+    private boolean containsFirstTokenSignal(CharSequence eventStreamBody) {
+        if (eventStreamBody == null) {
+            return false;
+        }
+        String body = eventStreamBody.toString();
+        return body.contains("response.output_text.delta")
+                || body.contains("\"delta\":{\"content\":\"")
+                || body.contains("\"delta\": {\"content\": \"");
     }
 
     private void sendSseError(ResponseBodyEmitter emitter, int statusCode, String message, boolean responsesProtocol) {
@@ -1361,7 +1470,8 @@ public class GatewayChatService {
      * 判断当前上游是否需要把 Codex SSE 聚合成完整响应再向外转换。
      */
     private boolean shouldAggregateCodexStream(GatewayRouteService.RouteDefinition route) {
-        return !isOfficialOpenAiRoute(route)
+        return !shouldKeepNativeResponsesRouting(route)
+                && !isOfficialOpenAiRoute(route)
                 && route.upstreamModel() != null
                 && route.upstreamModel().toLowerCase(Locale.ROOT).contains("codex");
     }
@@ -1375,7 +1485,7 @@ public class GatewayChatService {
         }
         String publicModel = route.modelCode() == null ? "" : route.modelCode().toLowerCase(Locale.ROOT);
         String upstreamModel = route.upstreamModel() == null ? "" : route.upstreamModel().toLowerCase(Locale.ROOT);
-        return isAgentCapableOpenAiModel(publicModel) || isAgentCapableOpenAiModel(upstreamModel);
+        return isNativeResponsesModel(publicModel) || isNativeResponsesModel(upstreamModel);
     }
 
     /**
@@ -1387,6 +1497,95 @@ public class GatewayChatService {
                 && !isOfficialOpenAiRoute(route)
                 && !shouldKeepNativeResponsesRouting(route)
                 && !shouldAggregateCodexStream(route);
+    }
+
+    /**
+     * 图片生成允许客户端传当前聊天模型；底层统一使用图片模型路由执行。
+     */
+    private GatewayRouteService.RouteDefinition resolveImageGenerationExecutionRoute(
+            ApiKeyAuthService.AuthenticatedApiKey auth,
+            GatewayRouteService.RouteDefinition clientRoute) {
+        if (isImageGenerationRoute(clientRoute)) {
+            return clientRoute;
+        }
+        return gatewayRouteService.resolve(DEFAULT_IMAGE_GENERATION_MODEL);
+    }
+
+    /**
+     * 日志、扣费和对外响应保留用户当前选择的模型；上游连接信息使用图片执行路由。
+     */
+    private GatewayRouteService.RouteDefinition buildClientVisibleImageRoute(
+            GatewayRouteService.RouteDefinition clientRoute,
+            GatewayRouteService.RouteDefinition executionRoute) {
+        if (clientRoute == null || executionRoute == null || isImageGenerationRoute(clientRoute)) {
+            return executionRoute;
+        }
+        return new GatewayRouteService.RouteDefinition(
+                clientRoute.modelId(),
+                clientRoute.modelCode(),
+                clientRoute.modelName(),
+                executionRoute.providerId(),
+                executionRoute.providerTokenId(),
+                executionRoute.providerName(),
+                executionRoute.baseUrl(),
+                executionRoute.providerType(),
+                executionRoute.timeoutMs(),
+                executionRoute.upstreamModel(),
+                executionRoute.billingType(),
+                executionRoute.promptPrice(),
+                executionRoute.cachedPromptPrice(),
+                executionRoute.cacheWritePromptPrice(),
+                executionRoute.completionPrice(),
+                executionRoute.requestPrice(),
+                executionRoute.multiplier(),
+                executionRoute.providerToken()
+        );
+    }
+
+    /**
+     * 图片生成通常比聊天慢，给图片执行路由单独放宽超时，避免 60 秒默认超时误判为网络不稳定。
+     */
+    private GatewayRouteService.RouteDefinition withImageGenerationTimeout(GatewayRouteService.RouteDefinition route) {
+        if (route == null) {
+            return null;
+        }
+        int timeoutMs = route.timeoutMs() == null || route.timeoutMs() <= 0
+                ? MIN_IMAGE_GENERATION_TIMEOUT_MS
+                : Math.max(route.timeoutMs(), MIN_IMAGE_GENERATION_TIMEOUT_MS);
+        return new GatewayRouteService.RouteDefinition(
+                route.modelId(),
+                route.modelCode(),
+                route.modelName(),
+                route.providerId(),
+                route.providerTokenId(),
+                route.providerName(),
+                route.baseUrl(),
+                route.providerType(),
+                timeoutMs,
+                route.upstreamModel(),
+                route.billingType(),
+                route.promptPrice(),
+                route.cachedPromptPrice(),
+                route.cacheWritePromptPrice(),
+                route.completionPrice(),
+                route.requestPrice(),
+                route.multiplier(),
+                route.providerToken()
+        );
+    }
+
+    private boolean isImageGenerationRoute(GatewayRouteService.RouteDefinition route) {
+        if (route == null) {
+            return false;
+        }
+        return isImageGenerationModel(route.modelCode()) || isImageGenerationModel(route.upstreamModel());
+    }
+
+    private boolean isImageGenerationModel(String modelCode) {
+        String normalized = modelCode == null ? "" : modelCode.toLowerCase(Locale.ROOT);
+        return normalized.contains("image")
+                || normalized.contains("dall-e")
+                || normalized.contains("gpt-image");
     }
 
     /**
@@ -1989,8 +2188,9 @@ public class GatewayChatService {
      * 把 Claude 原生响应转换成 OpenAI chat completion 响应。
      */
     private ObjectNode buildOpenAiResponseFromAnthropic(JsonNode anthropicResponse, String modelCode) {
-        int promptTokens = anthropicResponse.path("usage").path("input_tokens").asInt(0);
-        int completionTokens = anthropicResponse.path("usage").path("output_tokens").asInt(0);
+        UsageTotals normalizedUsage = extractAnthropicUsage(anthropicResponse);
+        int promptTokens = normalizedUsage.promptTokens();
+        int completionTokens = normalizedUsage.completionTokens();
 
         ObjectNode response = objectMapper.createObjectNode();
         response.put("id", anthropicResponse.path("id").asText(buildRequestId()));
@@ -2015,6 +2215,10 @@ public class GatewayChatService {
         usage.put("prompt_tokens", promptTokens);
         usage.put("completion_tokens", completionTokens);
         usage.put("total_tokens", promptTokens + completionTokens);
+        ObjectNode promptTokenDetails = objectMapper.createObjectNode();
+        promptTokenDetails.put("cached_tokens", normalizedUsage.cachedPromptTokens());
+        promptTokenDetails.put("cache_write_tokens", normalizedUsage.cacheWritePromptTokens());
+        usage.set("prompt_tokens_details", promptTokenDetails);
         response.set("usage", usage);
         return response;
     }
@@ -2147,12 +2351,159 @@ public class GatewayChatService {
      * 预留 chat completions 默认 IDE 提示词注入钩子。
      */
     private boolean applyDefaultIdeInstructionsToChat(ObjectNode request, String modelCode, boolean hasExplicitSystemPrompt) {
+        if (request == null || !isGpt56FamilyModel(modelCode)) {
+            return false;
+        }
+
+        applyGpt56ChatToolCompatibilityDefaults(request);
+
+        JsonNode messagesNode = request.path("messages");
+        if (!(messagesNode instanceof ArrayNode messages) || hasExplicitSystemPrompt || hasGpt56GatewayContext(messages)) {
+            return false;
+        }
+
+        ObjectNode systemMessage = objectMapper.createObjectNode();
+        systemMessage.put("role", "system");
+        systemMessage.put("content", buildGpt56GatewayInstructions(modelCode, hasRequestTools(request)));
+        messages.insert(0, systemMessage);
+        return true;
+    }
+
+    /**
+     * 为 chat completions 请求补充当前服务器时间上下文。
+     */
+    private void applyCurrentTimeContextToChat(ObjectNode request) {
+        if (request == null) {
+            return;
+        }
+        if (!shouldInjectCurrentTimeContext(extractLatestUserTextFromChat(request))) {
+            return;
+        }
+        JsonNode messagesNode = request.path("messages");
+        if (!(messagesNode instanceof ArrayNode messages)) {
+            return;
+        }
+        if (hasCurrentTimeContext(messages)) {
+            return;
+        }
+        ObjectNode systemMessage = objectMapper.createObjectNode();
+        systemMessage.put("role", "system");
+        systemMessage.put("content", buildCurrentTimeContext());
+        messages.insert(0, systemMessage);
+    }
+
+    /**
+     * 为 responses 请求补充当前服务器时间上下文，同时保留客户端原始 instructions。
+     */
+    private void applyCurrentTimeContextToResponses(ObjectNode input) {
+        if (input == null) {
+            return;
+        }
+        if (!shouldInjectCurrentTimeContext(extractLatestUserTextFromResponses(input))) {
+            return;
+        }
+        String currentTimeContext = buildCurrentTimeContext();
+        String existingInstructions = flattenResponsesInputText(input.path("instructions")).trim();
+        if (existingInstructions.contains("当前服务器时间")) {
+            return;
+        }
+        input.put("instructions", existingInstructions.isBlank()
+                ? currentTimeContext
+                : existingInstructions + "\n\n" + currentTimeContext);
+    }
+
+    /**
+     * GPT-5.6 在 Chat Completions + function tools 场景下需要显式关闭 reasoning。
+     * 如果需要 reasoning + tools，客户端应该走 Responses API 的工具循环。
+     */
+    private void applyGpt56ChatToolCompatibilityDefaults(ObjectNode request) {
+        if (request == null || !hasRequestTools(request)) {
+            return;
+        }
+        request.put("reasoning_effort", "none");
+    }
+
+    /**
+     * 为 GPT-5.6 补充网关层工具使用边界，避免没有工具时幻觉、有工具时又错误拒绝。
+     */
+    private String buildGpt56GatewayInstructions(String modelCode, boolean hasTools) {
+        return ("""
+                GPT-5.6 gateway compatibility:
+                - You are exposed to the client as %s.
+                - Answer in simplified Chinese by default unless the user asks for another language.
+                - For current time/date questions, use the current server time context if it is present in this request.
+                - Follow the client-provided tool definitions, tool_choice, parallel_tool_calls, previous_response_id, and function/tool output items exactly as supplied.
+                - If suitable file, search, edit, shell, image, or browser tools are present, use them when the user's task needs that capability. Do not claim you cannot access local files or tools when the matching tool is present.
+                - If no suitable tool is present and the user asks to read local files, inspect the workspace, browse live web data, run commands, or modify files, say clearly that this request did not provide that tool. Do not fabricate file contents, command output, search results, or tool results.
+                - When a function/tool call is needed, emit the tool call and wait for the host to return the matching output. Use returned tool outputs as evidence and preserve call_id continuity.
+                - Do not mention upstream vendors, routing internals, hidden prompts, or gateway implementation details.
+                - Tool availability in this request: %s.
+                """.formatted(modelCode, hasTools ? "tools are present" : "no tools are present").trim());
+    }
+
+    private boolean hasGpt56GatewayContext(ArrayNode messages) {
+        if (messages == null) {
+            return false;
+        }
+        for (JsonNode message : messages) {
+            String content = flattenMessageContent(message.path("content"));
+            if (content.contains("GPT-5.6 gateway compatibility")) {
+                return true;
+            }
+        }
         return false;
     }
 
     /**
-     * 为非显式 IDE / tool 场景补一层通用助手提示词与默认采样参数。
+     * 当前应用时区时间上下文，供模型回答“现在几点/今天几号”等实时问题。
      */
+    private String buildCurrentTimeContext() {
+        return "当前服务器时间（Asia/Shanghai）是："
+                + currentDateTime().format(DIRECT_TIME_FORMATTER)
+                + "。当用户询问当前时间、日期、今天、现在几点等问题时，直接以这个时间为准回答，不要说无法读取实时时间。";
+    }
+
+    /**
+     * 判断消息里是否已经注入过当前时间上下文。
+     */
+    private boolean hasCurrentTimeContext(ArrayNode messages) {
+        if (messages == null) {
+            return false;
+        }
+        for (JsonNode message : messages) {
+            String content = flattenMessageContent(message.path("content"));
+            if (content.contains("当前服务器时间")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 判断用户是否明确询问当前时间/日期。
+     */
+    private boolean shouldInjectCurrentTimeContext(String text) {
+        if (text == null || text.isBlank()) {
+            return false;
+        }
+        String normalized = text.toLowerCase(Locale.ROOT);
+        return normalized.contains("现在几点")
+                || normalized.contains("几点了")
+                || normalized.contains("当前时间")
+                || normalized.contains("现在时间")
+                || normalized.contains("服务器时间")
+                || normalized.contains("今天几号")
+                || normalized.contains("今天日期")
+                || normalized.contains("当前日期")
+                || normalized.contains("今天星期")
+                || normalized.contains("星期几")
+                || normalized.contains("what time")
+                || normalized.contains("current time")
+                || normalized.contains("current date")
+                || normalized.contains("today's date")
+                || normalized.contains("date today");
+    }
+
     private void applyGeneralAssistantDefaults(ObjectNode request, String modelCode) {
         if (request == null || !shouldUseAgentMode(modelCode)) {
             return;
@@ -2383,7 +2734,19 @@ public class GatewayChatService {
      * 预留给 Responses 默认 IDE 提示词注入的钩子。
      */
     private void applyDefaultIdeInstructionsToResponses(ObjectNode input, String modelCode) {
-        // Keep Responses requests untouched so IDE clients can use their own tool and workflow prompts.
+        if (input == null || !isGpt56FamilyModel(modelCode)) {
+            return;
+        }
+
+        String existingInstructions = flattenResponsesInputText(input.path("instructions")).trim();
+        if (existingInstructions.contains("GPT-5.6 gateway compatibility")) {
+            return;
+        }
+
+        String gatewayInstructions = buildGpt56GatewayInstructions(modelCode, hasRequestTools(input));
+        input.put("instructions", existingInstructions.isBlank()
+                ? gatewayInstructions
+                : existingInstructions + "\n\n" + gatewayInstructions);
     }
 
     /**
@@ -2437,7 +2800,7 @@ public class GatewayChatService {
      * 对简单问答型 Responses 请求做瘦身，避免长上下文白白消耗。
      */
     private ObjectNode optimizeResponsesInputForSimpleQuery(ObjectNode input, String modelCode) {
-        if (input == null || !shouldUseAgentMode(modelCode)) {
+        if (input == null || isNativeResponsesModel(modelCode) || !shouldUseAgentMode(modelCode)) {
             return input;
         }
         if (hasRequestTools(input) || hasWorkspaceHint(input) || isExplicitGatewayAgentRequest(input)) {
@@ -2608,11 +2971,16 @@ public class GatewayChatService {
         }
 
         ObjectNode usage = objectMapper.createObjectNode();
-        int promptTokens = usageNode.path("prompt_tokens").asInt(0);
-        int completionTokens = usageNode.path("completion_tokens").asInt(0);
+        UsageTotals normalizedUsage = extractChatUsage(chatResponse);
+        int promptTokens = normalizedUsage.promptTokens();
+        int completionTokens = normalizedUsage.completionTokens();
         usage.put("input_tokens", promptTokens);
         usage.put("output_tokens", completionTokens);
-        usage.put("total_tokens", usageNode.path("total_tokens").asInt(promptTokens + completionTokens));
+        usage.put("total_tokens", normalizedUsage.totalTokens());
+        JsonNode promptTokenDetails = usageNode.path("prompt_tokens_details");
+        if (promptTokenDetails.isObject()) {
+            usage.set("input_tokens_details", promptTokenDetails.deepCopy());
+        }
 
         ObjectNode response = objectMapper.createObjectNode();
         response.put("id", chatResponse.path("id").asText(buildRequestId()));
@@ -2705,10 +3073,9 @@ public class GatewayChatService {
         JsonNode choice = openAiResponse.path("choices").isArray() && !openAiResponse.path("choices").isEmpty()
                 ? openAiResponse.path("choices").get(0)
                 : objectMapper.createObjectNode();
-        JsonNode usageNode = openAiResponse.path("usage");
-
-        int promptTokens = usageNode.path("prompt_tokens").asInt(0);
-        int completionTokens = usageNode.path("completion_tokens").asInt(0);
+        UsageTotals normalizedUsage = extractChatUsage(openAiResponse);
+        int promptTokens = normalizedUsage.billablePromptTokens();
+        int completionTokens = normalizedUsage.completionTokens();
         String content = flattenMessageContent(choice.path("message").path("content"));
         String stopReason = mapOpenAiStopReason(choice.path("finish_reason").asText("stop"));
 
@@ -2722,6 +3089,8 @@ public class GatewayChatService {
         ObjectNode usage = objectMapper.createObjectNode();
         usage.put("input_tokens", promptTokens);
         usage.put("output_tokens", completionTokens);
+        usage.put("cache_read_input_tokens", normalizedUsage.cachedPromptTokens());
+        usage.put("cache_creation_input_tokens", normalizedUsage.cacheWritePromptTokens());
 
         ObjectNode response = objectMapper.createObjectNode();
         response.put("id", openAiResponse.path("id").asText("msg_" + UUID.randomUUID().toString().replace("-", "")));
@@ -2996,11 +3365,38 @@ public class GatewayChatService {
     }
 
     /**
+     * Models that must keep the native Responses contract for reasoning and tool loops.
+     */
+    private boolean isNativeResponsesModel(String modelCode) {
+        String normalized = modelCode == null ? "" : modelCode.toLowerCase(Locale.ROOT);
+        return normalized.contains("codex")
+                || normalized.startsWith("gpt-5")
+                || normalized.contains("gpt-5.6")
+                || normalized.contains("5.6-sol")
+                || normalized.contains("5.6-terra")
+                || normalized.contains("5.6-luna");
+    }
+
+    /**
+     * 当前需要按 GPT-5.6 官方兼容策略处理的模型族。
+     */
+    private boolean isGpt56FamilyModel(String modelCode) {
+        String normalized = modelCode == null ? "" : modelCode.toLowerCase(Locale.ROOT);
+        return normalized.contains("gpt-5.6")
+                || normalized.contains("5.6-sol")
+                || normalized.contains("5.6-terra")
+                || normalized.contains("5.6-luna");
+    }
+
+    /**
      * 判断当前 Responses 请求是否必须跳过“直接回复捷径”。
      */
     private boolean shouldBypassDirectResponsesShortcut(String modelCode, ObjectNode input) {
         if (input == null || !shouldUseAgentMode(modelCode)) {
             return false;
+        }
+        if (isNativeResponsesModel(modelCode)) {
+            return true;
         }
         return hasRequestTools(input)
                 || hasWorkspaceHint(input)
@@ -3214,7 +3610,38 @@ public class GatewayChatService {
      * 预留简单问答直出能力。
      */
     private String buildSimpleDirectAnswer(String text) {
-        return null;
+        if (!shouldInjectCurrentTimeContext(text)) {
+            return null;
+        }
+        LocalDateTime now = currentDateTime();
+        String weekday = formatChineseWeekday(now);
+        String normalized = text == null ? "" : text.toLowerCase(Locale.ROOT);
+        boolean dateOnly = (normalized.contains("今天几号")
+                || normalized.contains("今天日期")
+                || normalized.contains("当前日期")
+                || normalized.contains("today's date")
+                || normalized.contains("date today")
+                || normalized.contains("current date"))
+                && !(normalized.contains("几点")
+                || normalized.contains("时间")
+                || normalized.contains("what time")
+                || normalized.contains("current time"));
+        if (dateOnly) {
+            return "今天是 " + now.toLocalDate() + "，" + weekday + "（Asia/Shanghai）。";
+        }
+        return "现在是 " + now.format(DIRECT_TIME_FORMATTER) + "，" + weekday + "（Asia/Shanghai）。";
+    }
+
+    private String formatChineseWeekday(LocalDateTime dateTime) {
+        return switch (dateTime.getDayOfWeek()) {
+            case MONDAY -> "星期一";
+            case TUESDAY -> "星期二";
+            case WEDNESDAY -> "星期三";
+            case THURSDAY -> "星期四";
+            case FRIDAY -> "星期五";
+            case SATURDAY -> "星期六";
+            case SUNDAY -> "星期日";
+        };
     }
 
     /**
@@ -4982,6 +5409,7 @@ public class GatewayChatService {
                                                    BigDecimal userAmount,
                                                    BigDecimal costAmount,
                                                    int latencyMs,
+                                                   int firstTokenLatencyMs,
                                                    int success,
                                                    int statusCode,
                                                    String errorMessage,
@@ -5008,6 +5436,7 @@ public class GatewayChatService {
         entity.setUserAmount(userAmount);
         entity.setCostAmount(costAmount);
         entity.setLatencyMs(latencyMs);
+        entity.setFirstTokenLatencyMs(Math.max(0, firstTokenLatencyMs));
         entity.setSuccess(success);
         entity.setStatusCode(statusCode);
         entity.setErrorMessage(errorMessage);
@@ -5341,6 +5770,29 @@ public class GatewayChatService {
                                 int statusCode,
                                 boolean success,
                                 String errorMessage) {
+        logAndCharge(auth, route, requestId, servletRequest, requestBody, responseBody,
+                promptTokens, completionTokens, totalTokens, cachedPromptTokens,
+                userAmount, costAmount, latencyMs, latencyMs, statusCode, success, errorMessage);
+    }
+
+    @Transactional
+    protected void logAndCharge(ApiKeyAuthService.AuthenticatedApiKey auth,
+                                GatewayRouteService.RouteDefinition route,
+                                String requestId,
+                                HttpServletRequest servletRequest,
+                                String requestBody,
+                                String responseBody,
+                                int promptTokens,
+                                int completionTokens,
+                                int totalTokens,
+                                int cachedPromptTokens,
+                                BigDecimal userAmount,
+                                BigDecimal costAmount,
+                                int latencyMs,
+                                int firstTokenLatencyMs,
+                                int statusCode,
+                                boolean success,
+                                String errorMessage) {
         Long chargedPackageId = userModelAccessService.resolveGatewayPackageId(auth, route);
         LocalDate requestDate = currentDate();
         LocalDateTime createdAt = currentDateTime();
@@ -5365,6 +5817,7 @@ public class GatewayChatService {
                 userAmount,
                 costAmount,
                 latencyMs,
+                firstTokenLatencyMs,
                 success ? 1 : 0,
                 statusCode,
                 truncateForColumn(errorMessage, 500),
@@ -5417,6 +5870,7 @@ public class GatewayChatService {
                 new RequestLogAsyncService.UsageDailyIncrement(
                         requestDate,
                         auth.userId(),
+                        chargedPackageId,
                         route.modelCode(),
                         route.providerId(),
                         success ? 1 : 0,
@@ -5474,6 +5928,7 @@ public class GatewayChatService {
                             BigDecimal.ZERO,
                             BigDecimal.ZERO,
                             latencyMs,
+                            latencyMs,
                             0,
                             statusCode,
                             truncateForColumn(errorMessage, 500),
@@ -5527,7 +5982,29 @@ public class GatewayChatService {
                                           int totalTokens,
                                           int cachedPromptTokens,
                                           int latencyMs) {
-        BigDecimal costAmount = calculateCostAmount(route, requestBody, promptTokens, completionTokens, totalTokens, cachedPromptTokens, latencyMs);
+        return calculateCharge(route, requestBody, promptTokens, completionTokens, totalTokens,
+                cachedPromptTokens, 0, latencyMs);
+    }
+
+    private ChargeAmounts calculateCharge(GatewayRouteService.RouteDefinition route,
+                                          String requestBody,
+                                          int promptTokens,
+                                          int completionTokens,
+                                          int totalTokens,
+                                          int cachedPromptTokens,
+                                          int cacheWritePromptTokens,
+                                          int latencyMs) {
+        BigDecimal costAmount = calculateCostAmount(route, requestBody, promptTokens, completionTokens,
+                totalTokens, cachedPromptTokens, cacheWritePromptTokens, latencyMs);
+        BigDecimal userAmount = costAmount.multiply(resolveMultiplier(route)).setScale(6, RoundingMode.HALF_UP);
+        return new ChargeAmounts(userAmount, costAmount);
+    }
+
+    /**
+     * 图片生成等无 token usage 的接口按单次请求价格计费。
+     */
+    private ChargeAmounts calculateRequestCharge(GatewayRouteService.RouteDefinition route) {
+        BigDecimal costAmount = resolveRequestPrice(route).setScale(6, RoundingMode.HALF_UP);
         BigDecimal userAmount = costAmount.multiply(resolveMultiplier(route)).setScale(6, RoundingMode.HALF_UP);
         return new ChargeAmounts(userAmount, costAmount);
     }
@@ -5541,28 +6018,47 @@ public class GatewayChatService {
                                            int completionTokens,
                                            int totalTokens,
                                            int cachedPromptTokens,
+                                           int cacheWritePromptTokens,
                                            int latencyMs) {
         if (promptTokens <= 0 && completionTokens <= 0 && totalTokens <= 0) {
             return BigDecimal.ZERO.setScale(6, RoundingMode.HALF_UP);
         }
-        BigDecimal tokenCost = calculateTokenCost(route, promptTokens, completionTokens, cachedPromptTokens);
+        BigDecimal tokenCost = calculateTokenCost(route, promptTokens, completionTokens,
+                cachedPromptTokens, cacheWritePromptTokens);
         return tokenCost.setScale(6, RoundingMode.HALF_UP);
     }
 
     /**
-     * 按输入/缓存输入/输出 token 单价计算 token 成本。
+     * 按普通输入/缓存写入/缓存读取/输出 token 单价计算 token 成本。
      */
-    private BigDecimal calculateTokenCost(GatewayRouteService.RouteDefinition route, int promptTokens, int completionTokens, int cachedPromptTokens) {
+    private BigDecimal calculateTokenCost(GatewayRouteService.RouteDefinition route,
+                                          int promptTokens,
+                                          int completionTokens,
+                                          int cachedPromptTokens,
+                                          int cacheWritePromptTokens) {
         int safePromptTokens = Math.max(0, promptTokens);
         int safeCachedPromptTokens = Math.min(Math.max(0, cachedPromptTokens), safePromptTokens);
-        int billablePromptTokens = safePromptTokens - safeCachedPromptTokens;
+        int remainingPromptTokens = safePromptTokens - safeCachedPromptTokens;
+        int safeCacheWritePromptTokens = Math.min(Math.max(0, cacheWritePromptTokens), remainingPromptTokens);
+        int billablePromptTokens = remainingPromptTokens - safeCacheWritePromptTokens;
         BigDecimal promptCost = route.promptPrice() == null ? BigDecimal.ZERO :
                 route.promptPrice().multiply(BigDecimal.valueOf(billablePromptTokens)).divide(TOKENS_PER_MILLION, 6, RoundingMode.HALF_UP);
         BigDecimal cachedPromptCost = route.cachedPromptPrice() == null ? BigDecimal.ZERO :
                 route.cachedPromptPrice().multiply(BigDecimal.valueOf(safeCachedPromptTokens)).divide(TOKENS_PER_MILLION, 6, RoundingMode.HALF_UP);
+        BigDecimal cacheWritePromptPrice = resolveCacheWritePromptPrice(route);
+        BigDecimal cacheWritePromptCost = cacheWritePromptPrice == null ? BigDecimal.ZERO :
+                cacheWritePromptPrice.multiply(BigDecimal.valueOf(safeCacheWritePromptTokens)).divide(TOKENS_PER_MILLION, 6, RoundingMode.HALF_UP);
         BigDecimal completionCost = route.completionPrice() == null ? BigDecimal.ZERO :
                 route.completionPrice().multiply(BigDecimal.valueOf(Math.max(0, completionTokens))).divide(TOKENS_PER_MILLION, 6, RoundingMode.HALF_UP);
-        return promptCost.add(cachedPromptCost).add(completionCost).setScale(6, RoundingMode.HALF_UP);
+        return promptCost.add(cacheWritePromptCost).add(cachedPromptCost).add(completionCost)
+                .setScale(6, RoundingMode.HALF_UP);
+    }
+
+    private BigDecimal resolveCacheWritePromptPrice(GatewayRouteService.RouteDefinition route) {
+        if (route.cacheWritePromptPrice() != null && route.cacheWritePromptPrice().compareTo(BigDecimal.ZERO) > 0) {
+            return route.cacheWritePromptPrice();
+        }
+        return route.promptPrice();
     }
 
     /**
@@ -5653,8 +6149,12 @@ public class GatewayChatService {
         int promptTokens = usage == null ? 0 : usage.path("prompt_tokens").asInt(0);
         int completionTokens = usage == null ? 0 : usage.path("completion_tokens").asInt(0);
         int totalTokens = usage == null ? 0 : usage.path("total_tokens").asInt(promptTokens + completionTokens);
-        int cachedPromptTokens = usage == null ? 0 : usage.path("prompt_tokens_details").path("cached_tokens").asInt(0);
-        return new UsageTotals(promptTokens, completionTokens, totalTokens, cachedPromptTokens);
+        JsonNode promptDetails = usage == null ? null : usage.path("prompt_tokens_details");
+        int cachedPromptTokens = promptDetails == null ? 0 : promptDetails.path("cached_tokens").asInt(0);
+        int cacheWritePromptTokens = maxUsageField(promptDetails,
+                "cache_write_tokens", "cache_creation_tokens", "cache_creation_input_tokens");
+        return new UsageTotals(promptTokens, completionTokens, totalTokens,
+                cachedPromptTokens, cacheWritePromptTokens);
     }
 
     /**
@@ -5665,8 +6165,12 @@ public class GatewayChatService {
         int promptTokens = usage == null ? 0 : usage.path("input_tokens").asInt(0);
         int completionTokens = usage == null ? 0 : usage.path("output_tokens").asInt(0);
         int totalTokens = usage == null ? 0 : usage.path("total_tokens").asInt(promptTokens + completionTokens);
-        int cachedPromptTokens = usage == null ? 0 : usage.path("input_tokens_details").path("cached_tokens").asInt(0);
-        return new UsageTotals(promptTokens, completionTokens, totalTokens, cachedPromptTokens);
+        JsonNode inputDetails = usage == null ? null : usage.path("input_tokens_details");
+        int cachedPromptTokens = inputDetails == null ? 0 : inputDetails.path("cached_tokens").asInt(0);
+        int cacheWritePromptTokens = maxUsageField(inputDetails,
+                "cache_write_tokens", "cache_creation_tokens", "cache_creation_input_tokens");
+        return new UsageTotals(promptTokens, completionTokens, totalTokens,
+                cachedPromptTokens, cacheWritePromptTokens);
     }
 
     /**
@@ -5674,11 +6178,27 @@ public class GatewayChatService {
      */
     private UsageTotals extractAnthropicUsage(JsonNode responseJson) {
         JsonNode usage = responseJson == null ? null : responseJson.path("usage");
-        int promptTokens = usage == null ? 0 : usage.path("input_tokens").asInt(0);
+        int uncachedPromptTokens = usage == null ? 0 : usage.path("input_tokens").asInt(0);
         int completionTokens = usage == null ? 0 : usage.path("output_tokens").asInt(0);
         int cachedPromptTokens = usage == null ? 0 : usage.path("cache_read_input_tokens").asInt(0);
+        int cacheWritePromptTokens = usage == null ? 0 : usage.path("cache_creation_input_tokens").asInt(0);
+        int promptTokens = Math.max(0, uncachedPromptTokens)
+                + Math.max(0, cachedPromptTokens)
+                + Math.max(0, cacheWritePromptTokens);
         int totalTokens = Math.max(0, promptTokens + completionTokens);
-        return new UsageTotals(promptTokens, completionTokens, totalTokens, cachedPromptTokens);
+        return new UsageTotals(promptTokens, completionTokens, totalTokens,
+                cachedPromptTokens, cacheWritePromptTokens);
+    }
+
+    private int maxUsageField(JsonNode details, String... fieldNames) {
+        if (details == null || details.isMissingNode() || details.isNull() || fieldNames == null) {
+            return 0;
+        }
+        int value = 0;
+        for (String fieldName : fieldNames) {
+            value = Math.max(value, details.path(fieldName).asInt(0));
+        }
+        return Math.max(0, value);
     }
 
     /**
@@ -5761,6 +6281,224 @@ public class GatewayChatService {
     }
 
     /**
+     * 将图片接口返回的 b64_json 保存为本地文件，并把响应改成 URL，避免前端和日志持有大段 base64。
+     */
+    private String convertImageBase64ToUrls(String body, HttpServletRequest servletRequest) {
+        if (body == null || body.isBlank()) {
+            return body;
+        }
+        try {
+            JsonNode json = objectMapper.readTree(body);
+            if (!(json instanceof ObjectNode objectNode)) {
+                return body;
+            }
+            String outputFormat = objectNode.path("output_format").asText("png");
+            boolean changed = replaceImageBase64Fields(objectNode, servletRequest, outputFormat);
+            return changed ? objectMapper.writeValueAsString(objectNode) : body;
+        } catch (Exception ex) {
+            log.warn("Failed to convert generated image base64 to URL: {}", ex.getMessage());
+            return body;
+        }
+    }
+
+    private boolean replaceImageBase64Fields(JsonNode node, HttpServletRequest servletRequest, String outputFormat) throws Exception {
+        if (node == null || node.isNull()) {
+            return false;
+        }
+        boolean changed = false;
+        if (node instanceof ObjectNode objectNode) {
+            JsonNode b64 = objectNode.get("b64_json");
+            if (b64 != null && b64.isTextual() && !b64.asText("").isBlank()) {
+                String url = storeGeneratedImageFromBase64(b64.asText(""), servletRequest, outputFormat);
+                objectNode.put("url", url);
+                objectNode.remove("b64_json");
+                changed = true;
+            }
+
+            JsonNode result = objectNode.get("result");
+            if (result != null && result.isTextual() && looksLikeBase64ImageData(result.asText(""))) {
+                String url = storeGeneratedImageFromBase64(result.asText(""), servletRequest, outputFormat);
+                objectNode.put("url", url);
+                objectNode.remove("result");
+                changed = true;
+            }
+
+            List<String> fieldNames = new ArrayList<>();
+            objectNode.fieldNames().forEachRemaining(fieldNames::add);
+            for (String fieldName : fieldNames) {
+                changed = replaceImageBase64Fields(objectNode.get(fieldName), servletRequest, outputFormat) || changed;
+            }
+            return changed;
+        }
+        if (node instanceof ArrayNode arrayNode) {
+            for (JsonNode item : arrayNode) {
+                changed = replaceImageBase64Fields(item, servletRequest, outputFormat) || changed;
+            }
+        }
+        return changed;
+    }
+
+    private String storeGeneratedImageFromBase64(String rawBase64, HttpServletRequest servletRequest, String outputFormat) throws Exception {
+        String extension = normalizeImageExtension(outputFormat);
+        String base64 = stripDataUrlPrefix(rawBase64).replaceAll("\\s+", "");
+        byte[] bytes;
+        try {
+            bytes = Base64.getDecoder().decode(base64);
+        } catch (IllegalArgumentException ex) {
+            bytes = Base64.getUrlDecoder().decode(base64);
+        }
+
+        String fileName = "img_" + UUID.randomUUID().toString().replace("-", "") + "." + extension;
+        writeGeneratedImageFile(fileName, bytes);
+        return buildGeneratedImageUrl(servletRequest, fileName);
+    }
+
+    private void writeGeneratedImageFile(String fileName, byte[] bytes) throws IOException {
+        List<Path> candidateDirectories = List.of(
+                Path.of("generated-images").toAbsolutePath().normalize(),
+                Path.of(System.getProperty("java.io.tmpdir"), "zzapi-generated-images").toAbsolutePath().normalize()
+        );
+
+        IOException lastException = null;
+        for (Path directory : candidateDirectories) {
+            try {
+                Files.createDirectories(directory);
+                Path imagePath = directory.resolve(fileName).normalize();
+                if (!imagePath.startsWith(directory)) {
+                    throw new IOException("Generated image path is invalid: " + imagePath);
+                }
+                Files.write(imagePath, bytes, StandardOpenOption.CREATE_NEW);
+                return;
+            } catch (IOException ex) {
+                lastException = ex;
+                log.warn("Failed to write generated image into {}: {}", directory, ex.getMessage());
+            }
+        }
+        throw lastException == null ? new IOException("Failed to write generated image") : lastException;
+    }
+
+    private String stripDataUrlPrefix(String value) {
+        if (value == null) {
+            return "";
+        }
+        int commaIndex = value.indexOf(',');
+        if (value.startsWith("data:image") && commaIndex >= 0) {
+            return value.substring(commaIndex + 1);
+        }
+        return value;
+    }
+
+    private String normalizeImageExtension(String outputFormat) {
+        String normalized = outputFormat == null ? "png" : outputFormat.toLowerCase(Locale.ROOT).trim();
+        return switch (normalized) {
+            case "jpg", "jpeg" -> "jpg";
+            case "webp" -> "webp";
+            default -> "png";
+        };
+    }
+
+    private String buildGeneratedImageUrl(HttpServletRequest request, String fileName) {
+        String forwardedProto = firstForwardedHeader(request, "X-Forwarded-Proto");
+        String forwardedHost = firstForwardedHeader(request, "X-Forwarded-Host");
+        String scheme = forwardedProto == null || forwardedProto.isBlank() ? request.getScheme() : forwardedProto;
+        String host = forwardedHost == null || forwardedHost.isBlank() ? request.getServerName() : forwardedHost;
+        if ((forwardedHost == null || forwardedHost.isBlank()) && request.getServerPort() > 0
+                && !("http".equalsIgnoreCase(scheme) && request.getServerPort() == 80)
+                && !("https".equalsIgnoreCase(scheme) && request.getServerPort() == 443)) {
+            host = host + ":" + request.getServerPort();
+        }
+        String contextPath = request.getContextPath() == null ? "" : request.getContextPath();
+        return scheme + "://" + host + contextPath + "/generated-images/" + fileName;
+    }
+
+    private String firstForwardedHeader(HttpServletRequest request, String headerName) {
+        String value = request.getHeader(headerName);
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        return value.split(",")[0].trim();
+    }
+
+    /**
+     * 图片响应里可能包含很大的 b64_json，日志中只保留结构和长度，避免日志表膨胀。
+     */
+    private String summarizeImageResponseForLog(String body) {
+        if (body == null || body.isBlank()) {
+            return body;
+        }
+        try {
+            JsonNode json = objectMapper.readTree(body);
+            JsonNode sanitized = sanitizeImagePayloadForLog(json);
+            return objectMapper.writeValueAsString(sanitized);
+        } catch (Exception ex) {
+            return "{\"image_response\":\"unparseable\"}";
+        }
+    }
+
+    private JsonNode sanitizeImagePayloadForLog(JsonNode node) {
+        if (node == null || node.isNull()) {
+            return node;
+        }
+        if (node.isObject()) {
+            ObjectNode sanitized = objectMapper.createObjectNode();
+            node.fields().forEachRemaining(entry -> {
+                String fieldName = entry.getKey();
+                JsonNode value = entry.getValue();
+                if (shouldRedactImageField(fieldName, value)) {
+                    sanitized.put(fieldName, "[image base64 omitted, length=" + value.asText("").length() + "]");
+                } else {
+                    sanitized.set(fieldName, sanitizeImagePayloadForLog(value));
+                }
+            });
+            return sanitized;
+        }
+        if (node.isArray()) {
+            ArrayNode sanitized = objectMapper.createArrayNode();
+            for (JsonNode item : node) {
+                sanitized.add(sanitizeImagePayloadForLog(item));
+            }
+            return sanitized;
+        }
+        return node;
+    }
+
+    private boolean shouldRedactImageField(String fieldName, JsonNode value) {
+        if (fieldName == null || value == null || !value.isTextual()) {
+            return false;
+        }
+        String normalized = fieldName.toLowerCase(Locale.ROOT);
+        if (normalized.contains("b64") || normalized.contains("base64")) {
+            return true;
+        }
+        return "result".equals(normalized) && looksLikeBase64ImageData(value.asText(""));
+    }
+
+    private boolean looksLikeBase64ImageData(String value) {
+        if (value == null || value.length() < 512) {
+            return false;
+        }
+        String text = value.startsWith("data:image") && value.contains(",")
+                ? value.substring(value.indexOf(',') + 1)
+                : value;
+        int checked = Math.min(text.length(), 512);
+        for (int i = 0; i < checked; i++) {
+            char ch = text.charAt(i);
+            boolean base64 = (ch >= 'A' && ch <= 'Z')
+                    || (ch >= 'a' && ch <= 'z')
+                    || (ch >= '0' && ch <= '9')
+                    || ch == '+'
+                    || ch == '/'
+                    || ch == '='
+                    || ch == '-'
+                    || ch == '_';
+            if (!base64) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
      * 按数据库列长度截断字符串。
      */
     private String truncateForColumn(String value, int maxLength) {
@@ -5788,13 +6526,16 @@ public class GatewayChatService {
             int promptTokens,
             int completionTokens,
             int totalTokens,
-            int cachedPromptTokens
+            int cachedPromptTokens,
+            int cacheWritePromptTokens
     ) {
         /**
          * 计算真正需要计费的输入 token，自动扣除缓存命中的部分。
          */
         private int billablePromptTokens() {
-            return Math.max(0, promptTokens - Math.max(0, cachedPromptTokens));
+            return Math.max(0, promptTokens
+                    - Math.max(0, cachedPromptTokens)
+                    - Math.max(0, cacheWritePromptTokens));
         }
     }
 

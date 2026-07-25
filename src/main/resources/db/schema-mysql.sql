@@ -88,6 +88,7 @@ CREATE TABLE IF NOT EXISTS models (
     billing_type VARCHAR(32) NOT NULL DEFAULT 'TOKEN',
     prompt_price DECIMAL(18, 6) NOT NULL DEFAULT 0.000000,
     cached_prompt_price DECIMAL(18, 6) NOT NULL DEFAULT 0.000000,
+    cache_write_prompt_price DECIMAL(18, 6) NOT NULL DEFAULT 0.000000,
     completion_price DECIMAL(18, 6) NOT NULL DEFAULT 0.000000,
     request_price DECIMAL(18, 6) NOT NULL DEFAULT 0.000000,
     image_price DECIMAL(18, 6) NOT NULL DEFAULT 0.000000,
@@ -170,12 +171,14 @@ CREATE TABLE IF NOT EXISTS request_logs (
     user_amount DECIMAL(18, 6) NOT NULL DEFAULT 0.000000,
     cost_amount DECIMAL(18, 6) NOT NULL DEFAULT 0.000000,
     latency_ms INT NOT NULL DEFAULT 0,
+    first_token_latency_ms INT NOT NULL DEFAULT 0,
     success TINYINT(1) NOT NULL DEFAULT 1,
     status_code INT NOT NULL DEFAULT 200,
     error_message VARCHAR(500) NULL,
     request_date DATE NOT NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE KEY uk_request_logs_request_id (request_id),
+    KEY idx_request_logs_created_at (created_at),
     KEY idx_request_logs_package_date (user_package_id, request_date),
     KEY idx_request_logs_user_date (user_id, request_date),
     KEY idx_request_logs_model_date (model_code, request_date),
@@ -197,6 +200,23 @@ CREATE TABLE IF NOT EXISTS usage_daily (
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY uk_usage_daily_stat (stat_date, user_id, model_code, provider_id),
     KEY idx_usage_daily_stat_date (stat_date)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS package_usage_daily (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    stat_date DATE NOT NULL,
+    user_id BIGINT NOT NULL,
+    user_package_id BIGINT NOT NULL,
+    request_count BIGINT NOT NULL DEFAULT 0,
+    success_count BIGINT NOT NULL DEFAULT 0,
+    total_tokens BIGINT NOT NULL DEFAULT 0,
+    user_amount DECIMAL(18, 6) NOT NULL DEFAULT 0.000000,
+    cost_amount DECIMAL(18, 6) NOT NULL DEFAULT 0.000000,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_package_usage_daily_stat (stat_date, user_package_id),
+    KEY idx_package_usage_daily_user_date (user_id, stat_date),
+    KEY idx_package_usage_daily_package_date (user_package_id, stat_date)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS model_groups (
@@ -224,6 +244,7 @@ CREATE TABLE IF NOT EXISTS model_group_models (
     billing_type VARCHAR(32) NULL,
     prompt_price DECIMAL(18, 6) NULL,
     cached_prompt_price DECIMAL(18, 6) NULL,
+    cache_write_prompt_price DECIMAL(18, 6) NULL,
     completion_price DECIMAL(18, 6) NULL,
     request_price DECIMAL(18, 6) NULL,
     multiplier DECIMAL(18, 4) NULL,
@@ -239,7 +260,7 @@ CREATE TABLE IF NOT EXISTS user_model_packages (
     package_name VARCHAR(64) NOT NULL,
     purchase_price DECIMAL(18, 4) NOT NULL DEFAULT 0.0000,
     start_at DATETIME NOT NULL,
-    expires_at DATETIME NOT NULL,
+    expires_at DATETIME NULL,
     status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE',
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -467,6 +488,17 @@ DEALLOCATE PREPARE stmt;
 
 SET @ddl = (
     SELECT IF(COUNT(*) = 0,
+              'ALTER TABLE request_logs ADD COLUMN first_token_latency_ms INT NOT NULL DEFAULT 0 AFTER latency_ms',
+              'SELECT 1')
+    FROM information_schema.columns
+    WHERE table_schema = DATABASE() AND table_name = 'request_logs' AND column_name = 'first_token_latency_ms'
+);
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @ddl = (
+    SELECT IF(COUNT(*) = 0,
               'CREATE INDEX idx_request_logs_package_date ON request_logs (user_package_id, request_date)',
               'SELECT 1')
     FROM information_schema.statistics
@@ -478,10 +510,32 @@ DEALLOCATE PREPARE stmt;
 
 SET @ddl = (
     SELECT IF(COUNT(*) = 0,
+              'CREATE INDEX idx_request_logs_created_at ON request_logs (created_at)',
+              'SELECT 1')
+    FROM information_schema.statistics
+    WHERE table_schema = DATABASE() AND table_name = 'request_logs' AND index_name = 'idx_request_logs_created_at'
+);
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @ddl = (
+    SELECT IF(COUNT(*) = 0,
               'ALTER TABLE models ADD COLUMN cached_prompt_price DECIMAL(18, 6) NOT NULL DEFAULT 0.000000 AFTER prompt_price',
               'SELECT 1')
     FROM information_schema.columns
     WHERE table_schema = DATABASE() AND table_name = 'models' AND column_name = 'cached_prompt_price'
+);
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @ddl = (
+    SELECT IF(COUNT(*) = 0,
+              'ALTER TABLE models ADD COLUMN cache_write_prompt_price DECIMAL(18, 6) NOT NULL DEFAULT 0.000000 AFTER cached_prompt_price',
+              'SELECT 1')
+    FROM information_schema.columns
+    WHERE table_schema = DATABASE() AND table_name = 'models' AND column_name = 'cache_write_prompt_price'
 );
 PREPARE stmt FROM @ddl;
 EXECUTE stmt;
@@ -522,7 +576,18 @@ DEALLOCATE PREPARE stmt;
 
 SET @ddl = (
     SELECT IF(COUNT(*) = 0,
-              'ALTER TABLE model_group_models ADD COLUMN completion_price DECIMAL(18, 6) NULL AFTER cached_prompt_price',
+              'ALTER TABLE model_group_models ADD COLUMN cache_write_prompt_price DECIMAL(18, 6) NULL AFTER cached_prompt_price',
+              'SELECT 1')
+    FROM information_schema.columns
+    WHERE table_schema = DATABASE() AND table_name = 'model_group_models' AND column_name = 'cache_write_prompt_price'
+);
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @ddl = (
+    SELECT IF(COUNT(*) = 0,
+              'ALTER TABLE model_group_models ADD COLUMN completion_price DECIMAL(18, 6) NULL AFTER cache_write_prompt_price',
               'SELECT 1')
     FROM information_schema.columns
     WHERE table_schema = DATABASE() AND table_name = 'model_group_models' AND column_name = 'completion_price'
@@ -570,6 +635,20 @@ SET @ddl = (
               'SELECT 1')
     FROM information_schema.columns
     WHERE table_schema = DATABASE() AND table_name = 'agent_sessions' AND column_name = 'summary_message_id'
+);
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @ddl = (
+    SELECT IF(COUNT(*) > 0,
+              'ALTER TABLE user_model_packages MODIFY COLUMN expires_at DATETIME NULL',
+              'SELECT 1')
+    FROM information_schema.columns
+    WHERE table_schema = DATABASE()
+      AND table_name = 'user_model_packages'
+      AND column_name = 'expires_at'
+      AND is_nullable = 'NO'
 );
 PREPARE stmt FROM @ddl;
 EXECUTE stmt;

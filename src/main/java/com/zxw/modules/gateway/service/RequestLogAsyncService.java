@@ -1,7 +1,5 @@
 package com.zxw.modules.gateway.service;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.zxw.persistence.entity.RequestLogEntity;
 import com.zxw.persistence.mapper.RequestLogMapper;
 import com.zxw.persistence.mapper.UsageDailyMapper;
@@ -21,14 +19,11 @@ public class RequestLogAsyncService {
 
     private final RequestLogMapper requestLogMapper;
     private final UsageDailyMapper usageDailyMapper;
-    private final ObjectMapper objectMapper;
 
     public RequestLogAsyncService(RequestLogMapper requestLogMapper,
-                                  UsageDailyMapper usageDailyMapper,
-                                  ObjectMapper objectMapper) {
+                                  UsageDailyMapper usageDailyMapper) {
         this.requestLogMapper = requestLogMapper;
         this.usageDailyMapper = usageDailyMapper;
-        this.objectMapper = objectMapper;
     }
 
     @Async("gatewayLogTaskExecutor")
@@ -47,6 +42,17 @@ public class RequestLogAsyncService {
                         usage.userAmount(),
                         usage.costAmount()
                 );
+                if (usage.userPackageId() != null) {
+                    usageDailyMapper.upsertPackage(
+                            usage.requestDate(),
+                            usage.userId(),
+                            usage.userPackageId(),
+                            usage.successCount(),
+                            usage.totalTokens(),
+                            usage.userAmount(),
+                            usage.costAmount()
+                    );
+                }
             } catch (Exception ex) {
                 log.warn("Failed to persist usage daily for requestId={}, model={}: {}",
                         requestLog == null ? null : requestLog.getRequestId(),
@@ -66,8 +72,8 @@ public class RequestLogAsyncService {
             return;
         }
         try {
-            requestLog.setRequestBodyJson(normalizeJson(requestLog.getRequestBodyJson()));
-            requestLog.setResponseBodyJson(normalizeJson(requestLog.getResponseBodyJson()));
+            requestLog.setRequestBodyJson(null);
+            requestLog.setResponseBodyJson(null);
             requestLogMapper.insert(requestLog);
         } catch (Exception ex) {
             log.warn("Failed to persist request log for requestId={}, model={}: {}",
@@ -75,42 +81,10 @@ public class RequestLogAsyncService {
         }
     }
 
-    private String normalizeJson(String body) {
-        if (body == null || body.isBlank()) {
-            return null;
-        }
-        try {
-            JsonNode json = objectMapper.readTree(body);
-            if (json == null) {
-                return null;
-            }
-            return objectMapper.writeValueAsString(json);
-        } catch (Exception ignored) {
-            return "{\"rawText\":" + jsonStringLiteral(truncateForLog(body, 2000)) + "}";
-        }
-    }
-
-    private String truncateForLog(String value, int maxLength) {
-        if (value == null || value.length() <= maxLength) {
-            return value;
-        }
-        return value.substring(0, maxLength);
-    }
-
-    private String jsonStringLiteral(String value) {
-        if (value == null) {
-            return "null";
-        }
-        try {
-            return objectMapper.writeValueAsString(value);
-        } catch (Exception ignored) {
-            return "\"log-body-unavailable\"";
-        }
-    }
-
     public record UsageDailyIncrement(
             LocalDate requestDate,
             Long userId,
+            Long userPackageId,
             String modelCode,
             Long providerId,
             int successCount,

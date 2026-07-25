@@ -21,4 +21,12 @@ public interface UsageDailyMapper {
                @Param("totalTokens") int totalTokens,
                @Param("userAmount") BigDecimal userAmount,
                @Param("costAmount") BigDecimal costAmount);
+
+    int upsertPackage(@Param("statDate") LocalDate statDate,
+                      @Param("userId") Long userId,
+                      @Param("userPackageId") Long userPackageId,
+                      @Param("successCount") int successCount,
+                      @Param("totalTokens") int totalTokens,
+                      @Param("userAmount") BigDecimal userAmount,
+                      @Param("costAmount") BigDecimal costAmount);
 }

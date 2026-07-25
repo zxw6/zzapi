@@ -33,6 +33,8 @@ public interface UserCleanupMapper {
      */
     int deleteUsageDailyByUserId(@Param("userId") Long userId);
 
+    int deletePackageUsageDailyByUserId(@Param("userId") Long userId);
+
     /**
      * 删除用户已购买的套餐记录。
      */

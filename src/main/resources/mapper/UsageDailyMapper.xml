@@ -16,4 +16,16 @@
             updated_at = now()
     </insert>
 
+    <insert id="upsertPackage">
+        insert into package_usage_daily (stat_date, user_id, user_package_id, request_count, success_count, total_tokens, user_amount, cost_amount)
+        values (#{statDate}, #{userId}, #{userPackageId}, 1, #{successCount}, #{totalTokens}, #{userAmount}, #{costAmount})
+        on duplicate key update
+            request_count = request_count + 1,
+            success_count = success_count + values(success_count),
+            total_tokens = total_tokens + values(total_tokens),
+            user_amount = user_amount + values(user_amount),
+            cost_amount = cost_amount + values(cost_amount),
+            updated_at = now()
+    </insert>
+
 </mapper>

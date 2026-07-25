@@ -29,7 +29,6 @@ import com.zxw.persistence.mapper.UserModelAccessQueryMapper;
 import com.zxw.persistence.mapper.UserModelPackageMapper;
 import com.zxw.persistence.mapper.WalletMapper;
 import com.zxw.persistence.model.ModelPackagePurchaseRecordView;
-import com.zxw.persistence.model.PackageUsageSummaryView;
 import com.zxw.persistence.model.UserModelAccessGroupView;
 import com.zxw.persistence.model.UserModelAccessPackageView;
 import com.zxw.persistence.model.WalletTransactionView;
@@ -43,6 +42,7 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.time.temporal.ChronoUnit;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -58,6 +58,7 @@ public class UserModelAccessService {
     public static final BigDecimal BALANCE_PACKAGE_PURCHASE_MIN_BALANCE = new BigDecimal("1.00");
     public static final BigDecimal BALANCE_PACKAGE_CALL_MIN_BALANCE = new BigDecimal("0.50");
 
+    private static final ZoneId APP_ZONE = ZoneId.of("Asia/Shanghai");
     private static final String EXPIRE_PACKAGES_THROTTLE_KEY = "gateway:packages:expire:lock";
     private static final Duration EXPIRE_PACKAGES_INTERVAL = Duration.ofSeconds(60);
     private static final long GATEWAY_ACCESS_CACHE_TTL_MS = 30_000L;
@@ -130,21 +131,26 @@ public class UserModelAccessService {
     }
 
     private void initializeDefaultsOnce() {
+        ensureModelGroupPricingSchema();
+        ensureBalancePackagesNeverExpire();
         expirePackages();
         ensurePresetGroups();
-        ensureModelGroupPricingSchema();
+        ensurePackageUsageDailySchema();
         accessQueryMapper.refreshPackageRestrictionPolicy();
     }
 
     public ModelAccessSummaryResponse getCurrentSummary() {
         initializeDefaults();
         JwtUser currentUser = AdminContext.require();
+        ensureBalancePackagesNeverExpire();
         expirePackages();
         return buildSummary(currentUser.userId());
     }
 
     public ApiKeyPackageBinding resolveApiKeyPackageBinding(Long userId, Long requestedPackageId, Long requestedGroupId) {
         initializeDefaults();
+        ensureBalancePackagesNeverExpire();
+        ensureSelectedBalancePackageNeverExpires(userId, requestedPackageId, requestedGroupId);
         expirePackages();
         UserPackageRow targetPackage = requestedPackageId != null
                 ? findPackageById(userId, requestedPackageId)
@@ -229,7 +235,7 @@ public class UserModelAccessService {
     }
 
     @Transactional
-    public ModelAccessSummaryResponse purchase(PurchaseModelPackageRequest request) {
+    public List<ModelPackagePurchaseRecordResponse> purchase(PurchaseModelPackageRequest request) {
         initializeDefaults();
         JwtUser currentUser = AdminContext.require();
         expirePackages();
@@ -247,8 +253,10 @@ public class UserModelAccessService {
             throw new BusinessException(400, "余额不足，请先充值");
         }
 
-        LocalDateTime startAt = LocalDateTime.now();
-        LocalDateTime expiresAt = startAt.plusDays(group.packageDays());
+        LocalDateTime startAt = currentDateTime();
+        LocalDateTime expiresAt = PACKAGE_TYPE_BALANCE.equals(packageType)
+                ? null
+                : startAt.plusDays(group.packageDays());
 
         UserModelPackageEntity packageEntity = new UserModelPackageEntity();
         packageEntity.setUserId(userId);
@@ -262,7 +270,7 @@ public class UserModelAccessService {
         clearGatewayAccessCache();
 
         if (PACKAGE_TYPE_BALANCE.equals(packageType)) {
-            return buildSummary(userId);
+            return listPurchaseRecords();
         }
 
         BigDecimal balanceBefore = wallet.balance();
@@ -283,10 +291,10 @@ public class UserModelAccessService {
         transaction.setBalanceAfter(balanceAfter);
         transaction.setStatus("SUCCESS");
         transaction.setDescriptionText("购买 " + group.groupName());
-        transaction.setTransactionDate(LocalDate.now());
+        transaction.setTransactionDate(currentDate());
         transactionMapper.insert(transaction);
 
-        return buildSummary(userId);
+        return listPurchaseRecords();
     }
 
     @Transactional
@@ -299,7 +307,7 @@ public class UserModelAccessService {
 
         ModelGroupEntity updateEntity = new ModelGroupEntity();
         updateEntity.setStatus("DISABLED");
-        updateEntity.setUpdatedAt(LocalDateTime.now());
+        updateEntity.setUpdatedAt(currentDateTime());
         int updated = modelGroupMapper.update(updateEntity, Wrappers.<ModelGroupEntity>lambdaUpdate()
                 .eq(ModelGroupEntity::getId, groupId));
         if (updated == 0) {
@@ -316,7 +324,7 @@ public class UserModelAccessService {
 
         UserModelPackageEntity updatePackage = new UserModelPackageEntity();
         updatePackage.setStatus("DELETED");
-        updatePackage.setUpdatedAt(LocalDateTime.now());
+        updatePackage.setUpdatedAt(currentDateTime());
         var packageUpdate = Wrappers.<UserModelPackageEntity>lambdaUpdate()
                 .eq(UserModelPackageEntity::getId, packageId)
                 .ne(UserModelPackageEntity::getStatus, "DELETED");
@@ -330,7 +338,7 @@ public class UserModelAccessService {
 
         ApiKeyEntity updateApiKey = new ApiKeyEntity();
         updateApiKey.setStatus("DISABLED");
-        updateApiKey.setUpdatedAt(LocalDateTime.now());
+        updateApiKey.setUpdatedAt(currentDateTime());
         var apiKeyUpdate = Wrappers.<ApiKeyEntity>lambdaUpdate()
                 .eq(ApiKeyEntity::getUserPackageId, packageId)
                 .eq(ApiKeyEntity::getDeleted, 0);
@@ -391,10 +399,9 @@ public class UserModelAccessService {
             if (currentBalance.compareTo(BALANCE_PACKAGE_CALL_MIN_BALANCE) < 0) {
                 throw new BusinessException(403, "当前余额不足，请先充值");
             }
-            return;
         }
 
-        LocalDate today = LocalDate.now();
+        LocalDate today = currentDate();
         PackageUsageSnapshot usage = resolveGatewayPackageUsage(targetPackage.id(), today);
         validateQuotaLimits(targetPackage.groupName(), targetPackage.dailyQuota(),
                 usage.dailyUsed(),
@@ -424,25 +431,26 @@ public class UserModelAccessService {
 
     public List<ModelPackagePurchaseRecordResponse> listPurchaseRecords() {
         initializeDefaults();
+        ensureBalancePackagesNeverExpire();
         expirePackages();
         JwtUser currentUser = AdminContext.require();
         boolean admin = AdminContext.isAdmin();
         List<ModelPackagePurchaseRecordView> views = admin
                 ? accessQueryMapper.selectPurchaseRecordsAdmin(100)
                 : accessQueryMapper.selectPurchaseRecordsUser(currentUser.userId(), 100);
-        LocalDate today = LocalDate.now();
-        LocalDateTime now = LocalDateTime.now();
+        LocalDate today = currentDate();
+        LocalDateTime now = currentDateTime();
         return views.stream()
                 .map(item -> {
-                    Long packageId = item.getId();
-                    LocalDateTime expiresAt = item.getExpiresAt();
+                    String packageType = normalizePackageType(item.getPackageType());
+                    boolean balancePackage = PACKAGE_TYPE_BALANCE.equals(packageType);
+                    LocalDateTime expiresAt = balancePackage ? null : item.getExpiresAt();
                     BigDecimal dailyQuota = numberOrZero(item.getDailyQuota());
                     BigDecimal weeklyQuota = numberOrZero(item.getWeeklyQuota());
                     BigDecimal monthlyQuota = numberOrZero(item.getMonthlyQuota());
                     BigDecimal totalQuota = resolveTotalQuota(dailyQuota, monthlyQuota, item.getPackageDays());
                     boolean active = "ACTIVE".equalsIgnoreCase(item.getStatus())
-                            && expiresAt != null
-                            && expiresAt.isAfter(now);
+                            && (balancePackage || expiresAt != null && expiresAt.isAfter(now));
                     return new ModelPackagePurchaseRecordResponse(
                             item.getId(),
                             item.getUserId(),
@@ -450,11 +458,11 @@ public class UserModelAccessService {
                             item.getGroupId(),
                             item.getGroupCode(),
                             item.getGroupName(),
-                            normalizePackageType(item.getPackageType()),
+                            packageType,
                             item.getModelCount(),
                             item.getPurchasePrice(),
                             item.getStartAt(),
-                            item.getExpiresAt(),
+                            expiresAt,
                             item.getStatus(),
                             item.getCreatedAt(),
                             active,
@@ -462,11 +470,11 @@ public class UserModelAccessService {
                             weeklyQuota,
                             monthlyQuota,
                             totalQuota,
-                            calculatePackageUsageAmount(packageId, today, today),
-                            calculatePackageUsageAmount(packageId, today.minusDays(6), today),
-                            calculatePackageUsageAmount(packageId, today.withDayOfMonth(1), today),
-                            calculatePackageTotalUsageAmount(packageId),
-                            expiresAt == null ? 0 : Math.max(0, ChronoUnit.DAYS.between(now, expiresAt))
+                            calculatePackageUsageAmount(item.getId(), today, today),
+                            calculatePackageUsageAmount(item.getId(), today.minusDays(6), today),
+                            calculatePackageUsageAmount(item.getId(), today.withDayOfMonth(1), today),
+                            calculatePackageTotalUsageAmount(item.getId()),
+                            balancePackage || expiresAt == null ? null : Math.max(0, ChronoUnit.DAYS.between(now, expiresAt))
                     );
                 })
                 .toList();
@@ -500,7 +508,7 @@ public class UserModelAccessService {
     }
 
     public void addModelGroupBinding(Long modelId, Long groupId) {
-        addModelGroupBindingWithPrices(modelId, groupId, null, null, null, null, null, null);
+        addModelGroupBindingWithPrices(modelId, groupId, null, null, null, null, null, null, null);
     }
 
     public void addModelGroupBindingWithPrices(Long modelId,
@@ -508,10 +516,29 @@ public class UserModelAccessService {
                                                String billingType,
                                                BigDecimal promptPrice,
                                                BigDecimal cachedPromptPrice,
+                                               BigDecimal cacheWritePromptPrice,
                                                BigDecimal completionPrice,
                                                BigDecimal requestPrice,
                                                BigDecimal multiplier) {
         if (modelId == null || groupId == null) {
+            return;
+        }
+        if (modelGroupModelMapper.existsBinding(modelId, groupId)) {
+            if (hasBindingPricingOverride(billingType, promptPrice, cachedPromptPrice, cacheWritePromptPrice, completionPrice, requestPrice, multiplier)) {
+                accessQueryMapper.updateBindingPricing(
+                        modelId,
+                        groupId,
+                        billingType,
+                        promptPrice,
+                        cachedPromptPrice,
+                        cacheWritePromptPrice,
+                        completionPrice,
+                        requestPrice,
+                        multiplier
+                );
+                gatewayRouteService.evictRouteCache();
+                clearGatewayAccessCache();
+            }
             return;
         }
         accessQueryMapper.insertBindingFromModel(
@@ -520,12 +547,29 @@ public class UserModelAccessService {
                 billingType,
                 promptPrice,
                 cachedPromptPrice,
+                cacheWritePromptPrice,
                 completionPrice,
                 requestPrice,
                 multiplier
         );
         gatewayRouteService.evictRouteCache();
         clearGatewayAccessCache();
+    }
+
+    private boolean hasBindingPricingOverride(String billingType,
+                                              BigDecimal promptPrice,
+                                              BigDecimal cachedPromptPrice,
+                                              BigDecimal cacheWritePromptPrice,
+                                              BigDecimal completionPrice,
+                                              BigDecimal requestPrice,
+                                              BigDecimal multiplier) {
+        return billingType != null
+                || promptPrice != null
+                || cachedPromptPrice != null
+                || cacheWritePromptPrice != null
+                || completionPrice != null
+                || requestPrice != null
+                || multiplier != null;
     }
 
     public void clearModelGroupBindingPrices(Long modelId) {
@@ -606,27 +650,36 @@ public class UserModelAccessService {
     private List<ModelGroupOptionResponse> listGroups(Long userId) {
         List<UserModelAccessGroupView> groups = accessQueryMapper.selectActiveGroups();
         List<ModelGroupOptionResponse> result = new ArrayList<>();
-        LocalDate today = LocalDate.now();
-        LocalDateTime now = LocalDateTime.now();
+        LocalDate today = currentDate();
+        LocalDateTime now = currentDateTime();
         for (UserModelAccessGroupView view : groups) {
             ModelGroupRow group = toGroupRow(view);
             UserPackageRow latestPackage = findLatestPackage(userId, group.id());
             boolean purchased = latestPackage != null;
             boolean active = purchased && latestPackage.active();
-            BigDecimal dailyUsed = isQuotaPackage(group.packageType()) && purchased
-                    ? calculateUsageAmount(userId, group.id(), today, today)
+            boolean balancePackage = PACKAGE_TYPE_BALANCE.equals(group.packageType());
+            BigDecimal dailyUsed = latestPackage != null
+                    ? calculatePackageUsageAmount(latestPackage.id(), today, today)
                     : BigDecimal.ZERO;
-            BigDecimal weeklyUsed = isQuotaPackage(group.packageType()) && purchased
-                    ? calculateUsageAmount(userId, group.id(), today.minusDays(6), today)
+            BigDecimal weeklyUsed = latestPackage != null
+                    ? calculatePackageUsageAmount(latestPackage.id(), today.minusDays(6), today)
                     : BigDecimal.ZERO;
-            BigDecimal monthlyUsed = isQuotaPackage(group.packageType()) && purchased
-                    ? calculateUsageAmount(userId, group.id(), today.withDayOfMonth(1), today)
+            BigDecimal monthlyUsed = latestPackage != null
+                    ? calculatePackageUsageAmount(latestPackage.id(), today.withDayOfMonth(1), today)
                     : BigDecimal.ZERO;
             Long remainingDays = latestPackage == null || latestPackage.expiresAt() == null
                     ? null
                     : Math.max(0, ChronoUnit.DAYS.between(now, latestPackage.expiresAt()));
+            if (balancePackage) {
+                remainingDays = null;
+            }
             String packageStatus = active ? "ACTIVE" : purchased ? "EXPIRED" : "NOT_PURCHASED";
             String packageStatusText = active ? "使用中" : purchased ? "套餐已过期" : "未购买套餐";
+            if (balancePackage && purchased) {
+                packageStatus = "ACTIVE";
+                packageStatusText = "已开通余额计费";
+                active = true;
+            }
 
             result.add(new ModelGroupOptionResponse(
                     group.id(),
@@ -641,7 +694,7 @@ public class UserModelAccessService {
                     group.modelCount(),
                     purchased,
                     active,
-                    latestPackage == null ? null : latestPackage.expiresAt(),
+                    latestPackage == null || balancePackage ? null : latestPackage.expiresAt(),
                     remainingDays,
                     dailyUsed,
                     weeklyUsed,
@@ -676,6 +729,10 @@ public class UserModelAccessService {
         return numberOrZero(accessQueryMapper.sumUsageByUserAndGroup(userId, groupId, startDate, endDate));
     }
 
+    private BigDecimal calculateTotalUsageAmount(Long userId, Long groupId) {
+        return numberOrZero(accessQueryMapper.sumTotalUsageByUserAndGroup(userId, groupId));
+    }
+
     private BigDecimal calculatePackageUsageAmount(Long packageId, LocalDate startDate, LocalDate endDate) {
         if (packageId == null) {
             return BigDecimal.ZERO;
@@ -694,39 +751,11 @@ public class UserModelAccessService {
         if (packageId == null || today == null) {
             return PackageUsageSnapshot.ZERO;
         }
-        try {
-            String daily = stringRedisTemplate.opsForValue().get(gatewayUsageDailyKey(packageId, today));
-            String weekly = stringRedisTemplate.opsForValue().get(gatewayUsageWeeklyKey(packageId, today));
-            String monthly = stringRedisTemplate.opsForValue().get(gatewayUsageMonthlyKey(packageId, today));
-            String total = stringRedisTemplate.opsForValue().get(gatewayUsageTotalKey(packageId));
-            if (daily != null && weekly != null && monthly != null && total != null) {
-                return new PackageUsageSnapshot(
-                        fromUsageUnits(daily),
-                        fromUsageUnits(weekly),
-                        fromUsageUnits(monthly),
-                        fromUsageUnits(total)
-                );
-            }
-        } catch (Exception ignored) {
-            return resolveGatewayPackageUsageFromDb(packageId, today);
-        }
-        PackageUsageSnapshot snapshot = resolveGatewayPackageUsageFromDb(packageId, today);
-        seedGatewayPackageUsage(packageId, today, snapshot);
-        return snapshot;
-    }
-
-    private PackageUsageSnapshot resolveGatewayPackageUsageFromDb(Long packageId, LocalDate today) {
-        PackageUsageSummaryView usage = accessQueryMapper.selectPackageUsageSummary(
-                packageId,
-                today,
-                today.minusDays(6),
-                today.withDayOfMonth(1)
-        );
         return new PackageUsageSnapshot(
-                numberOrZero(usage == null ? null : usage.getDailyUsed()),
-                numberOrZero(usage == null ? null : usage.getWeeklyUsed()),
-                numberOrZero(usage == null ? null : usage.getMonthlyUsed()),
-                numberOrZero(usage == null ? null : usage.getTotalUsed())
+                calculatePackageUsageAmount(packageId, today, today),
+                calculatePackageUsageAmount(packageId, today.minusDays(6), today),
+                calculatePackageUsageAmount(packageId, today.withDayOfMonth(1), today),
+                calculatePackageTotalUsageAmount(packageId)
         );
     }
 
@@ -953,7 +982,7 @@ public class UserModelAccessService {
         updateEntity.setWeeklyQuota(resolveQuotaValue(packageType, request.weeklyQuota()));
         updateEntity.setMonthlyQuota(resolveQuotaValue(packageType, request.monthlyQuota()));
         updateEntity.setRemark(trimToLength(request.remark(), 255));
-        updateEntity.setUpdatedAt(LocalDateTime.now());
+        updateEntity.setUpdatedAt(currentDateTime());
 
         int updated = modelGroupMapper.update(updateEntity, Wrappers.<ModelGroupEntity>lambdaUpdate()
                 .eq(ModelGroupEntity::getId, groupId));
@@ -977,7 +1006,7 @@ public class UserModelAccessService {
                 updateEntity.setWeeklyQuota(DEFAULT_WEEKLY_QUOTA);
                 updateEntity.setMonthlyQuota(DEFAULT_MONTHLY_QUOTA);
                 updateEntity.setRemark(preset.remark());
-                updateEntity.setUpdatedAt(LocalDateTime.now());
+                updateEntity.setUpdatedAt(currentDateTime());
                 modelGroupMapper.update(updateEntity, Wrappers.<ModelGroupEntity>lambdaUpdate()
                         .eq(ModelGroupEntity::getId, existingId));
                 continue;
@@ -998,6 +1027,127 @@ public class UserModelAccessService {
         }
     }
 
+    private void ensureBalancePackagesNeverExpire() {
+        try {
+            jdbcTemplate.execute("ALTER TABLE user_model_packages MODIFY COLUMN expires_at DATETIME NULL");
+        } catch (DataAccessException ignored) {
+            // The schema file also defines this as nullable for fresh deployments.
+        }
+        if (!tableExists("user_model_packages") || !columnExists("model_groups", "package_type")) {
+            return;
+        }
+        jdbcTemplate.update("""
+                update model_groups g
+                set g.package_type = ?,
+                    g.sale_price = 0,
+                    g.package_days = 0,
+                    g.daily_quota = 0,
+                    g.weekly_quota = 0,
+                    g.monthly_quota = 0,
+                    g.updated_at = now()
+                where upper(coalesce(g.package_type, '')) <> ?
+                  and (
+                      lower(g.group_code) in ('balance', 'wallet-balance', 'balance-package', 'pay-as-you-go')
+                      or lower(g.group_code) like '%balance%'
+                      or lower(g.group_code) like '%wallet%'
+                      or g.group_name like '%余额%'
+                      or g.group_name like '%钱包%'
+                      or g.group_name like '%计费%'
+                      or g.remark like '%余额%'
+                      or g.remark like '%钱包%'
+                      or g.remark like '%计费%'
+                      or exists (
+                          select 1
+                          from user_model_packages p
+                          where p.group_id = g.id
+                            and p.status <> 'DELETED'
+                            and (
+                                p.package_name like '%余额%'
+                                or p.package_name like '%钱包%'
+                                or p.package_name like '%计费%'
+                            )
+                      )
+                      or (
+                          coalesce(g.sale_price, 0) = 0
+                          and coalesce(g.daily_quota, 0) = 0
+                          and coalesce(g.weekly_quota, 0) = 0
+                          and coalesce(g.monthly_quota, 0) = 0
+                          and exists (
+                              select 1
+                              from user_model_packages p
+                              where p.group_id = g.id
+                                and p.status <> 'DELETED'
+                                and p.expires_at is null
+                                and coalesce(p.purchase_price, 0) = 0
+                          )
+                      )
+                  )
+                """, PACKAGE_TYPE_BALANCE, PACKAGE_TYPE_BALANCE);
+        jdbcTemplate.update("""
+                update user_model_packages p
+                join model_groups g on g.id = p.group_id
+                set p.expires_at = null,
+                    p.status = 'ACTIVE',
+                    p.updated_at = now()
+                where upper(g.package_type) = ?
+                  and p.status <> 'DELETED'
+                  and (p.expires_at is not null or p.status <> 'ACTIVE')
+                """, PACKAGE_TYPE_BALANCE);
+    }
+
+    private void ensureSelectedBalancePackageNeverExpires(Long userId, Long packageId, Long groupId) {
+        if (userId == null || packageId == null) {
+            return;
+        }
+        jdbcTemplate.update("""
+                update model_groups g
+                join user_model_packages p on p.group_id = g.id
+                set g.package_type = ?,
+                    g.sale_price = 0,
+                    g.package_days = 0,
+                    g.daily_quota = 0,
+                    g.weekly_quota = 0,
+                    g.monthly_quota = 0,
+                    g.updated_at = now()
+                where p.id = ?
+                  and p.user_id = ?
+                  and p.status <> 'DELETED'
+                  and (? is null or g.id = ?)
+                  and upper(coalesce(g.package_type, '')) <> ?
+                  and (
+                      lower(g.group_code) in ('balance', 'wallet-balance', 'balance-package', 'pay-as-you-go')
+                      or lower(g.group_code) like '%balance%'
+                      or lower(g.group_code) like '%wallet%'
+                      or g.group_name like '%余额%'
+                      or g.group_name like '%钱包%'
+                      or g.group_name like '%计费%'
+                      or g.remark like '%余额%'
+                      or g.remark like '%钱包%'
+                      or g.remark like '%计费%'
+                      or p.package_name like '%余额%'
+                      or p.package_name like '%钱包%'
+                      or p.package_name like '%计费%'
+                      or (
+                          p.expires_at is null
+                          and coalesce(p.purchase_price, 0) = 0
+                          and coalesce(g.sale_price, 0) = 0
+                      )
+                  )
+                """, PACKAGE_TYPE_BALANCE, packageId, userId, groupId, groupId, PACKAGE_TYPE_BALANCE);
+        jdbcTemplate.update("""
+                update user_model_packages p
+                join model_groups g on g.id = p.group_id
+                set p.expires_at = null,
+                    p.status = 'ACTIVE',
+                    p.updated_at = now()
+                where p.id = ?
+                  and p.user_id = ?
+                  and p.status <> 'DELETED'
+                  and (? is null or g.id = ?)
+                  and upper(g.package_type) = ?
+                """, packageId, userId, groupId, groupId, PACKAGE_TYPE_BALANCE);
+    }
+
     private void ensureModelGroupPricingSchema() {
         ensureColumn("users", "max_concurrent_requests",
                 "ALTER TABLE users ADD COLUMN max_concurrent_requests INT NULL AFTER package_restriction_enabled");
@@ -1005,6 +1155,8 @@ public class UserModelAccessService {
                 "ALTER TABLE users ADD COLUMN max_concurrent_streams INT NULL AFTER max_concurrent_requests");
         ensureColumn("models", "cached_prompt_price",
                 "ALTER TABLE models ADD COLUMN cached_prompt_price DECIMAL(18, 6) NOT NULL DEFAULT 0.000000 AFTER prompt_price");
+        ensureColumn("models", "cache_write_prompt_price",
+                "ALTER TABLE models ADD COLUMN cache_write_prompt_price DECIMAL(18, 6) NOT NULL DEFAULT 0.000000 AFTER cached_prompt_price");
         ensureColumn("model_groups", "package_type",
                 "ALTER TABLE model_groups ADD COLUMN package_type VARCHAR(32) NOT NULL DEFAULT 'QUOTA' AFTER group_name");
         ensureColumn("model_group_models", "billing_type",
@@ -1013,12 +1165,66 @@ public class UserModelAccessService {
                 "ALTER TABLE model_group_models ADD COLUMN prompt_price DECIMAL(18, 6) NULL AFTER billing_type");
         ensureColumn("model_group_models", "cached_prompt_price",
                 "ALTER TABLE model_group_models ADD COLUMN cached_prompt_price DECIMAL(18, 6) NULL AFTER prompt_price");
+        ensureColumn("model_group_models", "cache_write_prompt_price",
+                "ALTER TABLE model_group_models ADD COLUMN cache_write_prompt_price DECIMAL(18, 6) NULL AFTER cached_prompt_price");
         ensureColumn("model_group_models", "completion_price",
-                "ALTER TABLE model_group_models ADD COLUMN completion_price DECIMAL(18, 6) NULL AFTER cached_prompt_price");
+                "ALTER TABLE model_group_models ADD COLUMN completion_price DECIMAL(18, 6) NULL AFTER cache_write_prompt_price");
         ensureColumn("model_group_models", "request_price",
                 "ALTER TABLE model_group_models ADD COLUMN request_price DECIMAL(18, 6) NULL AFTER completion_price");
         ensureColumn("model_group_models", "multiplier",
                 "ALTER TABLE model_group_models ADD COLUMN multiplier DECIMAL(18, 4) NULL AFTER request_price");
+        ensureColumn("request_logs", "first_token_latency_ms",
+                "ALTER TABLE request_logs ADD COLUMN first_token_latency_ms INT NOT NULL DEFAULT 0 AFTER latency_ms");
+    }
+
+    private void ensurePackageUsageDailySchema() {
+        jdbcTemplate.execute("""
+                CREATE TABLE IF NOT EXISTS package_usage_daily (
+                    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                    stat_date DATE NOT NULL,
+                    user_id BIGINT NOT NULL,
+                    user_package_id BIGINT NOT NULL,
+                    request_count BIGINT NOT NULL DEFAULT 0,
+                    success_count BIGINT NOT NULL DEFAULT 0,
+                    total_tokens BIGINT NOT NULL DEFAULT 0,
+                    user_amount DECIMAL(18, 6) NOT NULL DEFAULT 0.000000,
+                    cost_amount DECIMAL(18, 6) NOT NULL DEFAULT 0.000000,
+                    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    UNIQUE KEY uk_package_usage_daily_stat (stat_date, user_package_id),
+                    KEY idx_package_usage_daily_user_date (user_id, stat_date),
+                    KEY idx_package_usage_daily_package_date (user_package_id, stat_date)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """);
+        backfillPackageUsageDaily();
+    }
+
+    private void backfillPackageUsageDaily() {
+        jdbcTemplate.update("""
+                INSERT INTO package_usage_daily (
+                    stat_date, user_id, user_package_id, request_count, success_count,
+                    total_tokens, user_amount, cost_amount
+                )
+                SELECT request_date,
+                       user_id,
+                       user_package_id,
+                       count(*),
+                       sum(case when success = 1 then 1 else 0 end),
+                       coalesce(sum(total_tokens), 0),
+                       coalesce(sum(user_amount), 0),
+                       coalesce(sum(cost_amount), 0)
+                FROM request_logs
+                WHERE user_id IS NOT NULL
+                  AND user_package_id IS NOT NULL
+                GROUP BY request_date, user_id, user_package_id
+                ON DUPLICATE KEY UPDATE
+                    request_count = greatest(request_count, values(request_count)),
+                    success_count = greatest(success_count, values(success_count)),
+                    total_tokens = greatest(total_tokens, values(total_tokens)),
+                    user_amount = greatest(user_amount, values(user_amount)),
+                    cost_amount = greatest(cost_amount, values(cost_amount)),
+                    updated_at = now()
+                """);
     }
 
     private void ensureColumn(String tableName, String columnName, String ddl) {
@@ -1044,6 +1250,15 @@ public class UserModelAccessService {
         return count != null && count > 0;
     }
 
+    private boolean tableExists(String tableName) {
+        Integer count = jdbcTemplate.queryForObject(
+                "select count(*) from information_schema.tables where table_schema = database() and table_name = ?",
+                Integer.class,
+                tableName
+        );
+        return count != null && count > 0;
+    }
+
     private Long findGroupIdByCode(String groupCode) {
         ModelGroupEntity group = modelGroupMapper.selectOne(Wrappers.<ModelGroupEntity>lambdaQuery()
                 .eq(ModelGroupEntity::getGroupCode, groupCode));
@@ -1060,12 +1275,16 @@ public class UserModelAccessService {
         } catch (Exception ignored) {
             // Redis 涓嶅彲鐢ㄦ椂淇濇寔鍘熸湁 DB 鍏滃簳琛屼负
         }
-        UserModelPackageEntity updateEntity = new UserModelPackageEntity();
-        updateEntity.setStatus("EXPIRED");
-        updateEntity.setUpdatedAt(LocalDateTime.now());
-        userModelPackageMapper.update(updateEntity, Wrappers.<UserModelPackageEntity>lambdaUpdate()
-                .eq(UserModelPackageEntity::getStatus, "ACTIVE")
-                .le(UserModelPackageEntity::getExpiresAt, LocalDateTime.now()));
+        jdbcTemplate.update("""
+                update user_model_packages p
+                join model_groups g on g.id = p.group_id
+                set p.status = 'EXPIRED',
+                    p.updated_at = now()
+                where p.status = 'ACTIVE'
+                  and p.expires_at is not null
+                  and p.expires_at <= ?
+                  and upper(coalesce(g.package_type, '')) <> ?
+                """, currentDateTime(), PACKAGE_TYPE_BALANCE);
     }
 
     private String buildOrderNo(String prefix) {
@@ -1093,9 +1312,6 @@ public class UserModelAccessService {
     }
 
     private BigDecimal resolveQuotaValue(String packageType, BigDecimal value) {
-        if (PACKAGE_TYPE_BALANCE.equals(normalizePackageType(packageType))) {
-            return BigDecimal.ZERO;
-        }
         return numberOrZero(value);
     }
 
@@ -1112,6 +1328,14 @@ public class UserModelAccessService {
             return PACKAGE_TYPE_QUOTA;
         }
         return PACKAGE_TYPE_BALANCE.equalsIgnoreCase(packageType) ? PACKAGE_TYPE_BALANCE : PACKAGE_TYPE_QUOTA;
+    }
+
+    private static LocalDate currentDate() {
+        return LocalDate.now(APP_ZONE);
+    }
+
+    private static LocalDateTime currentDateTime() {
+        return LocalDateTime.now(APP_ZONE);
     }
 
     private ModelGroupRow toGroupRow(UserModelAccessGroupView view) {
@@ -1137,14 +1361,17 @@ public class UserModelAccessService {
         if (view == null) {
             return null;
         }
+        String packageType = normalizePackageType(view.getPackageType());
+        boolean balancePackage = PACKAGE_TYPE_BALANCE.equals(packageType);
+        String status = balancePackage && !"DELETED".equalsIgnoreCase(view.getStatus()) ? "ACTIVE" : view.getStatus();
         return new UserPackageRow(
                 view.getId(),
                 view.getGroupId(),
                 view.getGroupCode(),
                 view.getGroupName(),
-                normalizePackageType(view.getPackageType()),
-                view.getExpiresAt(),
-                view.getStatus(),
+                packageType,
+                balancePackage ? null : view.getExpiresAt(),
+                status,
                 view.getPackageDays() == null || view.getPackageDays() <= 0 ? DEFAULT_PACKAGE_DAYS : view.getPackageDays(),
                 numberOrZero(view.getDailyQuota()),
                 numberOrZero(view.getWeeklyQuota()),
@@ -1202,7 +1429,8 @@ public class UserModelAccessService {
             BigDecimal monthlyQuota
     ) {
         private boolean active() {
-            return "ACTIVE".equalsIgnoreCase(status) && expiresAt != null && expiresAt.isAfter(LocalDateTime.now());
+            return "ACTIVE".equalsIgnoreCase(status)
+                    && (PACKAGE_TYPE_BALANCE.equals(packageType) || expiresAt != null && expiresAt.isAfter(currentDateTime()));
         }
     }
 

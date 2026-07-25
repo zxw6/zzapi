@@ -29,6 +29,11 @@
         where user_id = #{userId}
     </delete>
 
+    <delete id="deletePackageUsageDailyByUserId">
+        delete from package_usage_daily
+        where user_id = #{userId}
+    </delete>
+
     <delete id="deleteUserModelPackagesByUserId">
         delete from user_model_packages
         where user_id = #{userId}

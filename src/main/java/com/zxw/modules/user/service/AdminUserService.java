@@ -242,6 +242,7 @@ public class AdminUserService {
         userCleanupMapper.deleteAgentSessionsByUserId(userId);
         userCleanupMapper.deleteRequestLogsByUserId(userId);
         userCleanupMapper.deleteUsageDailyByUserId(userId);
+        userCleanupMapper.deletePackageUsageDailyByUserId(userId);
         transactionMapper.deleteByUserId(userId);
         userCleanupMapper.deleteUserModelPackagesByUserId(userId);
         walletMapper.deleteByUserId(userId);

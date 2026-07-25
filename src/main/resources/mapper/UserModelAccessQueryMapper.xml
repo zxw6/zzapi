@@ -88,7 +88,7 @@
         where p.user_id = #{userId}
           and p.group_id = #{groupId}
           and p.status = 'ACTIVE'
-          and p.expires_at &gt; now()
+          and (upper(g.package_type) = 'BALANCE' or p.expires_at &gt; now())
         order by p.expires_at desc, p.id desc
         limit 1
     </select>
@@ -106,7 +106,7 @@
         where p.user_id = #{userId}
           and p.group_id = #{groupId}
           and p.status = 'ACTIVE'
-          and p.expires_at &gt; now()
+          and (upper(g.package_type) = 'BALANCE' or p.expires_at &gt; now())
         order by p.id asc
         limit 1
     </select>
@@ -129,33 +129,41 @@
     </select>
 
     <select id="sumUsageByUserAndGroup" resultType="java.math.BigDecimal">
-        select coalesce(sum(l.user_amount), 0)
-        from request_logs l
-        join user_model_packages p on p.id = l.user_package_id
-        where l.user_id = #{userId}
+        select coalesce(sum(d.user_amount), 0)
+        from package_usage_daily d
+        join user_model_packages p on p.id = d.user_package_id
+        where d.user_id = #{userId}
           and p.group_id = #{groupId}
-          and l.request_date between #{startDate} and #{endDate}
+          and d.stat_date between #{startDate} and #{endDate}
+    </select>
+
+    <select id="sumTotalUsageByUserAndGroup" resultType="java.math.BigDecimal">
+        select coalesce(sum(d.user_amount), 0)
+        from package_usage_daily d
+        join user_model_packages p on p.id = d.user_package_id
+        where d.user_id = #{userId}
+          and p.group_id = #{groupId}
     </select>
 
     <select id="sumUsageByPackage" resultType="java.math.BigDecimal">
         select coalesce(sum(user_amount), 0)
-        from request_logs
+        from package_usage_daily
         where user_package_id = #{packageId}
-          and request_date between #{startDate} and #{endDate}
+          and stat_date between #{startDate} and #{endDate}
     </select>
 
     <select id="sumTotalUsageByPackage" resultType="java.math.BigDecimal">
         select coalesce(sum(user_amount), 0)
-        from request_logs
+        from package_usage_daily
         where user_package_id = #{packageId}
     </select>
 
     <select id="selectPackageUsageSummary" resultType="com.zxw.persistence.model.PackageUsageSummaryView">
-        select coalesce(sum(case when request_date = #{today} then user_amount else 0 end), 0) as dailyUsed,
-               coalesce(sum(case when request_date between #{weekStart} and #{today} then user_amount else 0 end), 0) as weeklyUsed,
-               coalesce(sum(case when request_date between #{monthStart} and #{today} then user_amount else 0 end), 0) as monthlyUsed,
+        select coalesce(sum(case when stat_date = #{today} then user_amount else 0 end), 0) as dailyUsed,
+               coalesce(sum(case when stat_date between #{weekStart} and #{today} then user_amount else 0 end), 0) as weeklyUsed,
+               coalesce(sum(case when stat_date between #{monthStart} and #{today} then user_amount else 0 end), 0) as monthlyUsed,
                coalesce(sum(user_amount), 0) as totalUsed
-        from request_logs
+        from package_usage_daily
         where user_package_id = #{packageId}
     </select>
 
@@ -184,7 +192,7 @@
         join model_group_models mgm on mgm.group_id = g.id
         where p.user_id = #{userId}
           and p.status = 'ACTIVE'
-          and p.expires_at &gt; now()
+          and (upper(g.package_type) = 'BALANCE' or p.expires_at &gt; now())
           and mgm.model_id = #{modelId}
         order by p.expires_at desc, p.id desc
         limit 1
@@ -192,13 +200,14 @@
 
     <insert id="insertBindingFromModel">
         insert into model_group_models (
-            group_id, model_id, billing_type, prompt_price, cached_prompt_price,
+            group_id, model_id, billing_type, prompt_price, cached_prompt_price, cache_write_prompt_price,
             completion_price, request_price, multiplier
         )
         select #{groupId}, m.id,
                coalesce(#{billingType}, m.billing_type),
                coalesce(#{promptPrice}, m.prompt_price),
                coalesce(#{cachedPromptPrice}, m.cached_prompt_price),
+               coalesce(#{cacheWritePromptPrice}, m.cache_write_prompt_price),
                coalesce(#{completionPrice}, m.completion_price),
                coalesce(#{requestPrice}, m.request_price),
                coalesce(#{multiplier}, m.multiplier)
@@ -211,6 +220,7 @@
         set billing_type = #{billingType},
             prompt_price = #{promptPrice},
             cached_prompt_price = #{cachedPromptPrice},
+            cache_write_prompt_price = #{cacheWritePromptPrice},
             completion_price = #{completionPrice},
             request_price = #{requestPrice},
             multiplier = #{multiplier}
@@ -222,6 +232,7 @@
         set billing_type = null,
             prompt_price = null,
             cached_prompt_price = null,
+            cache_write_prompt_price = null,
             completion_price = null,
             request_price = null,
             multiplier = null
@@ -234,12 +245,14 @@
         set mgm.billing_type = coalesce(mgm.billing_type, m.billing_type),
             mgm.prompt_price = coalesce(mgm.prompt_price, m.prompt_price),
             mgm.cached_prompt_price = coalesce(mgm.cached_prompt_price, m.cached_prompt_price),
+            mgm.cache_write_prompt_price = coalesce(mgm.cache_write_prompt_price, m.cache_write_prompt_price),
             mgm.completion_price = coalesce(mgm.completion_price, m.completion_price),
             mgm.request_price = coalesce(mgm.request_price, m.request_price),
             mgm.multiplier = coalesce(mgm.multiplier, m.multiplier)
         where mgm.billing_type is null
            or mgm.prompt_price is null
            or mgm.cached_prompt_price is null
+           or mgm.cache_write_prompt_price is null
            or mgm.completion_price is null
            or mgm.request_price is null
            or mgm.multiplier is null

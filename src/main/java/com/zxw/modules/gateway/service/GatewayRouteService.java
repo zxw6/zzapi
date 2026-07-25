@@ -9,9 +9,7 @@ import com.zxw.persistence.model.ModelGroupPricingView;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
-import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 import java.util.concurrent.ConcurrentHashMap;
 
 @Service
@@ -44,12 +42,7 @@ public class GatewayRouteService {
      * 按公开模型编码解析可用路由。
      */
     public RouteDefinition resolve(String modelCode) {
-        // Use exact platform model codes first. Only known Codex companion
-        // model names are allowed to resolve through compatibility aliases.
         List<RouteDefinition> routes = findRoutes(modelCode);
-        if (routes.isEmpty()) {
-            routes = findAliasRoutes(modelCode);
-        }
         if (routes.isEmpty()) {
             throw new BusinessException(404, "Model route not found or inactive");
         }
@@ -64,39 +57,6 @@ public class GatewayRouteService {
         return modelMapper.selectPublicResolvableModels()
                 .stream()
                 .map(model -> new ModelCard(model.getModelCode(), model.getModelName(), model.getModelType()))
-                .toList();
-    }
-
-    private List<RouteDefinition> findAliasRoutes(String modelCode) {
-        for (String candidate : resolveAliasCandidates(modelCode)) {
-            List<RouteDefinition> routes = findRoutes(candidate);
-            if (!routes.isEmpty()) {
-                return routes;
-            }
-        }
-        return List.of();
-    }
-
-    private List<String> resolveAliasCandidates(String modelCode) {
-        if (modelCode == null || modelCode.isBlank()) {
-            return List.of();
-        }
-        String trimmed = modelCode.trim();
-        String normalized = trimmed.toLowerCase(Locale.ROOT);
-        List<String> candidates = new ArrayList<>();
-
-        // Codex can issue lightweight companion requests even when the user
-        // selected GPT-5.5. Route those through the configured frontier model
-        // instead of creating noisy 404 failures.
-        if ("gpt-5.4-mini".equals(normalized) || "gpt-5.5-mini".equals(normalized)) {
-            candidates.add("gpt-5.5");
-        }
-        if (normalized.endsWith("-mini")) {
-            candidates.add(trimmed.substring(0, trimmed.length() - "-mini".length()));
-        }
-        return candidates.stream()
-                .filter(candidate -> !candidate.equalsIgnoreCase(trimmed))
-                .distinct()
                 .toList();
     }
 
@@ -141,6 +101,7 @@ public class GatewayRouteService {
                 pricing.billingType(),
                 pricing.promptPrice(),
                 pricing.cachedPromptPrice(),
+                pricing.cacheWritePromptPrice(),
                 pricing.completionPrice(),
                 pricing.requestPrice(),
                 pricing.multiplier(),
@@ -178,6 +139,7 @@ public class GatewayRouteService {
                         route.getBillingType(),
                         route.getPromptPrice(),
                         route.getCachedPromptPrice(),
+                        route.getCacheWritePromptPrice(),
                         route.getCompletionPrice(),
                         route.getRequestPrice(),
                         route.getMultiplier(),
@@ -199,6 +161,7 @@ public class GatewayRouteService {
                 pricing.getBillingType(),
                 pricing.getPromptPrice(),
                 pricing.getCachedPromptPrice(),
+                pricing.getCacheWritePromptPrice(),
                 pricing.getCompletionPrice(),
                 pricing.getRequestPrice(),
                 pricing.getMultiplier()
@@ -217,6 +180,7 @@ public class GatewayRouteService {
             String billingType,
             BigDecimal promptPrice,
             BigDecimal cachedPromptPrice,
+            BigDecimal cacheWritePromptPrice,
             BigDecimal completionPrice,
             BigDecimal requestPrice,
             BigDecimal multiplier
@@ -241,6 +205,7 @@ public class GatewayRouteService {
             String billingType,
             BigDecimal promptPrice,
             BigDecimal cachedPromptPrice,
+            BigDecimal cacheWritePromptPrice,
             BigDecimal completionPrice,
             BigDecimal requestPrice,
             BigDecimal multiplier,
